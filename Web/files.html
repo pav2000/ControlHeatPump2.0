@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Файлы и обновление. Народный контроллер ТН</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<script src="scripts.js"></script>
+<script src="settings.js"></script>
+<style>
+.dl{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 0;border-bottom:1px solid var(--line)}
+.dl:last-child{border:0}
+.dl .l small{display:block;color:var(--mute);font-size:12px}
+.dl .btn2{padding:7px 14px;text-decoration:none;white-space:nowrap}
+.dl select{border:1px solid var(--line);border-radius:10px;padding:6px 10px;font:inherit;font-weight:700;background:var(--card)}
+.drop{border:2px dashed #c5ced8;border-radius:14px;padding:18px;text-align:center;color:var(--mute);margin:12px 0;cursor:pointer}
+.up{margin-top:12px;padding:9px 12px;border-radius:12px;background:var(--bg);font-size:13px;color:var(--mute)}
+.up .line{display:flex;align-items:center;gap:10px;white-space:nowrap;overflow:hidden}.up .line #up-tx{overflow:hidden;text-overflow:ellipsis}
+.up b{color:var(--ink)}
+.up code{background:var(--card);border-radius:5px;padding:1px 6px;font-size:12px;color:var(--ink)}
+.up .pb{height:4px;border-radius:99px;background:#dde3ea;margin-top:8px;overflow:hidden}.up .pb i{display:block;height:100%;background:var(--acc);transition:width .2s}
+.up .spin{width:14px;height:14px;border-radius:50%;border:2px solid #cfe3e3;border-top-color:var(--acc);flex:none;animation:upspin .8s linear infinite}
+@keyframes upspin{to{transform:rotate(360deg)}}
+.up.busy{color:var(--ink)}.up.ok{background:var(--tok);color:#16784e}.up.ok b{color:#16784e}.up.ok .pb i{background:var(--ok)}.up.bad{background:var(--tbad);color:var(--bad)}.up .mk{font-weight:800;flex:none}
+.drop.over{border-color:var(--acc);background:var(--acc2)}
+.drop b{color:var(--ink)}
+.seg2{display:inline-flex;background:var(--seg);border-radius:12px;padding:3px}
+.seg2 a{white-space:nowrap;padding:7px 16px;border-radius:9px;font-weight:700;font-size:13px;color:var(--mute);cursor:pointer}
+.seg2 a.on{background:var(--card);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.12)}
+.steps{counter-reset:s;list-style:none;margin:0;padding:0}
+.steps li{counter-increment:s;display:flex;gap:12px;padding:8px 0;align-items:flex-start}
+.steps li:before{content:counter(s);flex:none;width:24px;height:24px;border-radius:50%;background:var(--ink);color:#fff;display:grid;place-items:center;font-size:12px;font-weight:800}
+.steps .act{display:flex;gap:10px;margin:8px 0}
+.rfile{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px}
+.rfile .nm{background:var(--bg);border-radius:10px;padding:8px 12px;flex:1;min-width:200px;color:var(--mute)}
+</style>
+<script>
+// Файлы и обновление: скачивание данных контроллера, восстановление настроек из бинарного файла, запись файлов веб-интерфейса
+// (в SPI Flash или на SD-карту), подготовка к обновлению прошивки. Запись идёт асинхронными POST (post() ниже).
+var $ = function(id) { return document.getElementById(id); };
+function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
+function href(name) { return urlcontrol + '/' + name; }
+
+var setupFile = null, webFiles = [];
+
+// ---- скачивание ----
+function dlRow(title, sub, name, extra) {
+	var pdf = /\.pdf$/.test(name);
+	return '<div class="dl"><div class="l"><b>' + title + '</b>' + (extra || '') + '<small>' + sub + '</small></div><a class="btn2" href="' + href(name) + '" download' + (pdf ? '="' + name + '" onclick="return shDownload(this, \'application/pdf\')"' : '') + '>Загрузить</a></div>';
+}
+function yearRow(title, sub, kind, tip) {
+	return '<div class="dl"><div class="l"><b>' + title + '</b>' + (tip || '') + '<small>' + sub + '</small></div><div class="row" style="gap:8px"><select id="sel-' + kind + '" onchange="fixYear(\'' + kind + '\')"></select><a class="btn2" id="a-' + kind + '" href="#" download>Загрузить</a></div></div>';
+}
+function fixYear(kind) {
+	var s = $('sel-' + kind);
+	if(s.value) $('a-' + kind).href = href(s.value);
+}
+function yearList(kind, key) {
+	api.get({k: [key]}, function(D) {
+		var h = '';
+		(D[key] || []).forEach(function(n, i) { var y = (/(\d{4})/.exec(n) || [])[1]; h += '<option value="' + stEsc(n) + '"' + (i == 0 ? ' selected' : '') + '>' + (y || stEsc(n)) + '</option>'; });
+		$('sel-' + kind).innerHTML = h;
+		fixYear(kind);
+	});
+}
+function hintTip(n, t) { return '<span class="hint" tabindex="0" data-tip="' + stEsc(t) + '">' + n + '</span>'; }
+
+// ---- восстановление настроек ----
+function pickSetup(inp) {
+	setupFile = inp.files[0] || null;
+	put('rf-name', setupFile ? setupFile.name + ' · ' + Math.round(setupFile.size / 1024 * 10) / 10 + ' КБ' : 'settings.bin — файл не выбран');
+}
+function restore() {
+	if(!setupFile) { stToast('Выберите файл settings.bin.', true); return; }
+	if(!confirm('Восстановить настройки из файла «' + setupFile.name + '»? Профили, расписание и настройки будут заменены содержимым файла.')) return;
+	pausePoll(true);
+	post('*SETTINGS*', setupFile, function(t) {
+		pausePoll(false);
+		stToast(t ? t + '. Сделайте сброс контроллера.' : 'Файл настроек передан контроллеру. Если появилась ошибка — обновите страницу (Ctrl+F5) и повторите.');
+	}, function(msg) { pausePoll(false); stToast('Настройки не записаны: ' + msg, true); });
+}
+
+// ---- запись: асинхронные POST, как на аварийной странице (Main-min/index.html). Пока идёт запись, опрос страницы приостановлен:
+// контроллер занят стиранием/записью диска и на другие запросы не отвечает ----
+var polled = null;
+function pausePoll(on) {
+	if(on) { if(!polled) { polled = api.pollers; api.pollers = []; } }
+	else if(polled) { api.pollers = polled; polled = null; }
+}
+function post(title, body, ok, bad) {
+	var x = new XMLHttpRequest();
+	x.open('POST', urlcontrol + (NeedLogin == 2 ? '/&&' + LPString : ''), true);
+	x.setRequestHeader('Title', title);
+	// пустой ответ - файл принят; тексты успеха прошивка шлёт на маркер конца записи и при восстановлении настроек (postRet в WebServer.cpp),
+	// любой другой непустой ответ - ошибка с пояснением контроллера
+	x.onload = function() {
+		var t = (x.responseText || '').replace(/\s+$/, '');
+		if(x.status != 200) bad('ответ ' + x.status);
+		else if(!t || /^(Файлы загружены|Настройки из файла восстановлены)/.test(t)) ok(t);
+		else bad(t);
+	};
+	x.onerror = x.ontimeout = function() { bad('обрыв связи'); };
+	x.send(body);
+}
+// строка состояния записи под кнопками: cls - idle | busy | ok | bad
+function upState(cls, html, pct) {
+	var e = $('up');
+	e.className = 'up ' + cls;
+	$('up-tx').innerHTML = html;
+	$('up-ic').className = cls == 'busy' ? 'spin' : cls == 'ok' ? 'mk' : cls == 'bad' ? 'mk' : '';
+	$('up-ic').innerHTML = cls == 'ok' ? '✓' : cls == 'bad' ? '!' : '';
+	$('up-pb').hidden = cls != 'busy' && cls != 'ok';
+	$('up-bar').style.width = (pct || 0) + '%';
+}
+// ---- веб-файлы ----
+function addFiles(list) {
+	webFiles = [].slice.call(list);
+	var size = webFiles.reduce(function(a, f) { return a + f.size; }, 0);
+	put('drop-sel', webFiles.length ? 'выбрано ' + webFiles.length + ' файл(ов): ' + webFiles.slice(0, 4).map(function(f) { return f.name; }).join(', ') + (webFiles.length > 4 ? '…' : '') + ' · ' + Math.round(size / 1024) + ' КБ' : '');
+}
+var uploading = false;
+function sendWeb(dest) {
+	if(uploading) return;
+	if(!webFiles.length) { stToast('Выберите файлы для записи.', true); return; }
+	var where = dest == 'SPI_FLASH' ? 'SPI Flash (все данные там будут перезаписаны, добавлять файлы по одному нельзя)' : 'SD-карту (одноимённые файлы заменятся, остальные останутся)';
+	if(!confirm('Записать ' + webFiles.length + ' файл(ов) на ' + where + '?')) return;
+	var n = webFiles.length, i = 0;
+	var busy = function(on) { uploading = on; pausePoll(on); ['btn-spi', 'btn-sd'].forEach(function(id) { $(id).disabled = on; }); };
+	var fail = function(msg, f) {
+		busy(false);
+		upState('bad', 'Ошибка' + (f ? ' на файле <code>' + stEsc(f.name) + '</code> (' + (i + 1) + ' из ' + n + ')' : '') + ': ' + stEsc(msg) + '. Записано файлов: ' + i + '.', 0);
+	};
+	var step = function() {
+		if(i >= n) {
+			post('*' + dest + '_END*', '', function() {
+				busy(false);
+				upState('ok', 'Готово: записано <b>' + n + ' файл(ов)</b>. Сделайте сброс контроллера.', 100);
+				stToast('Файлы записаны.');
+			}, function(m) { fail(m, null); });
+			return;
+		}
+		var f = webFiles[i];
+		upState('busy', 'Запись <b>' + (i + 1) + ' из ' + n + '</b>: <code>' + stEsc(f.name) + '</code>', i * 100 / n);
+		post(encodeURIComponent(f.name), f, function() { i++; step(); }, function(m) { fail(m, f); });
+	};
+	busy(true);
+	upState('busy', dest == 'SPI_FLASH' ? 'Подготовка: стирание диска SPI Flash…' : 'Подготовка: открытие SD-карты…', 0);
+	post('*' + dest + '*', '', step, function(m) { fail(m, null); });
+}
+function setSource(spi, a) {
+	if(!confirm('Переключить источник веб-страниц на ' + (spi ? 'SPI Flash' : 'SD-карту') + '? Если там нет файлов, интерфейс перестанет открываться (вернуть можно запросом /api/set?ohp.wspif=' + (spi ? 0 : 1) + ').')) return;
+	api.set({'ohp.wspif': spi ? 1 : 0}, function(D, E, err) {
+		if(err || E['ohp.wspif']) { stToast('Контроллер не принял значение (' + (err ? 'нет связи' : ST_ERR[E['ohp.wspif']] || E['ohp.wspif']) + ').', true); return; }
+		showSource(D['ohp.wspif'] === true);
+		stUnsaved(true); stRefresh();
+		stToast('Источник веб-страниц изменён до перезагрузки. Записать в EEPROM — чтобы сохранить.');
+	});
+}
+function showSource(spi) {
+	var a = document.querySelectorAll('#src a');
+	a[0].classList.toggle('on', spi); a[1].classList.toggle('on', !spi);
+}
+
+// ---- обновление ----
+function saveStats() {
+	api['do']('save.stats', function(v, e) { stToast(!e ? 'Статистика, история и счётчики записаны.' : 'Не удалось сохранить статистику (' + (ST_ERR[e] || e) + ').', !!e); }, undefined, 30000);
+}
+function prepUpdate() {
+	if(!confirm('Подготовить контроллер к обновлению? Будут записаны статистика, история и счётчики, ЭРВ перейдёт в максимальное положение. Только при остановленном компрессоре.')) return;
+	api['do']('save.prepare_update', function(v, e) { stToast(!e ? 'Контроллер подготовлен к обновлению.' : e == 'busy' ? 'Подготовка не выполнена: компрессор работает. Остановите ТН.' : 'Подготовка не выполнена (' + (ST_ERR[e] || e) + ').', !!e); }, undefined, 30000);
+}
+
+window.onload = function() {
+	stPanel({apply: false, note: 'Источник веб-страниц сохраняется записью в EEPROM.'});
+	$('dl1').innerHTML = dlRow('Документация', 'manual.pdf', 'manual.pdf') + dlRow('Текущее состояние ТН', 'state.txt', 'state.txt') + dlRow('Настройки ТН в текстовом виде', 'settings.txt', 'settings.txt') +
+		dlRow('Настройки ТН в бинарном виде', 'settings.bin', 'settings.bin') + dlRow('Вся память EEPROM', 'settings_eeprom.bin', 'settings_eeprom.bin');
+	$('dl2').innerHTML = dlRow('Журнал работы ТН', 'journal.txt', 'journal.txt') + dlRow('Графики из памяти контроллера', 'chart.csv', 'chart.csv') +
+		yearRow('Статистика (файлы по годам)', 'пишется всегда, не чаще раза в сутки', 'stats', hintTip(3, 'Статистика пишется всегда, запись происходит не чаще одного раза в день.')) +
+		yearRow('История (файлы по годам)', 'метка с секундами; нужна запись истории на SD-карту — Графики → История', 'hist', hintTip(4, 'Для записи истории необходимо на странице «Графики → История» включить «Писать историю раз в минуту». Чаще, каждые 10 секунд вокруг пуска и останова компрессора, пишет «Детализация ВКЛ/ВЫКЛ компрессора». Первая строка файла (и строки с «#» внутри) описывает столбцы; скачанный файл открывается в Excel, строки описания можно удалить.')) +
+		yearRow('История прежнего формата (файлы по годам)', 'раз в минуту, метка до минуты, 16 столбцов; на графике показываются', 'histold', hintTip(5, 'Файлы hist_ГГГГ.csv, записанные прошивкой до перехода на метку с секундами. Новые записи идут в файлы «История (файлы по годам)».'));
+	yearList('stats', 'sys.list_stats');
+	yearList('hist', 'sys.list_hist');
+	yearList('histold', 'sys.list_hist_old');
+	api.get({k: ['ohp.wspif']}, function(D) { showSource(D['ohp.wspif'] === true); });
+	var d = $('drop');
+	['dragenter', 'dragover'].forEach(function(e) { d.addEventListener(e, function(ev) { ev.preventDefault(); d.classList.add('over'); }); });
+	['dragleave', 'drop'].forEach(function(e) { d.addEventListener(e, function(ev) { ev.preventDefault(); d.classList.remove('over'); }); });
+	d.addEventListener('drop', function(ev) { addFiles(ev.dataTransfer.files); });
+	d.addEventListener('click', function() { $('Files').click(); });
+};
+</script>
+</head>
+<body class="files">
+<div id="menu" class="menu"><script src="menu.js"></script></div>
+<div class="content">
+<div class="grid">
+	<section class="card c6"><h3>Настройки и состояние</h3><div id="dl1"></div>
+		<div class="dl" style="display:block"><div class="l"><b>Восстановить настройки из бинарного файла</b><span class="hint" tabindex="0" data-tip="Если при восстановлении настроек возникает ошибка, обновите страницу (Ctrl+F5).">1</span><small>профили, расписание и настройки заменяются содержимым файла</small></div>
+			<div class="rfile"><span class="nm" id="rf-name">settings.bin — файл не выбран</span><input type="file" id="Setup" hidden onchange="pickSetup(this)"><button class="btn2" onclick="$('Setup').click()">Выбрать…</button><button class="btn2 bad" onclick="restore()">Восстановить…</button></div></div></section>
+	<section class="card c6"><h3>Веб-интерфейс контроллера</h3>
+		<div class="dl"><div class="l"><b>Откуда контроллер берёт страницы</b><small>переключение действует до перезагрузки; сохраняется записью в EEPROM</small></div><span class="seg2" id="src"><a onclick="setSource(1)">SPI Flash</a><a onclick="setSource(0)">SD-карта</a></span></div>
+		<div class="drop" id="drop"><b>Перетащите файлы сюда</b> или выберите<div id="drop-sel" style="font-size:12px;margin-top:4px"></div><input type="file" id="Files" multiple hidden onchange="addFiles(this.files)"></div>
+		<div class="row" style="gap:10px;flex-wrap:wrap"><button class="btn2 p" id="btn-spi" onclick="sendWeb('SPI_FLASH')">Записать в SPI Flash</button><button class="btn2" id="btn-sd" onclick="sendWeb('SD_CARD')">Записать на SD-карту</button><span class="hint" tabindex="0" data-tip="Если запись в SPI Flash, то будут перезаписаны все данные (добавление файлов невозможно). На SD-карту файлы сохраняются с перезаписью существующих, остальные данные не изменяются.">2</span></div>
+		<div class="up idle" id="up"><div class="line"><span id="up-ic"></span><span id="up-tx">Выберите файлы и нажмите кнопку записи.</span></div><div class="pb" id="up-pb" hidden><i id="up-bar"></i></div></div>
+		<div class="fnote"><b>2.</b> В SPI Flash перезаписываются все данные, добавлять файлы по одному нельзя. На SD-карте файлы заменяются, остальное остаётся. Если веб не открывается, переключить источник можно запросом: <span class="mono">IP/api/set?ohp.wspif=1</span> — SPI Flash, <span class="mono">ohp.wspif=0</span> — SD.</div></section>
+	<section class="card c6"><h3>Работа ТН</h3><div id="dl2"></div></section>
+	<section class="card c6"><h3>Обновление</h3>
+		<ol class="steps">
+			<li><span><b>Остановите ТН.</b> Подготовка не выполняется при работающем компрессоре.</span></li>
+			<li><span><b>Сохраните статистику</b> — запись накопленных данных за последний день.<div class="act"><button class="btn2" onclick="saveStats()">Сохранить статистику</button><button class="btn2 p" onclick="prepUpdate()">Подготовка к обновлению</button></div></span></li>
+			<li><span>Подготовка сохраняет статистику, историю и счётчики и ставит ЭРВ в максимальное положение.</span></li>
+			<li><span>Прошейте контроллер, затем при необходимости запишите веб-файлы слева.</span></li>
+		</ol></section>
+</div>
+</div>
+</body>
+</html>

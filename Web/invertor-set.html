@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Настройки инвертора. Народный контроллер ТН</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<script src="scripts.js"></script>
+<script src="settings.js"></script>
+<script>
+// Настройки инвертора Omron MX2: частоты, защиты, шаги ПИД. Поля охлаждения (class cool) прячутся в сборке «только
+// отопление» (ver.caps.cool), аналоговое управление - если прошивка его не поддерживает (ver.caps.fc_analog).
+var $ = function(id) { return document.getElementById(id); };
+function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
+function f(n, o) { o.key = 'fc.' + n.toLowerCase(); if(o.step == 0.1 && o.dec == null) o.dec = 2; return o; }		// частоты и температуры контроллер отдаёт с сотыми: так их и показываем
+
+function programFc() {
+	if(!confirm('Записать в инвертор параметры для работы с контроллером? Только при выключенном ТН; операция занимает около 10 секунд. После неё нужна автонастройка (H001 = 1).')) return;
+	stToast('Ожидайте 10 сек…');
+	api['do']('fc.program', function(v, e) {
+		if(e) stToast('Программирование инвертора: ' + (e == 'busy' ? 'тепловой насос должен быть выключен' : e == 'na' ? 'инвертор отсутствует' : ST_ERR[e] || e), true);
+		else stToast('Программирование инвертора: команда отправлена, подробности в журнале.');
+	}, undefined, 15000);
+}
+
+window.onload = function() {
+	$("mx2doc").href = urlcontrol + "/OmronMX2.pdf";
+	stPanel();
+	stFields('c1', [
+		f('TR', {k: 'ro', t: 'Время опроса инвертора', h: 'только чтение', u: 'мс'}),
+		f('UPTIME', {t: 'Период цикла управления', h: '3…600 с', u: 'с', min: 3, max: 600, step: 1, n: [2, 'Период цикла управления (обновления) тепловым насосом: как часто вызывается функция управления работой ТН. Должен быть меньше, чем время интегрирования ПИД.']}),
+		f('PID_STOP', {t: 'Блокировка роста частоты', h: '% от уровня защит (мощность, ток, давление, температура)', u: '%', min: 0, step: 1})
+	]);
+	stFields('c1b', [
+		f('DTC', {t: 'Защита по нагнетанию', h: 'сколько градусов не доходит до максимума, при этом частота уменьшается · 1…25', u: '°C', min: 1, max: 25, step: 0.1}),
+		f('DT', {t: 'Превышение подачи', h: 'уставка, при которой срабатывает защита, уменьшается частота · 0…10', u: '°C', min: 0, max: 10, step: 0.1}),
+		f('DTB', {t: 'Превышение подачи (ГВС)', h: 'защита ГВС · 0…10', u: '°C', min: 0, max: 10, step: 0.1})
+	]);
+	stFields('c2', [
+		f('FRQ', {t: 'Старт: отопление<span class="cool"> и охлаждение</span>', h: '20…120 Гц', u: 'Гц', min: 20, max: 120, step: 0.1}),
+		f('FRQB', {t: 'Старт: ГВС', h: '20…150 Гц', u: 'Гц', min: 20, max: 150, step: 0.1})
+	]);
+	stFields('c2b', [
+		f('MIN', {t: 'Минимум: отопление', h: '20…80 Гц', u: 'Гц', min: 20, max: 80, step: 0.1}),
+		f('MINC', {t: 'Минимум: охлаждение', h: '20…80 Гц', u: 'Гц', min: 20, max: 80, step: 0.1, cls: 'cool'}),
+		f('MINB', {t: 'Минимум: ГВС', h: '20…80 Гц', u: 'Гц', min: 20, max: 80, step: 0.1}),
+		f('MINU', {t: 'Минимум: ручной режим', h: '20…80 Гц', u: 'Гц', min: 20, max: 80, step: 0.1})
+	]);
+	stFields('c2c', [
+		f('MAX', {t: 'Максимум: отопление', h: '40…200 Гц', u: 'Гц', min: 40, max: 200, step: 0.1}),
+		f('MAXC', {t: 'Максимум: охлаждение', h: '40…200 Гц', u: 'Гц', min: 40, max: 200, step: 0.1, cls: 'cool'}),
+		f('MAXB', {t: 'Максимум: ГВС', h: '40…200 Гц', u: 'Гц', min: 40, max: 200, step: 0.1}),
+		f('MAXU', {t: 'Максимум: ручной режим', h: '40…200 Гц', u: 'Гц', min: 40, max: 200, step: 0.1})
+	]);
+	stFields('c3', [
+		f('PID_STEP', {t: 'Максимальный шаг увеличения', h: 'при ПИД-регулировании · 0…5 Гц', u: 'Гц', min: 0, max: 5, step: 0.1}),
+		f('STEP', {t: 'Шаг уменьшения', h: 'при максимуме температуры, мощности, тока · 0,2…5 Гц', u: 'Гц', min: 0.2, max: 5, step: 0.1}),
+		f('STEPB', {t: 'Шаг уменьшения для ГВС', h: '0,2…5 Гц', u: 'Гц', min: 0.2, max: 5, step: 0.1})
+	]);
+	stFields('c4', [
+		f('DAC', {k: 'ro', t: 'Значение DAC'}),
+		f('L0', {t: 'Уровень «0» (ЦАП)', min: 0, max: 4096, step: 1}),
+		f('L100', {t: 'Уровень «100» (ЦАП)', min: 0, max: 4096, step: 1})
+	]);
+	stLoadK();
+	api.init(function(v) {
+		var caps = (v && v.caps) || {};
+		if(!caps.cool) document.body.classList.add('onlyheat');
+		$('analog').hidden = !caps.fc_analog;
+		api.get({k: ['fc.name']}, function(D) {
+			var n = D['fc.name'], what = [];
+			if(!caps.cool) what.push('охлаждение');
+			if(!caps.fc_analog) what.push('аналоговое управление');
+			if(n !== undefined) shSubNote('<b>' + stEsc(n) + '</b>' + (what.length ? what.join(' и ') + (what.length > 1 ? ' не используются в этой сборке и скрыты' : ' не используется в этой сборке и скрыто') : 'частотный преобразователь компрессора'));
+		});
+	});
+};
+</script>
+</head>
+<body class="invertor">
+<div id="menu" class="menu"><script src="menu.js"></script></div>
+<div class="content">
+<div class="grid">
+	<section class="card c4"><h3>Опрос и цикл</h3><div id="c1"></div><h3 style="margin-top:18px">Граничные температуры</h3><div id="c1b"></div></section>
+	<section class="card c4"><h3>Стартовые частоты</h3><div id="c2"></div><h3 style="margin-top:18px">Минимальные частоты</h3><div id="c2b"></div><h3 style="margin-top:18px">Максимальные частоты</h3><div id="c2c"></div></section>
+	<section class="card c4"><h3>Ограничение ПИД</h3><div id="c3"></div>
+		<h3 style="margin-top:18px">Программирование инвертора</h3>
+		<div class="warnbox">Только при выключенном ТН. Операция занимает около 10 секунд, подробности — в журнале. После неё нужна автонастройка (H001 = 1). Параметры связи по умолчанию: C071…C078 (C071 = 5, C072 = 1, C074 = 0, C075 = 1, C076 = 2, C077 = 0, C078 = 0).</div>
+		<div class="act" style="margin-top:10px"><button class="btn2 bad" onclick="programFc()">Запрограммировать Omron MX2<span class="hint" tabindex="0" data-tip="Установка регистров (программирование) Omron MX2 под требования НК, после программирования надо сделать автонастройку (H001=1). При программировании считается, что установлены параметры связи по умолчанию (С071=5, С072=1, С074=0, С075=1, С076=2, С077=0, С078=0).">1</span></button>
+			<a class="btn2" id="mx2doc" href="OmronMX2.pdf" download="OmronMX2.pdf" onclick="return shDownload(this, 'application/pdf')">Описание настройки Omron MX2</a></div></section>
+	<section class="card c12" id="analog" hidden><h3>Аналоговое управление</h3><div id="c4"></div></section>
+</div>
+</div>
+</body>
+</html>

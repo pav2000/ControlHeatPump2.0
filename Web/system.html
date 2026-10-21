@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Состояние. Народный контроллер ТН</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<script src="scripts.js"></script>
+<script src="settings.js"></script>
+<style>
+.kvl{display:flex;justify-content:space-between;gap:14px;padding:8px 0;border-bottom:1px solid var(--line);font-size:13px}
+.kvl:last-child{border:0}
+.kvl span{color:var(--mute)}.kvl b{text-align:right;font-variant-numeric:tabular-nums}
+.kvl b.mono{font-family:'DejaVu Sans Mono',Consolas,monospace;font-size:12px}
+.sbh{font-size:11px;font-weight:800;color:var(--mute);text-transform:uppercase;letter-spacing:.5px;margin:16px 0 2px}
+.stat{background:var(--bg);border-radius:10px;padding:8px 12px;font-family:'DejaVu Sans Mono',Consolas,monospace;font-size:13px;margin:4px 0 8px}
+.legend2{color:var(--mute);font-size:12px;line-height:1.5}
+.legend2 b{color:var(--ink)}
+.ctr{display:grid;gap:8px}
+</style>
+<script>
+// Состояние контроллера: ключ sys.info («подпись|значение;...», разделы - строки <b>…</b>) плюс время работы, последний сброс,
+// причина сброса, температура платы и память. Опрос раз в 4 с. Сброс контроллера, сети и сезонных счётчиков - внизу.
+urlupdate = 4000;
+var $ = function(id) { return document.getElementById(id); };
+function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
+function tip(n, t) { return '<span class="hint" tabindex="0" data-tip="' + stEsc(t) + '">' + n + '</span>'; }
+var TIPS = {
+	2: 'Состояние FreeRTOS при старте: старший байт — номер задачи (см. «Диагностика → Задачи RTOS»), младший байт — код ошибки (1 — configASSERT fails, 2 — malloc fails, 3 — stack overflow, 4 — hard fault, 5 — bus fault, 6 — usage fault, 7 — crash data).',
+	3: 'Контроль включается в «Связь → Сеть → Ежеминутный контроль связи с чипом»; при необходимости — его сброс.'
+};
+var fixed = {};
+function kv(label, value, mono) {
+	label = label.replace(/<sup>(\d)<\/sup>/g, function(m, n) { return TIPS[n] ? tip(n, TIPS[n]) : ''; });
+	return '<div class="kvl"><span>' + label + '</span><b' + (mono ? ' class="mono"' : '') + '>' + value + '</b></div>';
+}
+
+// разбор sys.info на разделы
+function parse(v) {
+	var sec = [{t: '', rows: []}];
+	v.split(';').forEach(function(s) {
+		if(!s.trim()) return;
+		var a = s.split('|'), head = /^<b>(.*)<\/b>$/.exec(a[0].trim());
+		if(head) sec.push({t: head[1].trim(), rows: []});
+		else sec[sec.length - 1].rows.push([a[0].trim(), a.slice(1).join('|')]);
+	});
+	return sec;
+}
+function render(v) {
+	var sec = parse(v), by = {}, status = '';
+	sec.forEach(function(s) { by[s.t] = s.rows; });
+	var h = kv('Время с последней перезагрузки', fixed.uptime || '–') + kv('Последний сброс', fixed.start || '–') + kv('Причина последнего сброса', fixed.cause || '–') +
+		kv('Температура платы (DS3231)', fixed.temp ? fixed.temp + '°' : '–') + kv('Свободная память', fixed.ram || '–');
+	sec[0].rows.forEach(function(r) {
+		if(/Строка статуса/.test(r[0])) { status = r; return; }
+		h += kv(r[0], r[1], /SUPC|0x/.test(r[0] + r[1]));
+	});
+	put('ctl', h);
+	var st = '';
+	if(status) st += '<div class="kvl"><span>' + status[0].replace(/<sup>\d<\/sup>/, '') + tip(4, 'State: 0 — выключен, 1 — стартует, 2 — останавливается, 3 — работает, 4 — ожидание, 5 — ошибка. modWork: код режима и точка возврата алгоритма; расшифровка — на странице «Диагностика → Журнал» (блок под журналом). fHP(0x..): 01 — BoilerTogetherHeat.') + '</span></div><div class="stat">' + status[1] + '</div>' +
+		'<div class="legend2"><b>State:</b> 0 выключен, 1 стартует, 2 останавливается, 3 работает, 4 ожидание, 5 ошибка. <b>modWork:</b> код режима и точка возврата алгоритма — расшифровка на странице <a href="log.html">«Диагностика → Журнал»</a>. <b>fHP(0x..):</b> 01 — BoilerTogetherHeat.</div>';
+	st += '<div class="sbh">Времена</div>' + (by['Времена'] || []).map(function(r) { return kv(r[0], r[1] || '—'); }).join('');
+	put('st', st);
+	put('err', (by['Счетчики ошибок'] || []).map(function(r) { return kv(r[0], r[1]); }).join(''));
+	var g = by['Глобальные счетчики (Всего за весь период)'] || [], z = by['Сезонные счетчики'] || [];
+	put('gl', g.map(function(r, i) { return i == 0 ? '' : kv(r[0], r[1]); }).join('') + '<div class="sbh">Сезонные счётчики' + (z.length ? ' · сброс ' + z[0][1] : '') + '</div>' + z.map(function(r, i) { return i == 0 ? '' : kv(r[0], r[1]); }).join(''));
+	put('gl-since', g.length ? 'с ' + g[0][1] : '');
+	put('day', (by['Статистика за день'] || []).map(function(r) { return kv(r[0], r[1] === '' ? '—' : r[1]); }).join(''));
+}
+function sysPoll(d) {
+	if('state.uptime' in d) fixed.uptime = d['state.uptime'].replace(/(\d+)d/, '$1 д ').replace(/(\d+)h/, '$1 ч ').replace(/(\d+)m/, '$1 мин').trim();
+	if('state.start_dt' in d) fixed.start = d['state.start_dt'];
+	if('state.reset_cause' in d) fixed.cause = d['state.reset_cause'];
+	if('state.temp_rtc' in d) fixed.temp = Number(d['state.temp_rtc']).toFixed(2);
+	if('sys.free_ram' in d) fixed.ram = d['sys.free_ram'] + ' b';
+	if('sys.info' in d) render(d['sys.info']);
+}
+
+// ---- сброс и обслуживание ----
+function resetDue() {
+	if(!confirm('Перезагрузить контроллер? Тепловой насос будет штатно остановлен, счётчики и статистика сохранены.')) return;
+	api['do']('reset.controller', function(v, e) { if(e) stToast('Не выполнено (' + (ST_ERR[e] || e) + ').', true); else stToast('Команда сброса контроллера отправлена.'); });
+}
+function resetNet() {
+	if(!confirm('Сбросить сеть? Сетевой чип будет инициализирован заново, связь с контроллером на время пропадёт.')) return;
+	api['do']('net.apply', function(v, e) { if(e) stToast('Не выполнено (' + (ST_ERR[e] || e) + ').', true); else stToast('Команда сброса сети отправлена.'); });
+}
+function resetCnt() {
+	if($('reset_code').value != 'RESET') return;
+	if(!confirm('Сбросить сезонные счётчики? Часы работы и энергия за сезон обнулятся.')) return;
+	api['do']('reset.counters', function(v, e) { if(e) stToast('Не выполнено (' + (ST_ERR[e] || e) + ').', true); else location.reload(); });
+}
+window.onload = function() {
+	$('reset_code').addEventListener('input', function() { $('cnt-btn').disabled = this.value != 'RESET'; });
+	api.poll({k: ['state.reset_cause', 'state.uptime', 'state.temp_rtc', 'state.start_dt', 'sys.free_ram', 'sys.info']}, sysPoll);
+};
+</script>
+</head>
+<body class="system">
+<div id="menu" class="menu"><script src="menu.js"></script></div>
+<div class="content">
+<div class="grid">
+	<section class="card c4"><h3>Контроллер</h3><div id="ctl"></div></section>
+	<section class="card c4"><h3>Состояние ТН</h3><div id="st"></div></section>
+	<section class="card c4"><h3>Счётчики ошибок</h3><div id="err"></div></section>
+	<section class="card c4"><h3>Глобальные счётчики <span class="r" id="gl-since" style="color:var(--mute);font-weight:600"></span></h3><div id="gl"></div></section>
+	<section class="card c4"><h3>Статистика за день</h3><div id="day"></div></section>
+	<section class="card c4"><h3>Сброс и обслуживание</h3>
+		<div class="row" style="gap:10px;flex-wrap:wrap"><button class="btn2 bad" onclick="resetDue()">Сброс контроллера…</button><button class="btn2" onclick="resetNet()">Сброс сети…</button></div>
+		<div class="fnote">Сброс контроллера штатно останавливает ТН: гасит компрессор, даёт насосам доработать, сохраняет счётчики и статистику (до минуты при работающем ТН). Сброс сети теперь тоже с подтверждением.</div>
+		<div class="row" style="gap:10px;flex-wrap:wrap;margin-top:12px"><span style="color:var(--mute)">Введите RESET</span><label class="inp"><input id="reset_code" size="7" autocomplete="off" style="width:90px;text-align:left"></label><button class="btn2 bad" id="cnt-btn" onclick="resetCnt()" disabled>Сбросить сезонные счётчики…</button></div>
+		<div class="fnote">Сохранение статистики и подготовка к обновлению — в «Файлы и обновление». Для сброса всех счётчиков сразу используйте запрос RESET_CNT_ALL.</div></section>
+</div>
+</div>
+</body>
+</html>

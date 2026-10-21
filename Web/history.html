@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>История. Народный контроллер ТН</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<script src="scripts.js"></script>
+<script src="settings.js"></script>
+<script src="chart.js"></script>
+<script src="graphs.js"></script>
+<script>
+// История с SD-карты: hist2_head.csv (текущая раскладка столбцов) и hist2__<от>-<до>[_s<шаг>] (строки «ггггммддччммсс;значения...»).
+// Строка «<метка>;#;<ось[2]><имя>;...» внутри потока - описание раскладки, действует до следующего такого описания; потоку, начавшемуся
+// без него, подставляется раскладка hist2_head.csv. Старые файлы hist_ГГГГ.dat (метка до минуты, 16 столбцов) читаются по LEGACY.
+// Значения в файле целые: мощность W - в ваттах (кВт = /1000), COP - /100, режим ТН - как есть, остальное - десятые доли,
+// а у столбцов с цифрой 2 после буквы оси - сотые.
+var $ = function(id) { return document.getElementById(id); };
+// оси: [тип, заголовок дорожки, единица, высота, ступенчатый]
+var AXES = {T: ['Температуры', '°C', 190], P: ['Давление', 'бар', 90], F: ['Поток', 'м³/ч', 80], S: ['ЭРВ', 'шаг', 80], W: ['Потребление и мощность', 'кВт', 90],
+	H: ['Частота компрессора', 'Гц', 80, true], C: ['Полный COP', '', 80], V: ['Напряжение', 'В', 80], R: ['Проценты', '%', 80], D: ['Состояние и режим ТН', '', 70, true]};
+var ORDER = 'TPFSWHCVRD';
+// раскладка файлов прежнего формата hist_ГГГГ.dat
+var LEGACY = parseCols('TTOUT;TTIN;TTBOILER;TTCOMP;TTEVAING;TTEVAOUTG;TTCONING;TTCONOUTG;TTEVAOUT;FFLOWCON;SEEV;TOverHeat;HFreq;Wpower220;WpowerCO;CfullCOP'.split(';'));
+// расшифровка имён из шапки
+var DESC = {TOUT: 'улица', TIN: 'дом', TBOILER: 'бойлер', TCOMP: 'нагнетание', TEVAING: 'из геоконтура', TEVAOUTG: 'в геоконтур', TCONING: 'обратка', TCONOUTG: 'подача',
+	TEVAOUT: 'фреон, выход испарителя', TEVAIN: 'фреон, вход испарителя', TCOMPIN: 'вход компрессора', TCONOUT: 'фреон, выход конденсатора', TCONIN: 'фреон, вход конденсатора',
+	FLOWCON: 'поток конденсатора', FLOWEVA: 'поток испарителя', EEV: 'положение ЭРВ', OverHeat: 'перегрев', Freq: 'частота', power220: 'потребление, 220 В', powerCO: 'мощность выхода',
+	powerGEO: 'мощность геоконтура', fullCOP: 'Full COP', TsatEVA: 'температура кипения по давлению', TsatCON: 'температура конденсации по давлению',
+	OHtarget: 'цель перегрева', OverHeat2: 'перегрев на входе компрессора', HPState: 'состояние ТН × 100 + режим'};
+var UNIT = {T: '°C', P: 'бар', F: 'м³/ч', S: 'шаг', W: 'кВт', H: 'Гц', C: 'COP', V: 'В', R: '%', D: ''};
+var DEFAULT_SEL = ['TCONOUTG', 'TCONING', 'TOUT', 'TIN', 'Freq', 'power220', 'fullCOP'];
+
+var cols = [], sel = {}, xs = [], ys = [], chart = null, range = 0, loadedStep = 0;      // loadedStep - шаг выборки загруженных данных, с (0 - все записи)
+
+function parseCols(tokens) {          // «<ось>[2]<имя>» -> {axis, name, dec}
+	return tokens.map(function(t) {
+		t = t.replace(/[\r\n]/g, '');
+		var dec = t.charAt(1) == '2';
+		return {axis: t.charAt(0), name: t.substr(dec ? 2 : 1), dec: dec ? 100 : 10};
+	});
+}
+function scaleOf(c) { return c.axis == 'W' ? 1000 : c.axis == 'C' ? 100 : c.axis == 'D' ? 1 : c.dec; }
+function layoutOf(L) {                // столбец файла -> номер ряда страницы по имени и делитель
+	var idx = {}, m = {map: [], div: []};
+	cols.forEach(function(c, i) { idx[c.name] = i; });
+	L.forEach(function(c, j) { m.map[j] = idx[c.name]; m.div[j] = scaleOf(c); });
+	return m;
+}
+function lines(text, legacy) {        // дописывает строки текста в xs и ys
+	var lay = layoutOf(legacy ? LEGACY : cols);
+	text.split('\n').forEach(function(l) {
+		var a = l.split(';');
+		if(a.length < 2 || !/^\d{12}/.test(a[0])) return;          // шапка и мусор
+		if(a[1] === '#') { lay = layoutOf(parseCols(a.slice(2))); return; }
+		var d = a[0], n = xs.length;
+		xs.push(new Date(+d.substr(0, 4), +d.substr(4, 2) - 1, +d.substr(6, 2), +d.substr(8, 2), +d.substr(10, 2), d.length >= 14 ? +d.substr(12, 2) : 0).getTime());
+		for(var i = 0; i < cols.length; i++) ys[i].push(null);
+		for(var j = 0; j < lay.map.length; j++) {
+			var i = lay.map[j];
+			if(i === undefined) continue;
+			var v = a[j + 1] === undefined || a[j + 1] === '' ? NaN : Number(a[j + 1]);
+			ys[i][n] = isNaN(v) ? null : v / lay.div[j];
+		}
+	});
+}
+
+var STEPS = [10, 30, 60, 300, 900, 3600, 7200, 21600], loadSeq = 0;
+function p2(n) { return n < 10 ? '0' + n : '' + n; }
+function stamp(d) { return d.getFullYear() + p2(d.getMonth() + 1) + p2(d.getDate()) + p2(d.getHours()) + p2(d.getMinutes()) + p2(d.getSeconds()); }
+function dtl(d) { return d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()) + 'T' + p2(d.getHours()) + ':' + p2(d.getMinutes()); }
+function autoStep(span) {             // не больше ~5000 строк на период; короткие периоды отдаются целиком
+	var need = Math.ceil(span / 5000);
+	if(need <= 10) return 0;
+	for(var i = 0; i < STEPS.length; i++) if(STEPS[i] >= need) return STEPS[i];
+	return STEPS[STEPS.length - 1];
+}
+function sortData() {                 // файлы разных форматов могут перекрываться или идти не по порядку: ряд для графика должен возрастать
+	var n = xs.length, ok = true, ord = [], i;
+	for(i = 1; i < n; i++) if(xs[i] < xs[i - 1]) { ok = false; break; }
+	if(ok) return;
+	for(i = 0; i < n; i++) ord.push(i);
+	ord.sort(function(a, b) { return xs[a] - xs[b] || a - b; });
+	xs = ord.map(function(j) { return xs[j]; });
+	ys = ys.map(function(col) { return ord.map(function(j) { return col[j]; }); });
+}
+// Период делится по годам (файлы годовые); за каждый год сначала прежний формат, потом текущий - так время остаётся возрастающим.
+function loadData() {
+	var from = new Date($('d0').value), to = new Date($('d1').value);
+	if(isNaN(from.getTime()) || isNaN(to.getTime()) || to <= from) { put('state', 'Неверный период: «с» должно быть раньше «по».'); return; }
+	var sv = $('stp').value, step = sv == 'auto' ? autoStep((to - from) / 1000) : +sv, jobs = [], seq = ++loadSeq;
+	for(var y = from.getFullYear(); y <= to.getFullYear(); y++) {
+		var a = stamp(y == from.getFullYear() ? from : new Date(y, 0, 1, 0, 0, 0)), b = stamp(y == to.getFullYear() ? to : new Date(y, 11, 31, 23, 59, 59));
+		jobs.push({legacy: true, a: a.substr(0, 12), b: b.substr(0, 12)});
+		jobs.push({legacy: false, a: a, b: b});
+	}
+	xs = []; ys = cols.map(function() { return []; }); loadedStep = step;
+	var net = 0, k = 0;
+	(function next() {
+		if(seq != loadSeq) return;
+		if(k >= jobs.length) {
+			sortData();
+			put('state', net && !xs.length ? 'Не удалось загрузить данные (нет связи).' : xs.length ? (step ? 'Шаг выборки ' + stepText(step) + '.' : '') : 'За выбранный период данных нет');
+			draw();
+			return;
+		}
+		var j = jobs[k++];
+		put('state', 'Загрузка… (' + k + ' из ' + jobs.length + ')');
+		gFetch((j.legacy ? 'hist__' : 'hist2__') + j.a + '-' + j.b + (step ? '_s' + step : ''), function(t) { lines(t, j.legacy); next(); },
+			function(c) { if(c != 404) net++; next(); });
+	})();
+}
+function clearData() { loadSeq++; xs = []; ys = cols.map(function() { return []; }); loadedStep = 0; draw(); put('state', ''); }
+function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
+
+function draw() {
+	var lanes = [];
+	ORDER.split('').forEach(function(ax) {
+		var A = AXES[ax], ser = [];
+		cols.forEach(function(c, i) {
+			if(c.axis != ax || !sel[i]) return;
+			ser.push({name: c.name + (DESC[c.name] ? ' ' + DESC[c.name] : ''), color: gColor(i), x: xs, y: ys[i], type: A[3] ? 'step' : 'line', area: !ser.length && ax == 'T', w: 1.8, fmt: ax == 'W' ? 3 : ax == 'C' ? 2 : 1});
+		});
+		if(ser.length) lanes.push({title: A[0], unit: A[1], h: A[2], series: ser, min: ax == 'H' ? 0 : undefined, minSpan: ax == 'T' ? 2 : 1});
+	});
+	if(!lanes.length || !xs.length) { $('zhint').style.display = 'none'; $('ch').innerHTML = '<div class="cht-empty">' + (xs.length ? 'Выберите ряды слева' : 'Нет данных') + '</div>'; return; }
+	if(!chart) chart = new SvgChart($('ch'), {});
+	chart.o = {lanes: lanes, nav: true, range: range, onWindow: winChanged};
+	chart.draw();
+	winChanged(chart.window(), !chart.win);
+	for(var i = 0; i < cols.length; i++) { var y = ys[i]; gVal(String(i), y.length && y[y.length - 1] != null ? Math.round(y[y.length - 1] * 100) / 100 : ''); }
+}
+function stepText(s) { return s < 60 ? s + ' с' : s < 3600 ? s / 60 + ' мин' : s / 3600 + ' ч'; }
+function winChanged(w, isAuto) {
+	var span = (w[1] - w[0]) / 1000, z = $('zhint');          // в окне меньше пяти точек выборки - деталей не видно
+	if(z) {
+		var few = loadedStep && xs.length && span < loadedStep * 5;
+		z.style.display = few ? '' : 'none';
+		if(few) z.innerHTML = 'Данные загружены с шагом ' + stepText(loadedStep) + ', а окно ' + stepText(Math.max(1, Math.round(span))) + ' — деталей не видно. Для детализации загрузите короткий период или выберите шаг меньше и нажмите «Загрузить».';
+	}
+	var c = document.querySelectorAll('#ranges .chip');
+	for(var i = 0; i < c.length; i++) c[i].classList.toggle('on', isAuto && Number(c[i].getAttribute('data-m')) == range);
+}
+function setRange(m) { range = m; if(chart) chart.win = null; draw(); }
+function resetZoom() { if(chart) chart.setWindow(null); }
+function toggle(k, on, quiet) {
+	if(k === null) { gSave('hist.sel', sel); draw(); return; }
+	if(on) sel[k] = true; else delete sel[k];
+	if(!quiet) { gSave('hist.sel', sel); draw(); }
+}
+function setHist(on, key) {           // key: ohp.hist - запись истории, ohp.histdet - детализация ВКЛ/ВЫКЛ компрессора
+	key = key || 'ohp.hist';
+	var q = {}; q[key] = on ? 1 : 0;
+	api.set(q, function(D, E, err) {
+		if(err || E[key]) stToast('Контроллер не принял значение (' + (err ? 'нет связи' : ST_ERR[E[key]] || E[key]) + ').', true);
+		else { stUnsaved(true); stRefresh(); }
+	});
+}
+function iso(d) { return d.getFullYear() + '-' + SvgChart.pad2(d.getMonth() + 1) + '-' + SvgChart.pad2(d.getDate()); }
+
+window.onload = function() {
+	stPanel({apply: false, note: 'Запись истории на SD сохраняется записью в EEPROM.'});
+	gExportInit($('tool'), function() { return chart; }, 'grafiki-istoriya');
+	var now = new Date();
+	$('d1').value = dtl(new Date(now.getTime() + 60000));
+	$('d0').value = dtl(new Date(now.getTime() - 86400000));
+	api.get({k: ['ohp.hist', 'ohp.histdet']}, function(D) { $('get_ohp-hist').checked = D['ohp.hist'] === true; $('get_ohp-histdet').checked = D['ohp.histdet'] === true; });
+	gFetch('hist2_head.csv', function(t) {
+		cols = parseCols(t.replace(/[\r\n]+$/, '').split(';').slice(1));
+		sel = gLoad('hist.sel', null);
+		if(!sel) { sel = {}; cols.forEach(function(c, i) { if(DEFAULT_SEL.indexOf(c.name) >= 0) sel[i] = true; }); }
+		var items = cols.map(function(c, i) { return {k: String(i), name: c.name, sub: DESC[c.name] || '', unit: UNIT[c.axis] || '', color: gColor(i)}; });
+		gSide($('side'), [{t: '', items: items}], sel, toggle);
+		put('side-n', cols.length);
+		loadData();
+	}, function() { put('state', 'Не удалось получить список рядов (hist2_head.csv): на карте нет истории.'); });
+};
+</script>
+</head>
+<body class="history">
+<div id="menu" class="menu"><script src="menu.js"></script></div>
+<div class="content">
+<div class="gwrap">
+	<aside class="card gside">
+		<h3>Ряды · <span id="side-n">–</span> <span class="r" style="cursor:pointer;font-size:12px" onclick="gAll($('side'), false, toggle)">Скрыть все</span></h3>
+		<div id="side"></div>
+		<div class="gbox"><h4>Запись на SD</h4>
+			<div class="field"><div class="l">Писать историю раз в минуту<small>Файлы истории можно скачать на странице «Файлы и обновление».</small></div><input type="checkbox" class="sw sm" id="get_ohp-hist" onchange="setHist(this.checked, 'ohp.hist')"></div>
+			<div class="field"><div class="l">Детализация ВКЛ/ВЫКЛ компрессора<span class="hint" tabindex="0" data-tip="Вокруг пуска и останова компрессора история пишется каждые 10 секунд вместо минуты: с начала пуска до 5 минут после включения компрессора и 5 минут после его выключения. Нужна для разбора динамики пуска (ЭРВ, давления, перегрев). Файл рассчитан с запасом на такие записи; если места не хватает на минутные записи до конца года, детализация приостанавливается.">i</span><small>10 с, 5 минут</small></div><input type="checkbox" class="sw sm" id="get_ohp-histdet" onchange="setHist(this.checked, 'ohp.histdet')"></div>
+		</div>
+	</aside>
+	<section class="card">
+		<div class="gtool" id="tool">
+			<span class="row" style="gap:8px;color:var(--mute)">с <input type="datetime-local" id="d0"> по <input type="datetime-local" id="d1"></span>
+			<select id="stp" title="Шаг выборки: контроллер оставляет по одной записи за шаг, чтобы за длинный период не пересылать лишнее"><option value="auto">шаг: авто</option><option value="0">все записи</option><option value="10">10 с</option><option value="30">30 с</option><option value="60">1 мин</option><option value="300">5 мин</option><option value="900">15 мин</option><option value="3600">1 ч</option></select>
+			<button class="btn2 p" onclick="loadData()">Загрузить</button><button class="btn2" onclick="clearData()">Очистить</button>
+			<span class="grow"></span>
+			<span id="ranges" class="chips"><span class="chip" data-m="30" onclick="setRange(30)">30 мин</span><span class="chip" data-m="60" onclick="setRange(60)">1 ч</span><span class="chip" data-m="180" onclick="setRange(180)">3 ч</span><span class="chip" data-m="1440" onclick="setRange(1440)">1 д</span><span class="chip" data-m="4320" onclick="setRange(4320)">3 д</span><span class="chip" data-m="10080" onclick="setRange(10080)">нед</span><span class="chip" data-m="43200" onclick="setRange(43200)">мес</span><span class="chip on" data-m="0" onclick="setRange(0)">все</span></span>
+			<span class="chip" onclick="resetZoom()">⟲ масштаб</span>
+			<span id="exp"></span>
+		</div>
+		<div id="state" class="gnote" style="margin:0 0 6px"></div>
+		<div id="zhint" class="gnote" style="margin:0 0 6px;color:var(--bad);display:none"></div>
+		<div id="ch" style="min-height:300px"><div class="cht-empty">Загрузка…</div></div>
+		<div class="gnote">Протяжка мышью по графику — масштаб по времени, двойной щелчок — сброс, окно можно двигать в навигаторе. Масштаб по вертикали у каждой дорожки подбирается сам. Если точек очень много, при отрисовке они прореживаются (сохраняются пики).</div>
+	</section>
+</div>
+</div>
+<script>document.getElementById('exp').innerHTML = gExportMenu();</script>
+</body>
+</html>

@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Задачи RTOS. Народный контроллер ТН</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<script src="scripts.js"></script>
+<script src="settings.js"></script>
+<style>
+table.t th.s{cursor:pointer;user-select:none}
+table.t th.s:hover{color:var(--ink)}
+table.t td.m{font-family:'DejaVu Sans Mono',Consolas,monospace;font-size:12.5px;font-variant-numeric:tabular-nums}
+.bar{display:flex;align-items:center;gap:10px}
+.bar i{display:block;height:8px;border-radius:99px;background:var(--bg);flex:1;position:relative;overflow:hidden;min-width:80px}
+.bar i b{position:absolute;left:0;top:0;bottom:0;background:var(--acc);border-radius:99px}
+.bar i b.hot{background:var(--heat)}.bar i b.crit{background:var(--bad)}
+.bar span{width:34px;text-align:right;font-size:12px;color:var(--mute)}
+.stt{display:inline-block;padding:2px 9px;border-radius:99px;font-size:11px;font-weight:800;background:var(--cell);color:var(--mute)}
+.stt.Ready{background:var(--tok);color:var(--ok)}.stt.Suspended{background:var(--tw);color:var(--heat)}
+td.nm small{display:block;color:var(--mute);font-weight:500;font-size:11.5px;font-family:inherit}
+</style>
+<script>
+// Задачи FreeRTOS одной таблицей: sys.tasks (опрос раз в секунду) и запас наблюдателя sys.wdt (читается при открытии и
+// после «Обнулить замеры»: максимум молчания меняется редко и смотрят его осознанно). Сортировка - по клику на заголовок.
+urlupdate = 1000;
+var $ = function(id) { return document.getElementById(id); };
+function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
+function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
+
+var tasks = [], wdt = {}, sortCol = 0, sortDir = 1;
+try { var sv = JSON.parse(sessionStorage.getItem('rtosSort') || 'null'); if(sv) { sortCol = sv[0]; sortDir = sv[1]; } } catch(e) {}
+var COLS = [['№', 0, 'num'], ['Задача ', 1, 'str'], ['Статус', 2, 'str'], ['Приоритет', 3, 'num'], ['Стек мин., 4 Б', 4, 'num'], ['Время, мс', 5, 'num'], ['Итого', 6, 'pct'], ['Молчание / предел, с', 7, 'num'], ['Запас наблюдателя', 8, 'num']];
+
+function parseTasks(v) {
+	tasks = v.split('\n').filter(function(l) { return l.trim() !== ''; }).map(function(l) {
+		var a = l.split('|'), w = wdt[a[1]] || {};
+		return {n: +a[0], name: a[1], st: a[2], pr: +a[3], stack: +a[4], time: +a[5], pct: a[6], pctv: parseFloat(String(a[6]).replace('<', '')) || 0, sil: w.sil, lim: w.lim, wp: w.p, susp: w.susp};
+	});
+	draw();
+}
+function parseWdt(v) {
+	wdt = {};
+	v.split(';').filter(Boolean).forEach(function(s) {
+		var a = s.split('|'), m = /([\d.]+) of ([\d.]+) s \((\d+)%\)(, suspended now)?/.exec(a[1] || '');
+		if(m) wdt[a[0]] = {sil: +m[1], lim: +m[2], p: +m[3], susp: !!m[4]};
+	});
+	tasks.forEach(function(t) { var w = wdt[t.name] || {}; t.sil = w.sil; t.lim = w.lim; t.wp = w.p; t.susp = w.susp; });
+	draw();
+}
+var KEY = [function(t) { return t.n; }, function(t) { return t.name.toLowerCase(); }, function(t) { return t.st; }, function(t) { return t.pr; }, function(t) { return t.stack; },
+	function(t) { return t.time; }, function(t) { return t.pctv; }, function(t) { return t.sil === undefined ? -1 : t.sil; }, function(t) { return t.wp === undefined ? -1 : t.wp; }];
+function sortBy(c) {
+	if(c == sortCol) sortDir = -sortDir; else { sortCol = c; sortDir = 1; }
+	try { sessionStorage.setItem('rtosSort', JSON.stringify([sortCol, sortDir])); } catch(e) {}
+	draw();
+}
+function draw() {
+	var k = KEY[sortCol], list = tasks.slice().sort(function(a, b) { var x = k(a), y = k(b); return (x > y ? 1 : x < y ? -1 : a.name < b.name ? -1 : 1) * sortDir; });
+	put('head', '<tr>' + COLS.map(function(c, i) { return '<th class="s" onclick="sortBy(' + i + ')">' + c[0] + (i == sortCol ? (sortDir > 0 ? ' ↓' : ' ↑') : '') + '</th>'; }).join('') + '</tr>');
+	put('rows', list.map(function(t) {
+		var bar = t.wp === undefined ? '' : '<div class="bar"><i><b class="' + (t.wp >= 80 ? 'crit' : t.wp >= 50 ? 'hot' : '') + '" style="width:' + Math.max(1, Math.min(100, t.wp)) + '%"></b></i><span>' + t.wp + '%</span></div>';
+		return '<tr><td class="m">' + t.n + '</td><td class="n nm">' + esc(t.name) + (t.susp ? '<small>приостановлена сейчас</small>' : '') + '</td><td><span class="stt ' + esc(t.st) + '">' + esc(t.st) + '</span></td><td class="m">' + t.pr + '</td><td class="m">' + t.stack + '</td>' +
+			'<td class="m">' + String(t.time).replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + '</td><td class="m">' + esc(t.pct) + '</td>' +
+			'<td class="m">' + (t.sil === undefined ? '—' : t.sil.toFixed(1) + ' из ' + t.lim.toFixed(0)) + '</td><td>' + bar + '</td></tr>';
+	}).join(''));
+}
+function resetTime() {
+	if(confirm('Обнулить статистику времени выполнения задач?')) api['do']('tasks.reset', function(v, e) { if(e) stToast('Не выполнено (' + (ST_ERR[e] || e) + ').', true); });
+}
+function resetWdt() {
+	if(!confirm('Обнулить накопленные замеры наблюдателя? Отсчёт начнётся заново и ни на что, кроме этих чисел, не влияет.')) return;
+	api['do']('wdt.reset', function(v, e) {
+		if(e) { stToast('Не выполнено (' + (ST_ERR[e] || e) + ').', true); return; }
+		api.get({k: ['sys.wdt']}, function(D) { parseWdt(D['sys.wdt'] || ''); stToast('Замеры наблюдателя обнулены.'); });   // читает уже обнулённые замеры
+	});
+}
+window.onload = function() {
+	draw();
+	api.poll({k: ['sys.tasks']}, function(d) { if('sys.tasks' in d) parseTasks(d['sys.tasks']); });
+	api.get({k: ['sys.wdt']}, function(D) { parseWdt(D['sys.wdt'] || ''); });
+};
+</script>
+</head>
+<body class="freertos">
+<div id="menu" class="menu"><script src="menu.js"></script></div>
+<div class="content">
+<div class="grid">
+	<section class="card c12"><h3>Задачи FreeRTOS и запас наблюдателя <span class="r row" style="gap:10px;color:var(--mute);font-weight:600">обновление раз в 1 с <button class="btn2" style="padding:6px 12px" onclick="resetTime()">Обнулить время…</button><button class="btn2" style="padding:6px 12px" onclick="resetWdt()">Обнулить замеры наблюдателя…</button></span></h3>
+		<div class="scrollx"><table class="t"><thead id="head"></thead><tbody id="rows"></tbody></table></div>
+		<div class="fnote">Щелчок по заголовку сортирует таблицу (второй щелчок — в обратную сторону), сортировка сохраняется при обновлении. <b>Запас наблюдателя</b> — максимум молчания задачи из предела: чем ближе к 100 %, тем ближе сброс по сторожевому таймеру; считается отдельным запросом при открытии страницы и после «Обнулить замеры». «Приостановлена сейчас» — законная пауза задачи, не ошибка. Предел у каждой задачи свой; показано самое долгое молчание с момента загрузки или последнего обнуления.</div></section>
+</div>
+</div>
+</body>
+</html>

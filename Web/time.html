@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Время. Народный контроллер ТН</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<script src="scripts.js"></script>
+<script src="settings.js"></script>
+<style>
+.clock{font-size:72px;font-weight:800;letter-spacing:-3px;line-height:1}
+.clockdate{font-size:20px;font-weight:800;margin-top:10px}
+.cnote{color:var(--mute);margin-top:14px;line-height:1.5}
+</style>
+<script>
+// Дата и время: часы контроллера (state.time, state.date), установка вручную, NTP-сервер и синхронизации.
+var $ = function(id) { return document.getElementById(id); };
+function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
+function f(n, o) { o.key = 'time.' + n.toLowerCase(); return o; }
+var DAYS = ['воскресенье', 'понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота'];
+
+// Общий опрос страницы: часы контроллера и итог последней синхронизации
+function timePoll(d) {
+	if('state.time' in d && d['state.time']) put('clock', d['state.time']);
+	var dt = /^(\d+)\.(\d+)\.(\d+)$/.exec(d['state.date'] || '');
+	if(dt) put('clockdate', DAYS[new Date(dt[3], dt[2] - 1, dt[1]).getDay()] + ', ' + dt[1] + '.' + dt[2] + '.' + dt[3]);
+	if('time.ntp_result' in d) ntpShow(d['time.ntp_result']);
+}
+// time.ntp_result: «номер попытки;код;ЧЧ:ММ:СС» - итог последней синхронизации (пусто, пока попыток не было). Коды: Clock.h, NTP_RES_*
+var NTP_TXT = {1: ['ok', '✓ время получено'], 2: ['bad', '✕ DNS не отвечает'], 3: ['bad', '✕ сервер времени не ответил'], 4: ['bad', '✕ сервер ответил неверно'],
+	5: ['bad', '✕ сеть занята, повторите'], 6: ['bad', '✕ не удалось открыть сокет']};
+var ntpSeq = '', ntpWait = false;
+function ntpShow(v) {
+	var a = v.split(';'), e = $('ntpr');
+	if(a.length < 3) { ntpSeq = ''; if(!ntpWait) { e.className = 'tag'; e.innerHTML = 'результат синхронизации появится здесь'; } return; }
+	if(ntpWait && a[0] == ntpSeq) return;			// ещё прежний итог: ждём новый
+	var t = NTP_TXT[a[1]] || ['bad', '✕ код ' + a[1]];
+	ntpSeq = a[0];
+	ntpWait = false;
+	e.className = 'tag ' + t[0];
+	e.innerHTML = t[1] + ' · ' + a[2];
+}
+// «Обновить время»: контроллер выполняет запрос в ближайшем проходе основного цикла (DNS и до 5 попыток), итог ждём до 30 с
+function updateNtp() {
+	if(ntpWait) return;
+	var e = $('ntpr'), n = 0;
+	ntpWait = true;
+	e.className = 'tag';
+	e.innerHTML = '⌛ запрос времени у сервера…';
+	api['do']('ntp.update', function(v, err) {
+		if(err) { ntpWait = false; e.className = 'tag bad'; e.innerHTML = '✕ контроллер не принял команду (' + (ST_ERR[err] || err) + ')'; return; }
+		(function poll() {
+			refreshTime();
+			if(++n < 20 && ntpWait) setTimeout(poll, 1500);
+			else if(ntpWait) { ntpWait = false; e.className = 'tag bad'; e.innerHTML = '✕ итог не получен за 30 с, проверьте журнал'; }
+		})();
+	});
+}
+// Поля даты и времени перечитываются с контроллера (после синхронизации и после «Применить»), итог синхронизации - тоже
+function refreshTime() {
+	api.get({k: ['time.ntp_result', 'time.date', 'time.time']}, function(D, E, err) {
+		if(err) return;
+		stSetK($('k-time-date'), 'time.date', D['time.date']); stSetK($('k-time-time'), 'time.time', D['time.time']);
+		ntpShow(D['time.ntp_result']);
+	});
+}
+window.stAfterApply = refreshTime;
+
+window.onload = function() {
+	stPanel();
+	stFields('t1', [
+		f('DATE', {k: 'text', max: 10, mono: 1, t: 'Дата', h: 'формат дд.мм.гггг'}),
+		f('TIME', {k: 'text', max: 5, mono: 1, t: 'Время', h: 'формат чч:мм'}),
+		f('NTP', {k: 'text', max: 40, t: '<span id="ntp-name">NTP</span>-сервер', h: 'адрес сервера точного времени'}),
+		f('UPDATE', {k: 'sw', t: 'Синхронизация с сервером раз в сутки'}),
+		f('UPDATE_I2C', {k: 'sw', t: 'Синхронизация раз в час с I2C-часами', h: 'нужна, если для внутренних часов используется встроенная RC-цепочка', n: [1, 'Необходимо использовать, если для внутренних часов используется встроенная RC-цепочка.']})
+	]);
+	stLoadK();
+	api.init(function(v) { if(v) put('ntp-name', v.caps.time_proto); });
+	api.poll({k: ['state.time', 'state.date', 'time.ntp_result']}, timePoll);
+};
+</script>
+</head>
+<body class="time">
+<div id="menu" class="menu"><script src="menu.js"></script></div>
+<div class="content">
+<div class="grid">
+	<section class="card c5"><h3>Часы контроллера</h3>
+		<div class="clock" id="clock">–:–</div><div class="clockdate" id="clockdate"></div>
+		<div class="cnote">Время влияет на расписания, сигнал «жизни» в 12:00, ночной тариф, статистику и историю.</div></section>
+	<section class="card c7"><h3>Установка времени</h3><div id="t1"></div>
+		<div class="row" style="gap:12px;flex-wrap:wrap;margin-top:12px"><button class="btn2" onclick="updateNtp()">Обновить время с сервера</button><span class="tag" id="ntpr" style="font-size:12.5px;padding:7px 12px">результат синхронизации появится здесь</span></div></section>
+</div>
+</div>
+</body>
+</html>

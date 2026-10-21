@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Тест. Народный контроллер ТН</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<script src="scripts.js"></script>
+<script src="settings.js"></script>
+<style>
+.modes{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.mode{border:1px solid var(--line);border-radius:14px;padding:12px 14px;cursor:pointer;background:var(--card)}
+.mode b{display:block;margin-bottom:4px}
+.mode small{color:var(--mute);font-size:12px;line-height:1.4;display:block}
+.mode.on{border-color:var(--acc);background:var(--acc2)}
+.mode.lock{cursor:not-allowed;opacity:.7}
+.danger{background:var(--warnbg);border:1px solid var(--warnbd);border-radius:16px;padding:16px 18px}
+.danger .t{display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+.danger .t b{color:var(--warnfg)}
+.danger p{margin:8px 0 0;color:var(--mute);font-size:12.5px;line-height:1.5}
+.lockable.locked{opacity:.5;pointer-events:none}
+.desc{margin-top:10px;display:flex;gap:30px;flex-wrap:wrap;color:var(--mute)}
+.desc b{color:var(--ink)}
+@media(max-width:1000px){.modes{grid-template-columns:1fr 1fr}}
+</style>
+<script>
+// Тест и ручное управление. Режим тестирования (ключ test.mode): NORMAL, SAFE_TEST, TEST, HARD_TEST. Органы управления ниже
+// (реле, ЭРВ, инвертор) заблокированы, пока ТН работает; «Снять блокировку» открывает их осознанно.
+urlupdate = 2000;
+var $ = function(id) { return document.getElementById(id); };
+function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
+var MODES = [
+	['NORMAL', 'обычный режим, в котором эксплуатируется ТН'],
+	['SAFE_TEST', 'датчики из поля «Тест», устройства эмулируются. Безопасный'],
+	['TEST', 'датчики из «Теста», устройства работают, кроме компрессора. Почти безопасный'],
+	['HARD_TEST', 'датчики из «Теста», работает всё, и компрессор. Небезопасно, можно сломать ТН']
+];
+var working = true, cur = 0;
+
+function drawModes() {
+	put('modes', MODES.map(function(m, i) {
+		return '<div class="mode' + (i == cur ? ' on' : '') + (working ? ' lock' : '') + '" onclick="setMode(' + i + ')"><b>' + m[0] + '</b><small>' + m[1] + '</small></div>';
+	}).join(''));
+}
+function setMode(i) {
+	if(working) { stToast('Смена режима недоступна, пока ТН работает.', true); return; }
+	if(i == cur) return;
+	if(i > 1 && !confirm('Режим ' + MODES[i][0] + (i == 3 ? ' небезопасен: компрессор может быть повреждён.' : ': исполнительные устройства будут работать.') + ' Включить?')) return;
+	api.set({'test.mode': i}, function(D, E, err) {
+		if(err || E['test.mode']) { stToast('Режим не принят (' + (err ? 'нет связи' : ST_ERR[E['test.mode']] || E['test.mode']) + ').', true); return; }
+		cur = i; drawModes();
+		api.get({k: ['test.remark']}, function(D2) { put('remark', stEsc(D2['test.remark'] || '').replace(/</g, '&lt;')); });
+	});
+}
+function lock() {
+	var ov = $('manual_override').checked, locked = working && !ov;
+	[].forEach.call(document.querySelectorAll('.lockable'), function(e) { e.classList.toggle('locked', locked); });
+	[].forEach.call(document.querySelectorAll('.lockable input, .lockable button'), function(e) { e.disabled = locked; });
+}
+var relays = [];
+function testPoll(d) {
+	if('state.work' in d) { working = d['state.work']; drawModes(); lock(); }
+	if('test.mode' in d) { cur = d['test.mode']; drawModes(); }
+	if('test.remark' in d) put('remark', stEsc(d['test.remark']).replace(/</g, '&lt;'));
+	if('state.error' in d) { var v = d['state.error']; put('err', v == 'OK' ? '<b class="okc">OK</b>' : '<b class="errc">' + stEsc(v).replace(/</g, '&lt;') + '</b>'); }
+	if('eev.pospp' in d) put('eev-pos', d['eev.pospp']);
+	if('fc.cfc' in d) put('fc-cur', Number(d['fc.cfc']).toFixed(1));
+	if('fc.info1' in d) put('fc-pw', d['fc.info1']);
+	relays.forEach(function(R) {
+		var key = 'relay.' + R + '.on', el = $(stKid(key));
+		if(el && key in d && document.activeElement !== el) stSetK(el, key, d[key]);
+	});
+}
+function relayRow(R) {
+	var k = function(a) { return 'relay.' + R + '.' + a; };
+	return '<tr><td class="n">' + R + '<span class="d">' + stCell(k('note'), {k: 'ro', init: ''}) + '</span></td><td><span class="code">D' + stCell(k('pin'), {k: 'ro'}) + '</span></td>' +
+		'<td>' + stCell(k('on'), {k: 'sw', now: 1, nol: 1}) + '</td></tr>';
+}
+function apiErr(D, E, err, k) { return err ? 'нет связи' : ST_ERR[E[k]] || E[k]; }
+function eevSet(key, id) {
+	var v = $(id).value;
+	if(v === '') return;
+	var p = {};
+	p[key] = v;
+	api.set(p, function(D, E, err) { var bad = err || E[key]; stToast(bad ? 'ЭРВ не принял значение (' + apiErr(D, E, err, key) + ').' : 'Положение ЭРВ задано.', !!bad); });
+}
+function eevZero() {
+	if(!confirm('Установить ЭРВ в 0? Шаговый двигатель пройдёт до упора.')) return;
+	api['do']('eev.zero', function(v, e) { stToast(e ? 'ЭРВ: ' + (ST_ERR[e] || e) : 'ЭРВ: ' + (v === 0 ? 'выполнено' : 'код ' + v), !!e); }, undefined, 30000);
+}
+function fcOnOff(on) {
+	api.set({'fc.on_off': on ? 1 : 0}, function(D, E, err) { if(err || E['fc.on_off']) stToast('Инвертор не принял команду (' + apiErr(D, E, err, 'fc.on_off') + ').', true); });
+}
+function fcSet() {
+	var v = $('get_pfc-fc').value;
+	if(v === '') return;
+	api.set({'fc.fc': v}, function(D, E, err) { var bad = err || E['fc.fc']; stToast(bad ? 'Инвертор не принял частоту (' + apiErr(D, E, err, 'fc.fc') + ').' : 'Целевая частота задана.', !!bad); });
+}
+function fcReset() {
+	if(!confirm('Сбросить инвертор?')) return;
+	api['do']('reset.fc', function(v, e) { stToast('Сброс инвертора: ' + (e ? ST_ERR[e] || e : 'выполнен'), !!e); });
+}
+
+window.onload = function() {
+	drawModes();
+	$('manual_override').addEventListener('change', lock);
+	stDevices('relay', function(list) {
+		relays = list;
+		$('rows').innerHTML = list.map(relayRow).join('');
+		stLoadK();
+		lock();
+		api.poll({k: ['state.work', 'test.mode', 'test.remark', 'state.error', 'eev.pospp', 'fc.cfc', 'fc.info1'].concat(stDevKeys('relay', list, ['on']))}, testPoll);
+	});
+	api.get({k: ['fc.on_off', 'fc.name', 'fc.fc', 'eev.pins', 'eev.pos', 'eev.posp']}, function(D) {
+		if('fc.on_off' in D) $('get_pfc-on_off').checked = D['fc.on_off'] === true;
+		if('fc.name' in D) put('fc-name', stEsc(D['fc.name']));
+		if('fc.fc' in D) $('get_pfc-fc').value = D['fc.fc'];
+		if('eev.pins' in D) put('pins', D['eev.pins'].split(' ').map(function(p) { return '<span class="code">' + stEsc(p) + '</span>'; }).join(' '));
+		if('eev.pos' in D) $('get_peev-pos').value = D['eev.pos'];
+		if('eev.posp' in D) $('get_peev-posp').value = D['eev.posp'];
+	});
+};
+</script>
+</head>
+<body class="test">
+<div id="menu" class="menu"><script src="menu.js"></script></div>
+<div class="content">
+<div class="grid">
+	<section class="card c12"><h3>Режим тестирования</h3><div class="modes" id="modes"></div>
+		<div class="desc"><span>Описание: <b id="remark">–</b></span><span>Ошибка: <span id="err">–</span></span><span style="flex:1;min-width:260px;font-size:12px">Значения датчиков в тест-режимах задаются полем «Тест» в «Оборудование → Температура». Смена режима недоступна, пока ТН работает.</span></div></section>
+	<section class="card c12" style="padding:0;background:none;box-shadow:none;border:0"><div class="danger"><div class="t"><span><b>Ручное управление.</b> Необдуманные действия могут повредить оборудование.</span><span style="flex:1"></span><label class="row" style="gap:10px;font-weight:800">Снять блокировку<input type="checkbox" class="sw" id="manual_override"></label></div>
+		<p>Пока ТН работает, органы управления ниже заблокированы. Снятие блокировки даёт управлять реле, ЭРВ и инвертором, но ТН продолжает работать и может перебить ваши изменения. Компрессор без протока по обоим контурам и ТЭН без протока можно повредить; ЭРВ при работающем компрессоре крутите осторожно, следите за перегревом.</p></div></section>
+	<section class="card c6 lockable"><h3>Реле</h3>
+		<div class="scrollx"><table class="t"><thead><tr><th>Реле</th><th>Pin</th><th>Управление</th></tr></thead><tbody id="rows"></tbody></table></div></section>
+	<section class="card c6 lockable"><h3>ЭРВ <span class="r" style="color:var(--mute);font-weight:600">выводы: <span id="pins">–</span></span></h3>
+		<div class="field"><div class="l">Текущее положение<small>шаги</small></div><b id="eev-pos">–</b></div>
+		<div class="field"><div class="l">Задать, шаги</div><label class="inp"><input id="get_peev-pos" type="number" step="1"><u>шаг</u></label><button class="btn2" id="set-eev" onclick="eevSet('eev.pos', 'get_peev-pos')">Задать</button></div>
+		<div class="field"><div class="l">Задать, %</div><label class="inp"><input id="get_peev-posp" type="number" step="1"><u>%</u></label><button class="btn2" id="set-eevp" onclick="eevSet('eev.posp', 'get_peev-posp')">Задать</button></div>
+		<div class="act" style="margin:8px 0 14px"><button class="btn2" id="set_zeroEEV" onclick="eevZero()">Установка в 0</button></div>
+		<h3 style="margin-top:6px">Инвертор · <span id="fc-name">–</span> <span class="r"><button class="btn2 bad" style="padding:6px 12px" onclick="fcReset()">Сброс инвертора</button></span></h3>
+		<div class="field"><div class="l">Включение</div><input type="checkbox" class="sw" id="get_pfc-on_off" onchange="fcOnOff(this.checked)"></div>
+		<div class="field"><div class="l">Целевая частота<small>Гц</small></div><label class="inp"><input id="get_pfc-fc" type="number" step="1"><u>Гц</u></label><button class="btn2" onclick="fcSet()">Задать</button></div>
+		<div class="field"><div class="l">Текущая частота<small>Гц · мощность текущая</small></div><b><span id="fc-cur">–</span> Гц · <span id="fc-pw">–</span></b></div></section>
+</div>
+</div>
+</body>
+</html>

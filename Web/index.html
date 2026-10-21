@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Главная. Народный контроллер ТН</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<script src="scripts.js"></script>
+<script src="settings.js"></script>
+<script src="chart.js"></script>
+<style>
+.home-t{display:flex;justify-content:space-between;align-items:flex-end}
+.stepper{display:flex;align-items:center;gap:10px}
+.stepper b{font-size:22px;min-width:64px;text-align:center;font-variant-numeric:tabular-nums}
+.cap{color:var(--mute);font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.4px}
+.gvs{display:grid;grid-template-columns:140px 1fr;gap:16px;align-items:center}
+.gvs > div:last-child{display:flex;flex-direction:column;align-items:center}
+.gvs .ringw{position:relative;width:140px;height:140px}
+.gvs .ringw .in{position:absolute;inset:0;display:grid;place-content:center;text-align:center}
+.gvs .ringw b{font-size:26px;letter-spacing:-1px;line-height:1.1}
+.gvs .ringw span{color:var(--mute);font-size:11px}
+.gvs .stepper b{font-size:30px;min-width:76px}
+.gvs .btn{width:44px;height:44px;border-radius:14px}
+.heat{display:flex;gap:14px;margin-top:12px;justify-content:center}
+.hi{display:flex;flex-direction:column;align-items:center;gap:3px}
+.hi .b{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;background:var(--cell);color:#a6b0bc}
+.hi .b svg{width:22px;height:22px}
+.hi em{font-style:normal;font-size:11px;font-weight:800;color:#a6b0bc;letter-spacing:.3px}
+.hi.on .b{background:var(--tbad);color:var(--bad);box-shadow:0 0 0 1px #f3c4c4}.hi.on em{color:var(--bad)}
+.sw-row{display:flex;justify-content:space-between;align-items:center;color:var(--ink);font-weight:600;margin-top:6px;padding-top:8px;border-top:1px solid var(--line)}
+.loops{display:grid;gap:8px;margin-bottom:12px}
+.loop{border-radius:12px;padding:7px 10px;display:flex;align-items:baseline;gap:8px;white-space:nowrap;font-size:14px}
+.loop.g{background:var(--tb)}.loop.h{background:var(--tw)}
+.loop .t{width:72px;font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.3px}
+.loop.g .t{color:var(--cold)}.loop.h .t{color:var(--heat)}
+.loop .v{color:var(--mute)}.loop .v b{color:var(--ink);font-size:15px}
+.loop .d{font-weight:800;font-size:15px;margin-left:auto}
+.loop .p{font-weight:800;font-size:14px;color:var(--mute)}.loop .p.on{color:var(--ok)}
+.ctl-mode{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;color:var(--mute)}
+.card .ctl-mode select{min-width:0}
+.ev-empty{color:var(--mute);font-size:13px;padding:8px 0}
+.lnk{font-weight:800;text-decoration:none}
+</style>
+<script>
+urlupdate = 4000;
+var CH_COLORS = {tout: '#2f7fd1', tevaing: '#72b4ee', tconoutg: '#f2762e', power: '#8a6fd1', cop: '#0f8b8d', tin: '#0f8b8d'};
+var chart = null, spark = null, chData = {}, chRange = 0, homeTrg = NaN, chStep = 30, chTimer = null;
+var curTime = '', ev = [], prev = {};
+
+function $(id) { return document.getElementById(id); }
+function num(v, d) { var f = parseFloat(v); return isNaN(f) ? '–' : f.toFixed(d); }
+function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
+
+// ---- значения, пришедшие от контроллера: ответ /api/get раскладывается в прежние имена (onPageValue), логика страницы осталась как была ----
+var IDX_KEYS = {'temp.TIN.value': 'get_Temp(TIN)', 'temp.TOUT.value': 'get_Temp(TOUT)', 'temp.TEVAING.value': 'get_Temp(TEVAING)', 'temp.TEVAOUTG.value': 'get_Temp(TEVAOUTG)',
+	'temp.TCONING.value': 'get_Temp(TCONING)', 'temp.TCONOUTG.value': 'get_Temp(TCONOUTG)', 'temp.TBOILER.value': 'get_Temp(TBOILER)',
+	'state.trg_home': 'get_TrgT(1)', 'boiler.trg': 'get_Boiler(TRG)', 'fc.cfc': 'get_pFC(cFC)', 'state.overheat': 'get_OverHeat', 'eev.pospp': 'get_pEEV(POSpp)',
+	'state.power_220': 'get_Power220', 'state.power_out': 'get_PowerCO', 'state.cop': 'get_fullCOP', 'relay.RBOILER.on': 'get_Relay(RBOILER)',
+	'relay.RPUMPI.on': 'get_Relay(RPUMPI)', 'relay.RPUMPO.on': 'get_Relay(RPUMPO)', 'state.errcode': 'get_errcode', 'state.error': 'get_error', 'state.time': 'get_status',
+	'state.work': 'get_WORK', 'state.mode': 'get_MODE'};
+function idxPoll(d) {
+	for(var k in d) {
+		var v = d[k];
+		if(k == 'state.work') v = v ? 'ON' : 'OFF';
+		if(k == 'state.trg_home') { var t = $('get_trgt-1'); if(t && v !== null) t.value = v; }
+		if(k == 'boiler.trg') { var b = $('get_boiler-trg'); if(b && v !== null) b.value = v; }
+		if(k == 'boiler.on' || k == 'boiler.urg' || k == 'ohp.bpow') { var c = $(k == 'boiler.on' ? 'get_boiler-on' : k == 'boiler.urg' ? 'get_boiler-urg' : 'get_ohp-bpow'); if(c && document.activeElement !== c) c.checked = v === true; continue; }
+		if(k == 'state.mode_house') { modeShow(v); continue; }
+		if(IDX_KEYS[k]) window.onPageValue(IDX_KEYS[k], v);
+	}
+}
+// режим дома: список (из meta, недоступные пункты погашены) и тумблер сборки «только отопление»
+var modeNow = 0;
+function modeShow(v) {
+	var s = $('get_modehp'), sw = $('get_modehp_sw');
+	modeNow = v;
+	if(s && s.options.length) s.selectedIndex = v;
+	if(sw) sw.checked = v != 0;
+}
+function setKey(key, val, ok) {
+	var p = {};
+	p[key] = val;
+	api.set(p, function(D, E, err) {
+		if(err || E[key]) { stToast('Контроллер не принял значение (' + (err ? 'нет связи' : ST_ERR[E[key]] || E[key]) + ').', true); api.pollTick(); }
+		else if(ok) ok(D[key]);
+	});
+}
+function toggleMode(sw) { setKey('state.mode_house', sw.checked ? 1 : 0); }
+// ---- значения, пришедшие от контроллера (вызывается из idxPoll) ----
+var ing = NaN, outg = NaN, coning = NaN, conoutg = NaN, boilerT = NaN, boilerTrg = NaN;
+window.onPageValue = function(n, v) {
+	switch(n) {
+	case 'get_Temp(TIN)':   put('v-tin', num(v, 1)); break;
+	case 'get_Temp(TOUT)':  put('v-tout', num(v, 1)); break;
+	case 'get_TrgT(1)':     put('v-trg', num(v, 1)); homeTrg = parseFloat(v); if(chData.at) chartDraw(); break;
+	case 'get_Temp(TBOILER)': boilerT = parseFloat(v); drawRing(); break;
+	case 'get_Boiler(TRG)': boilerTrg = parseFloat(v); put('v-btrg', isNaN(boilerTrg) ? '–' : Math.round(boilerTrg)); drawRing(); break;
+	case 'get_pFC(cFC)':    put('t-fc', num(v, 0)); fcEvent(parseFloat(v)); break;
+	case 'get_OverHeat':    put('t-oh', num(v, 1)); break;
+	case 'get_pEEV(POSpp)': put('t-eev', parseInt(v) >= 0 ? parseInt(v) : '–'); break;
+	case 'get_Power220':    put('t-p220', num(v, 1)); break;
+	case 'get_PowerCO':     put('t-pco', num(v, 1)); break;
+	case 'get_fullCOP':     put('t-cop', num(v, 1)); break;
+	case 'get_Temp(TEVAING)':  ing = parseFloat(v); put('c-ing', num(v, 1) + '°'); delta('c-dg', ing, outg); break;
+	case 'get_Temp(TEVAOUTG)': outg = parseFloat(v); put('c-outg', num(v, 1) + '°'); delta('c-dg', ing, outg); break;
+	case 'get_Temp(TCONOUTG)': conoutg = parseFloat(v); put('c-coutg', num(v, 1) + '°'); delta('c-dc', conoutg, coning); break;
+	case 'get_Temp(TCONING)':  coning = parseFloat(v); put('c-coning', num(v, 1) + '°'); delta('c-dc', conoutg, coning); break;
+	case 'get_Relay(RBOILER)': hot.ten = v == 1; heatIcons(); break;
+	case 'get_Relay(RPUMPI)':  pump('c-pi', v); break;
+	case 'get_Relay(RPUMPO)':  pump('c-po', v); break;
+	case 'get_errcode':     errState(parseInt(v)); break;
+	case 'get_error':       prev.errtext = v; showErr(); break;
+	case 'get_Heat(ADT)':   night.t = parseFloat(v); showNight(); break;
+	case 'get_Heat(ADH)':   night.h = parseInt(v); showNight(); break;
+	case 'get_Heat(ADEH)':  night.e = parseInt(v); showNight(); break;
+	case 'get_status':      curTime = v.split('|')[0]; break;
+	case 'get_WORK':        hot.work = v == 'ON'; heatIcons(); track('work', v, v == 'ON' ? 'Пуск ТН' : 'Останов ТН'); break;
+	case 'get_MODE':        hot.mode = v; heatIcons(); track('mode', v, 'Режим: ' + v.toLowerCase()); break;
+	}
+};
+// чем греется бойлер: ТН - компрессор работает в режиме «ГВС», ТЭН - включено реле RBOILER (иконка есть, пока реле есть в конфигурации)
+var hot = {work: false, mode: '', ten: false, hasTen: false};
+function heatIcons() {
+	var tn = hot.work && hot.mode == 'ГВС';
+	$('hi-tn').className = 'hi' + (tn ? ' on' : '');
+	$('hi-ten').className = 'hi' + (hot.ten ? ' on' : '');
+	$('hi-ten').style.display = hot.hasTen ? '' : 'none';
+}
+function pump(id, v) { var e = $(id); if(!e) return; e.innerHTML = 'насос ' + (v == 1 ? 'вкл' : 'выкл'); e.className = 'p' + (v == 1 ? ' on' : ''); }
+function delta(id, a, b) { put(id, isNaN(a) || isNaN(b) ? '' : 'Δ ' + Math.abs(a - b).toFixed(1) + '°'); }
+
+// надбавка ночного тарифа (Отопление: «Использование ночного тарифа»)
+var night = {t: 0, h: 0, e: 0};
+function showNight() {
+	var e = $('night');
+	if(!e) return;
+	e.style.display = night.t ? '' : 'none';
+	e.innerHTML = (night.t > 0 ? '+' : '') + night.t + '° ночной тариф ' + night.h + ':00–' + night.e + ':00';
+}
+
+// ---- ошибки ----
+function errState(code) {
+	track('errcode', code, code ? 'Ошибка ' + code : 'Ошибка устранена');
+	showErr();
+}
+function showErr() {
+	var e = $('err');
+	if(!e || prev.errcode === undefined) return;
+	if(prev.errcode) { e.className = 'tag bad'; e.innerHTML = '⚠ ' + (prev.errtext || 'Ошибка ' + prev.errcode); }
+	else { e.className = 'tag ok'; e.innerHTML = '✓ Ошибок нет'; }
+}
+
+// ---- события: журнал с контроллера не берём (он весит ~100 КБ), копим то, что видит страница ----
+try { ev = JSON.parse(sessionStorage.getItem('ev') || '[]'); } catch(e) { ev = []; }
+function addEvent(text) {
+	ev.unshift([curTime || new Date().toTimeString().substr(0, 5), text]);
+	ev = ev.slice(0, 6);
+	try { sessionStorage.setItem('ev', JSON.stringify(ev)); } catch(e) {}
+	showEvents();
+}
+// событие - это изменение значения; первое полученное значение событием не считается
+function track(key, val, text) {
+	if((key in prev) && prev[key] !== val) addEvent(text);
+	prev[key] = val;
+}
+var lastFc = null;
+function fcEvent(f) {
+	if(isNaN(f)) return;
+	if(lastFc === null) { lastFc = f; return; }
+	if(Math.abs(f - lastFc) >= 5) { addEvent('Компрессор: частота ' + Math.round(lastFc) + ' → ' + Math.round(f) + ' Гц'); lastFc = f; }
+}
+function showEvents() {
+	var h = '';
+	for(var i = 0; i < ev.length && i < 6; i++) h += '<div class="ev"><time>' + ev[i][0] + '</time><span>' + ev[i][1] + '</span></div>';
+	put('events', h || '<div class="ev-empty">Изменений пока не было</div>');
+}
+
+// ---- цель дома: кнопки меняют скрытое поле get_trgt-1 и отправляют ключ state.trg_home ----
+function trgStep(d) {
+	var e = $('get_trgt-1'), v = Math.round((parseFloat(e.value) + d) * 10) / 10;
+	if(isNaN(v) || v < 5 || v > 50) return;
+	e.value = v;
+	put('v-trg', v.toFixed(1));
+	setKey('state.trg_home', v);
+}
+
+// ---- цель ГВС: шаг 1°, скрытое поле get_boiler-trg, запись - ключ boiler.trg ----
+function btrgStep(d) {
+	var e = $('get_boiler-trg'), v = Math.round(parseFloat(e.value) + d);
+	if(isNaN(v) || v < 5 || v > 90) return;
+	e.value = v;
+	boilerTrg = v;
+	put('v-btrg', v);
+	drawRing();
+	setKey('boiler.trg', v);
+}
+
+// ---- кольцо бойлера: доля = температура / цель ----
+function drawRing() {
+	var size = 140, st = 12, r = (size - st) / 2, c = 2 * Math.PI * r, m = size / 2;
+	var f = isNaN(boilerT) || !(boilerTrg > 0) ? 0 : Math.max(0, Math.min(1, boilerT / boilerTrg));
+	put('ring', '<svg width="' + size + '" height="' + size + '" viewBox="0 0 ' + size + ' ' + size + '"><circle cx="' + m + '" cy="' + m + '" r="' + r + '" fill="none" stroke="#e8eef5" stroke-width="' + st +
+		'"/><circle cx="' + m + '" cy="' + m + '" r="' + r + '" fill="none" stroke="#2f7fd1" stroke-width="' + st + '" stroke-linecap="round" stroke-dasharray="' + (c * f) + ' ' + c + '" transform="rotate(-90 ' + m + ' ' + m + ')"/></svg>');
+	put('v-bt', num(boilerT, 1) + '°');
+}
+
+// ---- график: подача/обратка/геоконтур + частота, мини-график дома ----
+var SERIES = [
+	['tout', 'Улица', /улицы/],
+	['tevaing', 'Из геоконтура', /входе испарителя по гликолю/],
+	['tconoutg', 'Подача', /выходе конденсатора по гликолю/],
+	['power', 'Мощность', /Потребляемая мощность/],
+	['cop', 'COP', /Full COP/],
+	['tin', 'Дом', /в доме/]
+];
+var chOn = {tout: 1}, chIdx = {};
+function chartInit() {
+	api.get({k: ['chart.list', 'ohp.time_chart']}, function(D) {
+		var names = chartNamesApi(D['chart.list']), chips = '';
+		SERIES.forEach(function(s) {
+			chIdx[s[0]] = chartFind(names, s[2]);
+			if(s[0] != 'tin' && chIdx[s[0]]) chips += '<span class="chip' + (chOn[s[0]] ? ' on' : '') + '" data-k="' + s[0] + '" style="--c:' + CH_COLORS[s[0]] + '" onclick="chToggle(this)"><i></i>' + s[1] + '</span>';
+		});
+		put('ch-series', chips);
+		chStep = parseInt(D['ohp.time_chart']) || 30;
+		chartRefresh();
+	});
+}
+function chartRefresh() {
+	var pending = 0;
+	SERIES.forEach(function(s) {
+		if(!chIdx[s[0]]) return;
+		pending++;
+		chartLoad(chIdx[s[0]], function(d) {
+			chData[s[0]] = d;
+			if(--pending == 0) { chData.at = Date.now(); chartDraw(); }
+		});
+	});
+	clearTimeout(chTimer);
+	chTimer = setTimeout(chartRefresh, 60000);
+}
+function chartDraw() {
+	var cnt = chRange ? Math.ceil(chRange * 60 / chStep) : 1000, lanes = [], temps = [], pw = [], cop = [];
+	SERIES.forEach(function(s) {
+		var k = s[0];
+		if(k == 'tin' || !chOn[k] || !chData[k]) return;
+		(k == 'power' ? pw : k == 'cop' ? cop : temps).push({name: s[1], color: CH_COLORS[k], data: chData[k].slice(-cnt), area: k == 'tconoutg', w: 2});
+	});
+	var n = (temps.length ? 1 : 0) + (pw.length ? 1 : 0) + (cop.length ? 1 : 0);
+	if(temps.length) lanes.push({h: n > 1 ? 170 : 260, unit: '°C', series: temps});
+	if(pw.length) lanes.push({h: n > 1 ? 70 : 260, unit: 'кВт', min: 0, minSpan: 1, series: pw});
+	if(cop.length) lanes.push({h: n > 1 ? 70 : 260, min: 0, minSpan: 1, title: 'COP', series: cop});
+	if(!chart) chart = new SvgChart($('ch'), {});
+	chart.o = {lanes: lanes, step: chStep, end: chData.at};
+	chart.draw();
+	if(chData.tin && chData.tin.length > 1) {
+		if(!spark) spark = new SvgChart($('spark'), {});
+		spark.o = {lanes: [{h: 100, series: [{name: 'Дом', color: CH_COLORS.tin, data: chData.tin, area: true, w: 1.8}], ref: isNaN(homeTrg) ? null : {v: homeTrg, color: '#2f7fd1', label: 'цель ' + homeTrg.toFixed(1) + '°'}}], step: chStep, end: chData.at, pad: {l: 34, r: 6, t: 6, b: 4}, noTime: true};
+		spark.draw();
+		var sec = chData.tin.length * chStep;
+		put('spark-cap', 'последние ' + (sec >= 5400 ? Math.round(sec / 360) / 10 + ' ч' : Math.round(sec / 60) + ' мин'));
+	}
+}
+function chToggle(e) {
+	var k = e.getAttribute('data-k');
+	chOn[k] = !chOn[k];
+	e.className = 'chip' + (chOn[k] ? ' on' : '');
+	chartDraw();
+}
+function chSetRange(e, m) {
+	chRange = m;
+	var c = e.parentNode.children;
+	for(var i = 0; i < c.length; i++) c[i].className = 'chip' + (c[i] == e ? ' on' : '');
+	chartDraw();
+}
+
+window.onload = function() {
+	api.init(function(v) {
+		var caps = (v && v.caps) || {};
+		if(!caps.cool) document.body.classList.add('onlyheat');
+		api.metaOf('state', function(m) {
+			var s = $('get_modehp'), o = m && m.m && m.m['state.mode_house'];
+			if(s && o) s.innerHTML = o.o.map(function(t, i) { return '<option' + ((o.na || []).indexOf(i) >= 0 ? ' disabled' : '') + '>' + stEsc(t) + '</option>'; }).join('');
+				s.selectedIndex = modeNow;
+		});
+		api.get({k: ['heat.adt', 'heat.adh', 'heat.adeh']}, function(D) {
+			night.t = D['heat.adt']; night.h = D['heat.adh']; night.e = D['heat.adeh']; showNight();
+		});
+		api.get({k: ['relay.RBOILER.present']}, function(D) { hot.hasTen = D['relay.RBOILER.present'] === true; heatIcons(); });
+		var keys = Object.keys(IDX_KEYS).concat(['boiler.on', 'boiler.urg', 'ohp.bpow', 'state.mode_house']);
+		api.poll({k: keys}, idxPoll);
+	});
+	showEvents();
+	chartInit();
+};
+</script>
+</head>
+<body class="index">
+<div id="menu" class="menu"><script src="menu.js"></script></div>
+<div class="content">
+<div class="grid">
+
+	<section class="card c4">
+		<h3>Дом <span class="r" style="color:var(--mute)" id="spark-cap"></span></h3>
+		<div class="home-t">
+			<div class="big"><span id="v-tin">–</span><small>°C</small></div>
+			<div style="text-align:center">
+				<div class="cap" style="margin-bottom:6px">Цель</div>
+				<div class="stepper">
+					<button class="btn" onclick="trgStep(-0.5)" title="Цель ниже на 0,5°"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg></button>
+					<b><span id="v-trg">–</span>°</b>
+					<button class="btn p" onclick="trgStep(0.5)" title="Цель выше на 0,5°"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
+				</div>
+				<input id="get_trgt-1" type="number" min="5" max="50" step="0.1" hidden>
+			</div>
+		</div>
+		<div class="row" style="justify-content:space-between;margin:8px 0 6px"><span style="color:var(--mute)">На улице <b style="color:var(--ink)"><span id="v-tout">–</span>°</b></span><span class="tag w" id="night" style="display:none"></span></div>
+		<div id="spark"></div>
+	</section>
+
+	<section class="card c4">
+		<h3>Бойлер ГВС <span class="r">Нагрев</span><input type="checkbox" class="sw sm" id="get_boiler-on" onchange="setKey('boiler.on', this.checked ? 1 : 0)"></h3>
+		<div class="gvs"><div class="ringw"><div id="ring"></div><div class="in"><b id="v-bt">–</b><span>сейчас</span></div></div>
+			<div><div class="cap" style="margin-bottom:6px">Цель</div>
+				<div class="stepper">
+					<button class="btn" onclick="btrgStep(-1)" title="Цель ниже на 1°"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg></button>
+					<b><span id="v-btrg">–</span>°</b>
+					<button class="btn p" onclick="btrgStep(1)" title="Цель выше на 1°"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
+				</div>
+				<input id="get_boiler-trg" type="number" min="5" max="90" step="1" hidden>
+				<div class="heat"><div class="hi" id="hi-tn" title="Нагрев бойлера тепловым насосом"><span class="b"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="3"/><circle cx="12" cy="12" r="3.6"/><path d="M12 8.4v7.2M8.4 12h7.2"/></svg></span><em>ТН</em></div><div class="hi" id="hi-ten" style="display:none" title="Нагрев бойлера ТЭНом"><span class="b"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h3l2-6 3 12 3-12 2 6h5"/></svg></span><em>ТЭН</em></div></div>
+			</div></div>
+		<div class="sw-row"><span>Срочный нагрев</span><input type="checkbox" class="sw sm" id="get_boiler-urg" onchange="setKey('boiler.urg', this.checked ? 1 : 0)"></div>
+	</section>
+
+	<section class="card c4">
+		<h3>Тепловой насос</h3>
+		<div class="ctl-mode"><span><span class="noh">Режим работы</span><span class="oh">Отопление</span></span>
+			<select id="get_modehp" onchange="setKey('state.mode_house', this.selectedIndex)"></select><input type="checkbox" class="sw oh" id="get_modehp_sw" onchange="toggleMode(this)"></div>
+		<div class="ctl-mode gen"><span>Работа от генератора<span class="hint" data-tip="Работа ТН от резервного источника питания: ограничение потребляемой мощности, электрокотёл, ТЭН бойлера и реле по суткам выключены. Флаг не хранится в EEPROM и сбрасывается при сбросе контроллера.">i</span></span><input type="checkbox" class="sw" id="get_ohp-bpow" onchange="setKey('ohp.bpow', this.checked ? 1 : 0)"></div>
+		<div class="tiles">
+			<div class="tile"><i>Компрессор</i><b id="t-fc">–</b><u>Гц</u></div>
+			<div class="tile"><i>Перегрев</i><b id="t-oh">–</b><u>K</u></div>
+			<div class="tile"><i>ЭРВ</i><b id="t-eev">–</b><u>шаг</u></div>
+			<div class="tile"><i>Потребл.</i><b id="t-p220">–</b><u>кВт</u></div>
+			<div class="tile"><i>Тепло</i><b id="t-pco">–</b><u>кВт</u></div>
+			<div class="tile acc"><i>COP</i><b id="t-cop">–</b></div>
+		</div>
+		<div class="row" style="margin-top:12px"><span class="tag ok" id="err">…</span></div>
+	</section>
+
+	<section class="card c8">
+		<h3>График <span class="r chips" style="margin-left:auto"><span class="chip" onclick="chSetRange(this,30)">30 мин</span><span class="chip" onclick="chSetRange(this,60)">1 ч</span><span class="chip" onclick="chSetRange(this,180)">3 ч</span><span class="chip on" onclick="chSetRange(this,0)">весь буфер</span></span></h3>
+		<div class="chips" id="ch-series" style="margin-bottom:6px"></div>
+		<div id="ch" style="min-height:120px"></div>
+		<div class="row" style="justify-content:flex-end;margin-top:4px"><a href="charts.html" class="lnk">Все графики →</a></div>
+	</section>
+
+	<section class="card c4">
+		<h3>Контуры</h3>
+		<div class="loops">
+			<div class="loop g"><span class="t">Геоконтур</span><span class="v">из <b id="c-ing">–</b></span><span class="v">в <b id="c-outg">–</b></span><span class="d" id="c-dg"></span><span class="p" id="c-pi"></span></div>
+			<div class="loop h"><span class="t">Отопление</span><span class="v">под. <b id="c-coutg">–</b></span><span class="v">обр. <b id="c-coning">–</b></span><span class="d" id="c-dc"></span><span class="p" id="c-po"></span></div>
+		</div>
+		<h3 style="margin-top:6px">События <span class="r" style="color:var(--mute);font-weight:600">с открытия страницы</span></h3>
+		<div id="events"></div>
+	</section>
+
+</div>
+</div>
+</body>
+</html>

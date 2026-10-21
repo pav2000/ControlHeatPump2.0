@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Инвертор. Народный контроллер ТН</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<script src="scripts.js"></script>
+<script src="settings.js"></script>
+<style>
+.fc{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:8px}
+.fc .cap{color:var(--mute);font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px}
+.fc .big{font-size:48px}
+.fc .cur{font-size:30px;font-weight:800;letter-spacing:-1px}.fc .cur small{font-size:14px;color:var(--mute);font-weight:700}
+table.t td.v{text-align:right;font-weight:800;font-variant-numeric:tabular-nums}
+table.t td.c{font-family:'DejaVu Sans Mono',Consolas,monospace;font-weight:700;font-size:12px}
+.act{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
+</style>
+<script>
+// Инвертор (Работа): частота и ток, целевая скорость, блокировка, регистры Modbus (fc.info: «код|описание|значение;...»).
+urlupdate = 2000;
+var $ = function(id) { return document.getElementById(id); };
+function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
+function num(v, d) { var f = parseFloat(v); return isNaN(f) ? '–' : f.toFixed(d); }
+var name = '';
+
+function fcPoll(d) {
+	for(var k in d) {
+		var v = d[k];
+		switch(k) {
+		case 'fc.cfc': put('fc', num(v, 1)); break;
+		case 'fc.ccurrent': put('cur', num(v, 1)); break;
+		case 'fc.on_off': put('onoff', v ? '<span class="tag ok">включён</span>' : '<span class="tag">выключен</span>'); break;
+		case 'fc.mb_err': put('mberr', '<b class="' + (v == 0 ? 'okc' : 'errc') + '">' + v + '</b>'); break;
+		case 'fc.block':
+			put('block', !v ? '<span class="tag ok">нет</span>' : '<span class="tag bad">да</span>');
+			$('lost').hidden = !v;
+			break;
+		case 'fc.note': put('note', 'Инвертор заблокирован: ' + stEsc(v).replace(/</g, '&lt;').trim()); break;
+		case 'fc.info':
+			var rows = (v || '').split(';').filter(function(s) { return s !== ''; });
+			put('regs', rows.map(function(r) {
+				var f = r.split('|');
+				return f.length < 3 ? '' : f[0] === '' ? '<tr><td colspan="3" style="color:var(--mute)">' + f[1] + '</td></tr>' : '<tr><td class="c">' + f[0] + '</td><td>' + f[1] + '</td><td class="v">' + f[2] + '</td></tr>';
+			}).join(''));
+			break;
+		}
+	}
+}
+function unblock() {
+	if(!confirm('Восстановить связь с инвертором? Блокировка будет снята; сначала проверьте кабель Modbus.')) return;
+	api.set({'fc.block': 0}, function(D, E, err) {
+		var bad = err || E['fc.block'];
+		stToast(bad ? 'Не удалось снять блокировку (' + (err ? 'нет связи' : ST_ERR[E['fc.block']] || E['fc.block']) + ').' : 'Блокировка инвертора снята.', !!bad);
+	});
+}
+function resetErrors() {
+	if(!confirm('Сбросить ошибки инвертора?')) return;
+	api['do']('reset.fc_errors', function(v, e) { if(e) stToast('Не выполнено (' + (ST_ERR[e] || e) + ').', true); else stToast('Ошибки инвертора сброшены.'); });
+}
+
+window.onload = function() {
+	stPanel();
+	stFields('ctl', [{key: 'fc.fc', t: 'Целевая скорость', h: 'Гц', u: 'Гц', step: 1, dec: 2}]);
+	stLoadK();
+	api.get({k: ['fc.name']}, function(D) {
+		var v = D['fc.name'];
+		if(v !== undefined) shSubNote('<b>' + stEsc(v) + '</b>частотный преобразователь компрессора · Modbus <a href="' + encodeURI(v) + '.pdf" target="_blank">Справка ' + stEsc(v) + ' (PDF) ↗</a>');
+	});
+	api.poll({k: ['fc.note', 'fc.block', 'fc.on_off', 'fc.cfc', 'fc.ccurrent', 'fc.mb_err', 'fc.info']}, fcPoll);
+};
+</script>
+</head>
+<body class="invertor">
+<div id="menu" class="menu"><script src="menu.js"></script></div>
+<div class="content">
+<div class="grid">
+	<section class="card c5">
+		<h3>Управление <span class="r" id="block-tag"></span></h3>
+		<div class="fc"><div><div class="cap">Частота сейчас</div><span class="big" id="fc">–</span> <span style="font-size:20px;color:var(--mute);font-weight:700">Гц</span></div><div style="text-align:right"><div class="cap">Ток</div><span class="cur" id="cur">–</span> <small style="font-size:14px;color:var(--mute);font-weight:700">А</small></div></div>
+		<div class="field"><div class="l">Состояние<small>включён / выключен</small></div><span id="onoff">–</span></div>
+		<div id="ctl"></div>
+		<div class="field"><div class="l">Ошибок Modbus</div><span id="mberr">–</span></div>
+		<div class="field"><div class="l">Блокировка инвертора<small>0 — работает, 1 — заблокирован</small></div><span id="block">–</span><button class="btn2" onclick="unblock()">Восстановить соединение</button></div>
+		<div class="warnbox" id="lost" hidden style="margin-top:10px"><span id="note"></span>. Нажмите «Восстановить соединение» после проверки кабеля; ТН не запустится, пока блокировка не снята.</div>
+		<div class="act"><button class="btn2 bad" onclick="resetErrors()">Сбросить ошибки инвертора</button></div>
+	</section>
+	<section class="card c7">
+		<h3>Состояние инвертора <span class="r" style="color:var(--mute);font-weight:600">регистры по Modbus</span></h3>
+		<table class="t"><thead><tr><th>Код</th><th>Описание</th><th style="text-align:right">Значение</th></tr></thead><tbody id="regs"></tbody></table>
+	</section>
+</div>
+</div>
+</body>
+</html>

@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Графики. Народный контроллер ТН</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<script src="scripts.js"></script>
+<script src="settings.js"></script>
+<script src="chart.js"></script>
+<script src="graphs.js"></script>
+<script>
+// Онлайн-графики: кольцевая память контроллера, до 400 точек на ряд, шаг - ohp.time_chart.
+// Номер ряда - позиция в chart.list (в списке names нулевой пункт «---»). Дорожка ряда определяется типом объекта
+// из поля obj ответа /api/chart (STATS_OBJ_* в RingChart.h).
+var $ = function(id) { return document.getElementById(id); };
+var LANES = [
+	['temp', 'Температуры', '°C', 190], ['calc', 'Расчётные', '°C', 90], ['press', 'Давление', 'бар', 90], ['flow', 'Поток', 'м³/ч', 80],
+	['eev', 'ЭРВ', 'шаг', 80], ['volt', 'Напряжение', 'В', 80], ['power', 'Мощность', 'кВт', 80], ['cur', 'Ток', 'А', 70],
+	['fc', 'Частота компрессора', 'Гц', 80], ['cop', 'Full COP', '', 80], ['relay', 'Реле', '', 60], ['other', 'Прочее', '', 80]
+];
+function laneOf(t) {
+	return t <= 1 ? 'temp' : t <= 7 ? 'calc' : t == 8 ? 'press' : t == 9 ? 'flow' : t == 10 ? 'eev' : t == 11 ? 'volt' : t <= 15 ? 'power' : t == 16 ? 'cur' : t == 17 ? 'fc' : t == 18 ? 'cop' : t == 19 ? 'relay' : 'other';
+}
+// группы списка по названию ряда
+var GROUPS = ['Температуры', 'Расчётные', 'Холодильный контур', 'Поток и мощность', 'Компрессор'];
+function groupOf(n) {
+	return /^Т°/.test(n) ? 0 : /Перегрев|Переохлажд|Нагнетание|Δ/.test(n) ? 1 : /Давление|ЭРВ/.test(n) ? 2 : /^Частота/.test(n) ? 4 : 3;
+}
+var DEFAULT_SEL = [/выходе конденсатора по гликолю/, /входе конденсатора по гликолю/, /входе испарителя по гликолю/, /выходе испарителя по гликолю/, /^Потребляемая мощность/, /^Частота/];
+
+var names = [], sel = {}, data = {}, chart = null, step = 30, range = 180, auto = null, drawT = 0;
+
+function init() {
+	api.get({k: ['chart.list', 'ohp.time_chart', 'ohp.cwco']}, function(D, E, err) {
+		if(err) return;
+		names = chartNamesApi(D['chart.list']);
+		sel = gLoad('charts.sel', null);
+		if(!sel) { sel = {}; DEFAULT_SEL.forEach(function(re) { var i = chartFind(names, re); if(i) sel[i] = true; }); }
+		var groups = GROUPS.map(function(t) { return {t: t, items: []}; });
+		for(var i = 1; i < names.length; i++) groups[groupOf(names[i])].items.push({k: String(i), name: names[i], color: gColor(i)});
+		gSide($('side'), groups, sel, toggle);
+		step = parseInt(D['ohp.time_chart']) || 30;
+		$('get_ohp-time_chart').value = step;
+		$('get_ohp-cwco').checked = D['ohp.cwco'] === true;
+		showMemory();
+		refresh();
+	});
+}
+function showMemory() { var s = step * 400, h = Math.floor(s / 3600), m = Math.round(s % 3600 / 60); put('mem-note', '400 точек = ' + (h ? h + ' ч ' : '') + m + ' мин. Смена интервала очищает графики.'); }
+function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
+
+function toggle(k, on) {
+	if(k === null) { gSave('charts.sel', sel); redraw(); return; }
+	if(on) sel[k] = true; else delete sel[k];
+	gSave('charts.sel', sel);
+	if(on && !data[k]) load(k); else redraw();
+}
+function load(k) {
+	chartLoad(Number(k), function(y, type) {
+		data[k] = {y: y, type: type, at: Date.now()};
+		var last = y.length ? y[y.length - 1] : null;
+		gVal(k, last === null ? '' : Math.round(last * 100) / 100);
+		redraw();
+	});
+}
+function refresh() {
+	for(var k in sel) load(k);
+}
+function redraw() {
+	clearTimeout(drawT);
+	drawT = setTimeout(draw, 40);
+}
+function draw() {
+	var lanes = [], at = 0;
+	LANES.forEach(function(L) {
+		var ser = [];
+		for(var k in sel) {
+			var d = data[k];
+			if(!d || laneOf(d.type) != L[0]) continue;
+			if(d.at > at) at = d.at;
+			ser.push({name: names[k], color: gColor(Number(k)), y: d.y, type: L[0] == 'fc' || L[0] == 'relay' ? 'step' : 'line', area: !ser.length && L[0] == 'temp', w: 2});
+		}
+		if(ser.length) lanes.push({title: L[1], unit: L[2], h: L[3], series: ser, minSpan: L[0] == 'temp' ? 2 : 1, min: L[0] == 'fc' ? 0 : undefined});
+	});
+	if(!lanes.length) { $('ch').innerHTML = '<div class="cht-empty">Выберите ряды слева</div>'; return; }
+	if(!chart) chart = new SvgChart($('ch'), {});
+	chart.o = {lanes: lanes, step: step, end: at, nav: true, range: range, onWindow: winChanged};
+	chart.draw();
+	winChanged(chart.window(), !chart.win);
+}
+function winChanged(w, isAuto) {
+	put('win', gWinText(w));
+	var c = document.querySelectorAll('#ranges .chip');
+	for(var i = 0; i < c.length; i++) c[i].classList.toggle('on', isAuto && Number(c[i].getAttribute('data-m')) == range);
+}
+function setRange(m) {
+	range = m;
+	chart.win = null;
+	redraw();
+}
+function resetZoom() { if(chart) chart.setWindow(null); }
+function clearCharts() {
+	if(!confirm('Очистить графики в памяти контроллера?')) return;
+	api['do']('chart.clear', function(v, e) { if(e) stToast('Не выполнено (' + (ST_ERR[e] || e) + ').', true); else { data = {}; refresh(); } });
+}
+function autoToggle(on) {
+	clearInterval(auto);
+	if(on) auto = setInterval(refresh, 10000);
+}
+function setStep(v) {
+	if(!confirm('Смена интервала очистит графики контроллера. Продолжить?')) { $('get_ohp-time_chart').value = step; return; }
+	api.set({'ohp.time_chart': v}, function(D, E, err) {
+		if(err || E['ohp.time_chart']) { stToast('Контроллер не принял значение (' + (err ? 'нет связи' : ST_ERR[E['ohp.time_chart']] || E['ohp.time_chart']) + ').', true); $('get_ohp-time_chart').value = step; return; }
+		step = parseInt(D['ohp.time_chart']) || Number(v); showMemory(); stUnsaved(true); stRefresh(); data = {}; refresh();
+	});
+}
+function setCwco(on) {
+	api.set({'ohp.cwco': on ? 1 : 0}, function(D, E, err) {
+		if(err || E['ohp.cwco']) stToast('Контроллер не принял значение (' + (err ? 'нет связи' : ST_ERR[E['ohp.cwco']] || E['ohp.cwco']) + ').', true);
+		else { stUnsaved(true); stRefresh(); }
+	});
+}
+window.onload = function() {
+	stPanel({apply: false, note: 'Интервал точек и режим «только при работе компрессора» сохраняются записью в EEPROM.'});
+	gExportInit($('tool'), function() { return chart; }, 'grafiki-online');
+	init();
+};
+</script>
+</head>
+<body class="charts">
+<div id="menu" class="menu"><script src="menu.js"></script></div>
+<div class="content">
+<div class="gwrap">
+	<aside class="card gside">
+		<div id="side"></div>
+		<div class="gbox"><h4>Память контроллера</h4>
+			<div class="field"><div class="l">Точка раз в</div><label class="inp"><input id="get_ohp-time_chart" type="number" min="1" step="1" onchange="setStep(this.value)"><u>с</u></label></div>
+			<div class="field"><div class="l">Только при работе компрессора<small id="mem-note"></small></div><input type="checkbox" class="sw sm" id="get_ohp-cwco" onchange="setCwco(this.checked)"></div>
+		</div>
+	</aside>
+	<section class="card">
+		<div class="gtool" id="tool">
+			<span id="ranges" class="chips"><span class="chip" data-m="30" onclick="setRange(30)">30 мин</span><span class="chip" data-m="60" onclick="setRange(60)">1 ч</span><span class="chip on" data-m="180" onclick="setRange(180)">3 ч</span><span class="chip" data-m="0" onclick="setRange(0)">весь буфер</span></span>
+			<span class="win" id="win">—</span>
+			<span class="chip" onclick="resetZoom()">⟲ масштаб</span><span class="chip" onclick="refresh()">Обновить</span><span class="chip bad" onclick="clearCharts()">Очистить…</span>
+			<span class="grow"></span>
+			<span id="exp"></span>
+			<label class="row" style="gap:8px;color:var(--mute);font-size:12px;font-weight:600">Авто, 10 с<input type="checkbox" class="sw sm" onchange="autoToggle(this.checked)"></label>
+		</div>
+		<div id="ch" style="min-height:300px"></div>
+		<div class="gnote">Шкала времени считается по интервалу точек; подсказка при наведении показывает время и значения всех выбранных рядов. Протяжка мышью по графику — масштаб по времени, двойной щелчок — сброс, окно можно двигать в навигаторе. Масштаб по вертикали у каждой дорожки подбирается сам.</div>
+	</section>
+</div>
+</div>
+<script>document.getElementById('exp').innerHTML = gExportMenu();</script>
+</body>
+</html>

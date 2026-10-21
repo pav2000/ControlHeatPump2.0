@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>ЭРВ. Народный контроллер ТН</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<script src="scripts.js"></script>
+<script src="settings.js"></script>
+<script src="chart.js"></script>
+<script src="graphs.js"></script>
+<style>
+.legend{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+.legend .chip{cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+.legend .chip i{width:9px;height:9px;border-radius:50%}
+.legend .chip.off{opacity:.5}
+.mode{display:inline-flex;background:var(--seg);border-radius:12px;padding:3px}
+.mode a{padding:7px 16px;border-radius:9px;font-weight:700;font-size:13px;color:var(--mute);cursor:pointer}
+.mode a.on{background:var(--card);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.12)}
+.tiles.t2{grid-template-columns:1fr 1fr}
+</style>
+<script>
+// ЭРВ (Работа): график перегрева (chartLoad OH), цели (OH2), положения (EEV) и разницы нагнетание - конденсация (TT);
+// ряды графиков пока по прежнему протоколу (chart.js), остальное - /api; текущие значения опрашиваются раз в 2 с; параметры ПИД правятся пакетом. Положение вручную - действием, с подтверждением.
+// Это график ПЕРЕГРЕВА по меткам памяти контроллера (шаг - TIME_CHART), поэтому время считается от последней точки.
+urlupdate = 2000;
+var $ = function(id) { return document.getElementById(id); };
+function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
+function num(v, d) { var f = parseFloat(v); return isNaN(f) ? '–' : f.toFixed(d); }
+
+var unit = 'шаги', dir = false, step = 30, range = 180, chart = null, data = {}, on = {oh: 1, trg: 1, pos: 1, tt: 0}, auto = null, cur = {};
+var SER = {oh: ['Перегрев', '#f2762e', 'K'], trg: ['Цель', '#8a6fd1', 'K'], pos: ['Положение', '#2f7fd1', ''], tt: ['Нагнетание − конденсация', '#d64545', 'K']};
+var CMD = {oh: 'OH', trg: 'OH2', pos: 'EEV', tt: 'TT'};
+
+function pbox(key, t, o) {
+	var id = stKid(key);
+	return '<div class="pbox" id="b-' + id + '"><b>' + t + (o.n ? '<span class="hint" tabindex="0" data-tip="' + stEsc(o.n) + '">i</span>' : '') + '</b><label class="inp"><input type="number" id="' + id + '" data-k="' + key + '" step="' + (o.step || 'any') + '"' +
+		(o.min != null ? ' min="' + o.min + '"' : '') + (o.max != null ? ' max="' + o.max + '"' : '') + '>' + (o.u ? '<u>' + o.u + '</u>' : '') + '</label>' + (o.h ? '<small>' + o.h + '</small>' : '') + '</div>';
+}
+function params() {
+	var h = '';
+	h += pbox('eev.time', 'Период расчёта', {min: 1, max: 1000, step: 1, u: 'с', h: '1…1000 с'});
+	h += '<span class="dirx">' + pbox('eev.trg', 'Целевой перегрев', {min: 0, max: 50, step: 0.01, u: 'K', n: 'Перегрев, к которому будет стремиться ПИД регулирование.', h: 'К этому значению стремится ПИД'}) + '</span>';
+	h += pbox('eev.p2d', 'Δ', {step: 0.01, u: 'K', n: 'Зона около целевого перегрева, где будет уменьшаться пропорциональная составляющая ПИДа.', h: 'зона вокруг цели, где уменьшается пропорциональная составляющая'});
+	h += pbox('eev.kp', 'Пропорциональная', {min: 0, max: 32, step: 0.001, n: 'Коэффициент усиления. Чем больше значение параметра, тем быстрее и оперативнее изменяется положение вентиля. Чем меньше значение параметра, тем медленнее реагирует вентиль.', h: '0…32. Больше — быстрее и резче реагирует вентиль'});
+	h += '<span class="pidx">' + pbox('eev.ki', 'Интегральная', {min: 0, max: 32, step: 0.001, n: 'Интегрирующая составляющая пропорциональна интегралу по времени от отклонения регулируемой величины. Её используют для устранения статической ошибки. Она позволяет регулятору со временем учесть статическую ошибку.', h: '0…32. Устраняет статическую ошибку со временем'}) + '</span>';
+	h += '<span class="pidx">' + pbox('eev.kd', 'Дифференциальная', {min: 0, max: 32, step: 0.001, n: 'Дифференцирующая составляющая пропорциональна темпу изменения отклонения регулируемой величины и предназначена для противодействия отклонениям от целевого значения, которые прогнозируются в будущем. Отклонения могут быть вызваны внешними возмущениями или запаздыванием воздействия регулятора на систему.', h: '0…32. Противодействует прогнозируемым отклонениям'}) + '</span>';
+	h += '<span class="dir2">' + pbox('eev.trg2', 'Целевой перегрев 2', {step: 0.01, u: 'K', h: 'в режиме прямого управления'}) + '</span>';
+	h += '<span class="dir2">' + pbox('eev.trg2d', 'Дельта целевого перегрева 2', {step: 0.01, u: 'K', h: 'в режиме прямого управления'}) + '</span>';
+	return h;
+}
+// видимость плиток зависит от режима «ПИД / прямое управление»
+function applyMode() {
+	var d = $('k-eev-dir'), isDir = d && d.checked;
+	dir = !!isDir;
+	[].forEach.call(document.querySelectorAll('.dir2'), function(e) { e.style.display = dir ? 'contents' : 'none'; });
+	[].forEach.call(document.querySelectorAll('.pidx'), function(e) { e.style.display = dir ? 'none' : 'contents'; });
+	var a = document.querySelectorAll('#mode a');
+	for(var i = 0; i < a.length; i++) a[i].classList.toggle('on', (i == 1) == dir);
+	SER.trg[0] = dir ? 'Перегрев 2' : 'Цель';
+	draw();
+}
+function setMode(isDir) {
+	var d = $('k-eev-dir');
+	if(!d || d.checked == isDir) return;
+	d.checked = isDir;
+	d.dispatchEvent(new Event('change', {bubbles: true}));
+}
+window.stChanged = function(el) { if(!el || el.id == 'k-eev-dir') applyMode(); };
+
+function eevPoll(d) {
+	for(var k in d) {
+		var v = d[k];
+		switch(k) {
+		case 'eev.pospp': var p = parseInt(v); put('t-pos', p >= 0 ? p : '–'); cur.pos = p; legend(); break;
+		case 'state.overheat': put('t-oh', num(v, 1)); cur.oh = v; legend(); break;
+		case 'state.evapor': put('t-ev', num(v, 1)); break;
+		case 'state.tcomp_tcon': put('t-tt', num(v, 1)); cur.tt = v; legend(); break;
+		case 'eev.ctdelta': put('t-dl', v === null ? '–' : (v > 0 ? '+' : '') + num(v, 1)); break;
+		case 'eev.trg': cur.trg = v; legend(); break;
+		case 'eev.error': put('t-er', v == 0 ? '<span class="okc">OK</span>' : '<span class="errc">E' + v + '</span>'); put('eev-st', v == 0 ? '<span class="tag ok">ошибок нет</span>' : '<span class="tag bad">ошибка ' + v + '</span>'); break;
+		}
+	}
+}
+function legend() {
+	var h = '';
+	for(var k in SER) {
+		var val = cur[k], t = isNaN(val) || val === undefined ? '' : ' ' + (k == 'pos' ? val : val.toFixed(1)) + (SER[k][2] ? ' ' + SER[k][2] : '');
+		h += '<span class="chip' + (on[k] ? ' on' : ' off') + '" onclick="toggle(\'' + k + '\')"><i style="background:' + SER[k][1] + '"></i>' + SER[k][0] + t + '</span>';
+	}
+	put('legend', h);
+}
+function toggle(k) { on[k] = on[k] ? 0 : 1; legend(); if(on[k] && !data[k]) load(k); else draw(); }
+
+// ---- график ----
+function load(k) {
+	chartLoad(CMD[k], function(y) { data[k] = {y: y, at: Date.now()}; draw(); });
+}
+function refresh() {
+	['oh', 'trg', 'pos'].forEach(load);
+	if(on.tt) load('tt');
+}
+function draw() {
+	var ser1 = [], ser2 = [], at = 0;
+	['oh', 'trg', 'tt'].forEach(function(k) {
+		if(!on[k] || !data[k]) return;
+		if(data[k].at > at) at = data[k].at;
+		ser1.push({name: SER[k][0], color: SER[k][1], y: data[k].y, area: k == 'oh', dash: k == 'trg' ? '5 3' : undefined, w: k == 'trg' ? 1.5 : 2});
+	});
+	if(on.pos && data.pos) { if(data.pos.at > at) at = data.pos.at; ser2.push({name: 'Положение ЭРВ', color: SER.pos[1], y: data.pos.y, area: true, w: 2, type: 'step'}); }
+	var lanes = [];
+	if(ser1.length) lanes.push({title: 'Перегрев', unit: 'K', h: 190, series: ser1, minSpan: 2});
+	if(ser2.length) lanes.push({title: 'Положение ЭРВ', unit: unit == 'шаги' ? 'шаг' : unit, h: 80, series: ser2});
+	if(!lanes.length) { $('ch').innerHTML = '<div class="cht-empty">Нет данных</div>'; return; }
+	if(!chart) chart = new SvgChart($('ch'), {});
+	chart.o = {lanes: lanes, step: step, end: at, range: range, nav: false};
+	chart.draw();
+}
+function setRange(m, e) {
+	range = m;
+	[].forEach.call(e.parentNode.children, function(c) { c.classList.toggle('on', c == e); });
+	draw();
+}
+function autoToggle(b) { clearInterval(auto); if(b) auto = setInterval(refresh, 2000); }
+
+// ---- положение вручную: подтверждаем один раз, пока формула не MANUAL ----
+var allowMove = false;
+function manual() {
+	var r = $('k-eev-rule'), v = $('k-eev-manual').value;
+	if(v === '') return;
+	if(!allowMove && r && r.options[r.selectedIndex] && r.options[r.selectedIndex].text != 'MANUAL') {
+		if(!confirm('Вы уверены, что хотите управлять ЭРВ вручную?')) return;
+		allowMove = true;
+	}
+	api.set({'eev.manual': v}, function(D, E, err) {
+		if(err || E['eev.manual']) stToast('ЭРВ не принял положение (' + (err ? 'нет связи' : ST_ERR[E['eev.manual']] || E['eev.manual']) + ').', true);
+		else { stToast('Положение ЭРВ задано вручную: ' + D['eev.manual'] + '.'); stBase($('k-eev-manual')); }
+		api.get({k: ['eev.rule']}, function(D2) { if('eev.rule' in D2) stSetK($('k-eev-rule'), 'eev.rule', D2['eev.rule']); });
+	});
+}
+
+window.onload = function() {
+	stPanel();
+	$('params').innerHTML = params();
+	stFields('rule', [{key: 'eev.rule', k: 'sel', t: 'Формула перегрева', n: [7, 'В зависимости от выбранной формулы нужны определённые датчики, иначе возникает ошибка ERR_TYPE_OVERHEAT (−38): подробности — на вкладке «Настройки».']}]);
+	var d = document.createElement('input'); d.type = 'checkbox'; d.hidden = true; d.id = 'k-eev-dir'; d.setAttribute('data-k', 'eev.dir'); document.body.appendChild(d);
+	shSubNote('Электронный расширительный вентиль · <span id="eev-max">–</span> шагов макс. · шаговый двигатель <span id="eev-st"></span>');
+	api.init(function(v) {
+		var pct = v && v.caps && v.caps.eev_units == 'pct';
+		unit = pct ? '%' : 'шаги'; put('t-pu', unit); put('u-man', unit);
+		$('k-eev-manual').step = pct ? '0.01' : '1';
+		stLoadK(function() { applyMode(); });
+	});
+	api.get({k: ['eev.max', 'ohp.time_chart']}, function(D) {
+		if('eev.max' in D) put('eev-max', D['eev.max']);
+		if('ohp.time_chart' in D) step = parseInt(D['ohp.time_chart']) || 30;
+	});
+	legend();
+	setTimeout(refresh, 1500);
+	api.poll({k: ['eev.pospp', 'state.overheat', 'eev.error', 'state.tcomp_tcon', 'eev.ctdelta', 'state.evapor', 'eev.trg']}, eevPoll);
+	setInterval(refresh, 30000);
+};
+</script>
+</head>
+<body class="eev">
+<div id="menu" class="menu"><script src="menu.js"></script></div>
+<div class="content">
+<div class="grid">
+	<section class="card c8">
+		<h3>Перегрев и положение ЭРВ <span class="r chips" style="margin-left:auto"><span class="chip" onclick="setRange(60, this)">1 ч</span><span class="chip on" onclick="setRange(180, this)">3 ч</span><span class="chip" onclick="setRange(0, this)">весь буфер</span><span class="chip" onclick="refresh()">Обновить</span>
+			<label class="row" style="gap:8px;color:var(--mute);font-size:12px;font-weight:600">Авто, 2 с<input type="checkbox" class="sw sm" onchange="autoToggle(this.checked)"></label></span></h3>
+		<div class="legend" id="legend"></div>
+		<div id="ch" style="min-height:260px"></div>
+	</section>
+	<section class="card c4">
+		<h3>Сейчас</h3>
+		<div class="tiles t2">
+			<div class="tile"><i>Положение</i><b id="t-pos">–</b><u id="t-pu">шаг</u></div><div class="tile"><i>Перегрев</i><b id="t-oh">–</b><u>K</u></div>
+			<div class="tile"><i>T кипения</i><b id="t-ev">–</b><u>°</u></div><div class="tile"><i>Нагн. − конд.</i><b id="t-tt">–</b><u>K</u></div>
+			<div class="tile"><i>Разница: цель</i><b id="t-dl">–</b><u>K</u></div><div class="tile"><i>Код ошибки</i><b id="t-er">–</b></div>
+		</div>
+		<div id="rule" style="margin-top:6px"></div>
+		<div class="field"><div class="l">Положение вручную<small><span id="u-man">шаги</span> · спросит подтверждение</small></div><label class="inp"><input type="number" id="k-eev-manual" data-k="eev.manual" step="1"></label><button class="btn2" onclick="manual()" style="padding:7px 12px">Задать</button></div>
+	</section>
+	<section class="card c12">
+		<h3>Регулирование <span class="r"><span class="mode" id="mode"><a class="on" onclick="setMode(false)">ПИД</a><a onclick="setMode(true)">Прямое управление</a></span></span></h3>
+		<div class="pgrid" id="params"></div>
+		<div class="fnote">В режиме «Прямое управление» вместо составляющих ПИД показываются «Целевой перегрев 2» и его дельта. Остальные параметры — на вкладке «Настройки».</div>
+	</section>
+</div>
+</div>
+</body>
+</html>

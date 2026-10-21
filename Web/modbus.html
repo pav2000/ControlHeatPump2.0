@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Modbus. Народный контроллер ТН</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<script src="scripts.js"></script>
+<script src="settings.js"></script>
+<style>
+.addrow{display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 14px}
+.addrow .btn2{padding:7px 12px;font-size:12.5px}
+.addrow .btn2.wr{color:var(--heat);border-color:var(--warnbd)}
+table.t td.m{font-family:'DejaVu Sans Mono',Consolas,monospace;font-size:12.5px}
+table.t td .inp input{width:82px}
+.tp{display:inline-block;padding:1px 8px;border-radius:6px;background:var(--bg);font-weight:800;font-size:11px;font-family:'DejaVu Sans Mono',Consolas,monospace}
+.tp.wr{background:var(--tw);color:var(--heat)}
+.go{width:30px;height:30px;border-radius:50%;border:1px solid var(--line);background:var(--card);cursor:pointer}
+</style>
+<script>
+// Modbus RTU: чтение (W, L, F; адреса с 4...) и запись (H, I, C; адреса с 3...) регистров устройств на шине RS485.
+// Действия modbus.read (p = устройство:тип:адрес) и modbus.write (p = устройство:тип:адрес=значение); ответ {v: число} или {err: код Modbus}. Строки с адресом 0
+// автообновление не опрашивает (как раньше), их читает кнопка «›».
+var $ = function(id) { return document.getElementById(id); };
+function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
+var rows = [], seq = 0, auto = null;
+var WRITE = {h: 1, i: 1, c: 1};
+
+function addRow(type) {
+	var dev = parseInt($('device').value);
+	if(isNaN(dev) || dev < 0 || dev > 255) { stToast('Адрес устройства — число 0…255.', true); return; }
+	rows.push({id: ++seq, dev: dev, type: type, addr: '0', val: '', hex: '', err: ''});
+	draw();
+}
+function key(r) { return r.dev + ':' + r.type + ':' + r.addr; }
+function hexOf(type, v) {
+	var f = parseFloat(v);
+	if(isNaN(f)) return '';
+	if(type == 'f' || type == 'i') { var d = new DataView(new ArrayBuffer(4)); d.setFloat32(0, f); return '0x' + ('00000000' + d.getUint32(0).toString(16).toUpperCase()).slice(-8); }
+	var n = f < 0 ? f + (type == 'l' ? 4294967296 : 65536) : f;
+	return '0x' + n.toString(16).toUpperCase();
+}
+function draw() {
+	put('rows', rows.map(function(r) {
+		var w = WRITE[r.type];
+		return '<tr><td class="m">' + r.dev + '</td><td><span class="tp' + (w ? ' wr' : '') + '">' + r.type.toUpperCase() + '</span></td>' +
+			'<td><div class="row" style="gap:8px"><label class="inp"><input value="' + r.addr + '" onchange="setAddr(' + r.id + ', this.value)"></label><button class="go" title="Прочитать регистр" onclick="readRow(' + r.id + ')">›</button></div></td>' +
+			'<td class="m" id="v-' + r.id + '">' + (w ? '<label class="inp"><input id="w-' + r.id + '" value="' + (r.wv !== undefined ? r.wv : r.val === '' ? '0' : r.val) + '" oninput="row(' + r.id + ').wv = this.value"></label>' : '<b>' + (r.val === '' ? '–' : r.val) + '</b>') + '</td>' +
+			'<td class="m" style="color:var(--mute)" id="x-' + r.id + '">' + (r.hex || '–') + '</td><td>' + (w ? '<button class="btn2 bad" style="padding:5px 10px" onclick="writeRow(' + r.id + ')">Записать…</button> ' : '') + '<span id="e-' + r.id + '">' + errHtml(r) + '</span></td></tr>';
+	}).join('') || '<tr><td colspan="6" style="color:var(--mute)">Добавьте строку кнопкой слева</td></tr>');
+}
+function errHtml(r) { return r.err === '' ? '' : r.err == 'OK' ? '<b class="okc">OK</b>' : '<b class="errc">' + r.err + '</b>'; }
+function row(id) { return rows.filter(function(r) { return r.id == id; })[0]; }
+function setAddr(id, v) { var r = row(id); r.addr = v.trim() === '' ? '0' : v.trim(); r.val = ''; r.hex = ''; r.err = ''; draw(); }
+// ответ действия: {v: число} - значение, {err: код} - ошибка Modbus («-2 нет ответа»)
+function apply(r, res, e) {
+	var err = e ? 'E' + e : res && res.err !== undefined ? 'E' + res.err : '';
+	if(err) { r.err = err; r.val = ''; r.hex = ''; }
+	else { r.val = String(res.v); r.hex = hexOf(r.type, res.v); r.err = 'OK'; }
+}
+function readRow(id) {
+	var r = row(id);
+	api['do']('modbus.read', function(v, e) { apply(r, v, e); draw(); }, key(r), 15000);
+}
+function writeRow(id) {
+	var r = row(id), v = $('w-' + id).value.trim();
+	if(v === '') return;
+	if(!confirm('Записать ' + v + ' в регистр ' + r.addr + ' устройства ' + r.dev + ' (' + r.type.toUpperCase() + ')? Неверная запись может нарушить работу устройства.')) return;
+	api['do']('modbus.write', function(res, e) {
+		apply(r, res, e);
+		if(r.err !== 'OK') r.val = '';
+		draw();
+		stToast(r.err !== 'OK' ? 'Запись не удалась (' + r.err + ').' : 'Записано: ' + r.val, r.err !== 'OK');
+	}, key(r) + '=' + v, 15000);
+}
+function refreshAll() {
+	var list = rows.filter(function(r) { return r.addr != '0'; }), i = 0;
+	var next = function() {        // по одному: регистры читаются по шине последовательно
+		if(i >= list.length) { draw(); return; }
+		var r = list[i++];
+		api['do']('modbus.read', function(v, e) { apply(r, v, e); next(); }, key(r), 15000);
+	};
+	next();
+}
+function autoToggle(on) { clearInterval(auto); if(on) auto = setInterval(refreshAll, 3000); }
+window.onload = function() { draw(); };
+</script>
+</head>
+<body class="modbus">
+<div id="menu" class="menu"><script src="menu.js"></script></div>
+<div class="content">
+<div class="grid">
+	<section class="card c4"><h3>Устройство на шине RS485</h3>
+		<div class="field"><div class="l">Адрес устройства<small>частотник — 1, счётчик — 2</small></div><label class="inp"><input id="device" type="number" min="0" max="255" step="1" value="1"></label></div>
+		<h3 style="margin-top:14px">Добавить чтение <span class="r" style="color:var(--mute);font-weight:600">адреса 4…</span></h3>
+		<div class="addrow"><button class="btn2" onclick="addRow('w')">+ W (16 бит)</button><button class="btn2" onclick="addRow('l')">+ L (32 бита)</button><button class="btn2" onclick="addRow('f')">+ F (float)</button></div>
+		<h3>Добавить запись <span class="r" style="color:var(--mute);font-weight:600">адреса 3…</span></h3>
+		<div class="addrow"><button class="btn2 wr" onclick="addRow('h')">+ H (16 бит)</button><button class="btn2 wr" onclick="addRow('i')">+ I (float)</button><button class="btn2 wr" onclick="addRow('c')">+ C (coil)</button></div>
+		<div class="row" style="gap:12px"><button class="btn2 p" onclick="refreshAll()">Обновить</button><label class="row" style="gap:8px;color:var(--mute);font-weight:700">авто<input type="checkbox" class="sw sm" onchange="autoToggle(this.checked)"></label></div>
+		<div class="fnote">Автообновление опрашивает все строки одним запросом; строки с адресом 0 не опрашиваются.</div></section>
+	<section class="card c8"><h3>Регистры <span class="r" style="color:var(--mute);font-weight:600">значение и 0x-представление</span></h3>
+		<table class="t"><thead><tr><th>Устр.</th><th>Тип</th><th>Параметр, адрес</th><th>Значение</th><th>Hex</th><th>Статус</th></tr></thead><tbody id="rows"></tbody></table>
+		<div class="fnote"><b>Подсказки.</b> Для корректного отображения информации из регистра необходимо правильно указать формат хранимого значения в регистре (см. документацию на устройство). Нумерация адресов параметров ведётся согласно документации, обычно с нуля, кроме частотника — он с единицы. Для ввода в шестнадцатеричном формате нужно спереди добавить «0x». Например: прочитать напряжение счётчика SDMхxx — установить адрес устройства на шине 2, добавить строку вывода, нажав кнопку I (float), ввести параметр, равный 0, и прочитать регистр, нажав кнопку «›». Запись (строки H, I, C) просит подтверждения.</div></section>
+</div>
+</div>
+</body>
+</html>

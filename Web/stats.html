@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Статистика. Народный контроллер ТН</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<script src="scripts.js"></script>
+<script src="chart.js"></script>
+<script src="graphs.js"></script>
+<script>
+// Статистика по дням: stats_head.csv (шапка), stats_ГГГГ.dat (строки «ГГГГММДД;значения...»), список лет - sys.list_stats.
+// Значения в файле дробные, как есть. Моточасы приходят в минутах - показываем в часах.
+var $ = function(id) { return document.getElementById(id); };
+// дорожки: ключ, заголовок, единица, высота, столбцы
+var LANES = [['T', 'Температуры', '°C', 190], ['E', 'Энергия за сутки', 'кВт·ч', 130, true], ['W', 'Мощность', 'кВт', 90], ['C', 'Полный COP', '', 90], ['V', 'Напряжение', 'В', 80], ['M', 'Моточасы', 'ч', 110, true]];
+var UNIT = {T: '°C', W: 'кВт', C: 'COP', V: 'В', M: 'ч'};
+var DEFAULT_SEL = [/улицы \(Сред\)/, /Выработано/, /Потребление, кВтч/, /^Полный COP\(work\)/, /^Моточасы/];
+
+var cols = [], sel = {}, xs = [], ys = [], chart = null, range = 30 * 1440, base = {}, nbase = 0;
+
+function laneKey(c) { return c.axis == 'W' ? (/кВтч/.test(c.name) ? 'E' : 'W') : c.axis; }
+function baseOf(name) {
+	var b = name.replace(/\s*\((Мин|Сред|Макс)\)/, '');
+	if(!(b in base)) base[b] = nbase++;
+	return base[b];
+}
+
+function parse(text) {
+	xs = []; ys = cols.map(function() { return []; });
+	var moto = cols.length >= 15 ? 14 : -1;
+	text.split('\n').forEach(function(l) {
+		var a = l.split(';');
+		if(a.length < 2 || a[0].length < 8) return;
+		xs.push(new Date(+a[0].substr(0, 4), +a[0].substr(4, 2) - 1, +a[0].substr(6, 2)).getTime());
+		for(var i = 0; i < cols.length; i++) {
+			var v = a[i + 1] === undefined || a[i + 1] === '' ? NaN : parseFloat(a[i + 1]);
+			// ряды «только при работе» без моточасов за день не имеют смысла: ноль считаем пропуском
+			if(v === 0 && (i == 3 || i == 8 || i == 9) && moto >= 0 && Number(a[moto + 1]) == 0) v = NaN;
+			ys[i].push(isNaN(v) ? null : (cols[i].axis == 'M' ? v / 60 : v));
+		}
+	});
+}
+function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
+
+function draw() {
+	var lanes = [];
+	LANES.forEach(function(L) {
+		var ser = [];
+		cols.forEach(function(c, i) {
+			if(!sel[i] || laneKey(c) != L[0]) return;
+			var dash = /\((Мин|Макс)\)/.test(c.name);
+			ser.push({name: c.name.replace(', м', ', ч'), color: gColor(baseOf(c.name)), x: xs, y: ys[i], type: L[4] ? 'bar' : 'line', dash: dash ? '4 3' : undefined, w: dash ? 1.2 : 2, fmt: L[0] == 'C' ? 2 : 1});
+		});
+		if(ser.length) lanes.push({title: L[1], unit: L[2], h: L[3], series: ser, min: L[4] ? 0 : undefined});
+	});
+	if(!lanes.length || !xs.length) { $('ch').innerHTML = '<div class="cht-empty">' + (xs.length ? 'Выберите ряды слева' : 'Нет данных') + '</div>'; return; }
+	if(!chart) chart = new SvgChart($('ch'), {});
+	chart.o = {lanes: lanes, nav: true, range: range, dayData: true, onWindow: winChanged};
+	chart.draw();
+	winChanged(chart.window(), !chart.win);
+}
+function winChanged(w, isAuto) {
+	put('win', gWinText(w));
+	var c = document.querySelectorAll('#ranges .chip');
+	for(var i = 0; i < c.length; i++) c[i].classList.toggle('on', isAuto && Number(c[i].getAttribute('data-m')) == range / 1440);
+}
+function setRange(days) { range = days * 1440; if(chart) chart.win = null; draw(); }
+function resetZoom() { if(chart) chart.setWindow(null); }
+function toggle(k, on, quiet) {
+	if(k === null) { gSave('stats.sel', sel); draw(); return; }
+	if(on) sel[k] = true; else delete sel[k];
+	if(!quiet) { gSave('stats.sel', sel); draw(); }
+}
+
+function loadYear() {
+	var y = $('year').value;
+	put('state', 'Загрузка…');
+	gFetch('stats_' + y + '.dat', function(t) { parse(t); put('state', xs.length ? '' : 'За ' + y + ' год данных нет'); draw(); },
+		function(c) { xs = []; ys = cols.map(function() { return []; }); put('state', 'Не удалось загрузить stats_' + y + '.dat (' + (c || 'нет связи') + ').'); draw(); });
+}
+
+window.onload = function() {
+	gExportInit($('tool'), function() { return chart; }, 'grafiki-po-dnyam');
+	api.get({k: ['sys.list_stats']}, function(D) {
+		var years = (D['sys.list_stats'] || []).map(function(s, i) { var m = /(\d{4})/.exec(s); return m ? {y: m[1], sel: i == 0} : null; }).filter(Boolean);
+		$('year').innerHTML = years.map(function(o) { return '<option' + (o.sel ? ' selected' : '') + '>' + o.y + '</option>'; }).join('');
+		put('files', 'Файлов: ' + years.length + (years.length ? ' (stats_' + years[years.length - 1].y + ' … stats_' + years[0].y + ')' : '') + '. Запись раз в сутки.');
+		gFetch('stats_head.csv', function(t) {
+			cols = gHead(t);
+			sel = gLoad('stats.sel', null);
+			if(!sel) { sel = {}; DEFAULT_SEL.forEach(function(re) { for(var i = 0; i < cols.length; i++) if(re.test(cols[i].name)) { sel[i] = true; break; } }); }
+			var items = cols.map(function(c, i) { baseOf(c.name); return {k: String(i), name: c.name.replace(', м', ', ч'), unit: laneKey(c) == 'E' ? 'кВт·ч' : UNIT[c.axis] || '', color: gColor(baseOf(c.name))}; });
+			gSide($('side'), [{t: '', items: items}], sel, toggle);
+			put('side-n', cols.length);
+			if(years.length) loadYear(); else put('state', 'На карте нет файлов статистики.');
+		}, function() { put('state', 'Не удалось получить список рядов (stats_head.csv).'); });
+	});
+};
+</script>
+</head>
+<body class="stats">
+<div id="menu" class="menu"><script src="menu.js"></script></div>
+<div class="content">
+<div class="gwrap">
+	<aside class="card gside">
+		<h3>Год</h3>
+		<label class="inp sel" style="display:flex;width:100%"><select id="year" onchange="loadYear()" style="width:100%"></select></label>
+		<div class="gnote" id="files"></div>
+		<h3 style="margin-top:14px">Ряды · <span id="side-n">–</span> <span class="r" style="cursor:pointer;font-size:12px" onclick="gAll($('side'), false, toggle)">Скрыть все</span></h3>
+		<div id="side"></div>
+		<div class="gbox"><div class="gnote" style="margin:0"><b>(work)</b> в названии ряда — среднее только за время работы компрессора. Статистика пишется раз в сутки; перед обновлением прошивки — «Состояние → Сохранить статистику». Моточасы в файле хранятся в минутах, здесь показаны в часах.</div></div>
+	</aside>
+	<section class="card">
+		<div class="gtool" id="tool">
+			<span class="win" id="win">—</span>
+			<button class="btn2 p" onclick="loadYear()">Загрузить</button>
+			<span class="grow"></span>
+			<span id="ranges" class="chips"><span class="chip" data-m="1" onclick="setRange(1)">1 д</span><span class="chip" data-m="2" onclick="setRange(2)">2 д</span><span class="chip" data-m="3" onclick="setRange(3)">3 д</span><span class="chip" data-m="7" onclick="setRange(7)">нед</span><span class="chip" data-m="14" onclick="setRange(14)">2 нед</span><span class="chip on" data-m="30" onclick="setRange(30)">мес</span><span class="chip" data-m="90" onclick="setRange(90)">3 мес</span><span class="chip" data-m="365" onclick="setRange(365)">год</span><span class="chip" data-m="0" onclick="setRange(0)">все</span></span>
+			<span class="chip" onclick="resetZoom()">⟲ масштаб</span>
+			<span id="exp"></span>
+		</div>
+		<div id="state" class="gnote" style="margin:0 0 6px"></div>
+		<div id="ch" style="min-height:300px"><div class="cht-empty">Загрузка…</div></div>
+		<div class="gnote">Энергия и моточасы — столбцами (суточные итоги), температуры и COP — линиями; пунктир — минимум и максимум. Подсказка при наведении показывает день. Протяжка мышью по графику — масштаб по времени, двойной щелчок — сброс.</div>
+	</section>
+</div>
+</div>
+<script>document.getElementById('exp').innerHTML = gExportMenu();</script>
+</body>
+</html>

@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>О контроллере. Народный контроллер ТН</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<script src="scripts.js"></script>
+<style>
+.hero{display:flex;align-items:center;gap:22px;margin-bottom:18px}
+.logo2.lg{width:96px;height:96px;border-radius:24px;background-size:72px;flex:none;margin:0}
+.hero h2{margin:0;font-size:26px;font-weight:800;letter-spacing:-.3px}
+.chipsv{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+.chipsv span{background:var(--bg);border-radius:12px;padding:8px 14px;color:var(--mute);font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.4px}
+.chipsv b{color:var(--ink);font-size:14px;margin-left:8px;letter-spacing:0;text-transform:none}
+.who .kvl{display:flex;justify-content:space-between;gap:14px;padding:8px 0;font-size:13.5px}
+.sep{border:0;border-top:1px solid var(--line);margin:12px 0}.who .kvl span{color:var(--mute)}
+</style>
+<script>
+// О контроллере: версия прошивки и веб-страниц, дата сборки и конфигурация (ver.config, ver.config_note, ver.fw, ver.build). Доступно роли user.
+var $ = function(id) { return document.getElementById(id); };
+var MON = {Jan: '01', Feb: '02', Mar: '03', Apr: '04', May: '05', Jun: '06', Jul: '07', Aug: '08', Sep: '09', Oct: '10', Nov: '11', Dec: '12'};
+function put(id, h) { var e = $(id); if(e) e.innerHTML = h; }
+window.onload = function() {
+	put('web', VER_WEB);
+	api.get({k: ['ver.fw', 'ver.config', 'ver.config_note', 'ver.build']}, function(D) {
+		if('ver.config' in D) put('cfg', D['ver.config']);
+		if('ver.config_note' in D) put('cfgnote', D['ver.config_note']);
+		if('ver.fw' in D) put('fw', D['ver.fw']);
+		var m = /^(\w{3})\s+(\d+)\s+(\d{4})\s+(\d+:\d+)/.exec(D['ver.build'] || '');
+		if(m) put('build', ('0' + m[2]).slice(-2) + '.' + MON[m[1]] + '.' + m[3] + ' ' + m[4]);
+	});
+};
+</script>
+</head>
+<body class="about">
+<div id="menu" class="menu"><script src="menu.js"></script></div>
+<div class="content">
+<div class="grid">
+	<section class="card c8">
+		<div class="hero"><div class="logo2 lg"></div><h2>Народный контроллер теплового насоса 2.0</h2></div>
+		<div class="chipsv"><span>Прошивка<b id="fw">–</b></span><span>Веб-интерфейс<b id="web">–</b></span><span>Сборка<b id="build">–</b></span></div>
+		<div class="field"><div class="l">Конфигурация</div><b id="cfg">–</b></div>
+		<div class="field"><div class="l">Описание конфигурации</div><b id="cfgnote" style="text-align:right">–</b></div>
+	</section>
+	<section class="card c4 who"><h3>Авторы</h3>
+		<div class="kvl"><span>Прошивка контроллера</span><b>Pav2000, vad711</b></div>
+		<div class="kvl"><span>Веб-интерфейс</span><b>Pav2000</b></div>
+		<div class="kvl"><span>Дизайн</span><b>Pav2000</b></div>
+		<hr class="sep">
+		<p style="color:var(--mute);font-size:13px;line-height:1.5;margin:0 0 6px">Данный проект является глубокой переработкой первой версии ПО, авторами которой были:</p>
+		<div class="kvl"><span>Прошивка контроллера</span><b>Pav2000, vad711</b></div>
+		<div class="kvl"><span>Веб-интерфейс</span><b>vad711, dobrina</b></div>
+		<div class="kvl"><span>Дизайн</span><b>Sheeny</b></div>
+		<p style="color:var(--mute);font-size:13px;line-height:1.5;margin:10px 0 0">Особая благодарность форумчанам <a target="_blank" href="https://www.forumhouse.ru/forums/645/"><b>forumhouse.ru</b> ↗</a>, которые помогают советами и опытом в соответствующей ветке форума.</p></section>
+</div>
+</div>
+</body>
+</html>

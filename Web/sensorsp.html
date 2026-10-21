@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Давление и расход. Народный контроллер ТН</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<script src="scripts.js"></script>
+<script src="settings.js"></script>
+<style>
+.calc{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.calc .pt{background:var(--bg);border-radius:14px;padding:12px 14px}
+.calc .pt h4{margin:0 0 8px;font-size:11px;font-weight:800;color:var(--mute);text-transform:uppercase;letter-spacing:.5px}
+.calc .pt div{display:flex;align-items:center;gap:10px;margin-bottom:6px;color:var(--mute);font-size:12px}
+.calc .inp{background:var(--card)}.calc .inp input{width:70px}
+.res{margin-top:12px;background:var(--acc2);border-radius:14px;padding:10px 14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;color:var(--acc);font-weight:700}
+.res b{color:var(--ink);font-size:20px}
+.avg{padding:3px 10px;border-radius:99px;border:1px solid var(--line);background:var(--card);font:inherit;font-size:11px;font-weight:800;color:var(--mute);cursor:pointer;margin-left:8px}
+.avg.run{color:var(--heat);border-color:var(--heat)}
+.sdm{display:grid;grid-template-columns:repeat(7,1fr);gap:10px;margin-bottom:14px}
+@media(max-width:1100px){.sdm{grid-template-columns:repeat(2,1fr)}.calc{grid-template-columns:1fr}}
+</style>
+<script>
+// Датчики кроме температурных: частотные (расход), аналоговые (давление), сухие контакты, электросчётчик SDM.
+// Составы устройств - из /api/meta (flow, press, input: devs); значения опрашиваются раз в 4 с, настройки правятся пакетом.
+urlupdate = 4000;
+var $ = function(id) { return document.getElementById(id); };
+function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
+function num(v, d) { var f = parseFloat(v); return v === null || v === undefined || isNaN(f) ? '–' : f.toFixed(d); }
+function code(v) { return v == 0 ? '<span class="okc">OK</span>' : '<span class="errc">E' + v + '</span>'; }
+
+function flowRow(N) {
+	var n = N.toLowerCase(), k = function(x) { return 'flow.' + N + '.' + x; };
+	return '<tr><td class="n">' + N + '<span class="d">' + stCell(k('note'), {k: 'ro', init: ''}) + '</span></td>' +
+		'<td class="num"><b class="big" id="fv-' + n + '">–</b><button class="avg" id="avg-' + n + '" onclick="avgStart(\'' + N + '\')" title="Усреднить показания: накопить до 60 отсчётов">Усреднить ⌀</button></td>' +
+		'<td><div class="row" style="gap:8px">' + stCell(k('check'), {k: 'sw'}) + stCell(k('min'), {min: 0.1, max: 25.5, step: 0.1, u: 'м³/ч'}) + '</div></td>' +
+		'<td>' + stCell(k('kf'), {min: 0.01, max: 327.67, step: 0.01}) + '</td><td>' + stCell(k('cap'), {min: 0, max: 5000, step: 1}) + '</td>' +
+		'<td class="num"><b id="fr-' + n + '">–</b> Гц</td><td>' + stCell(k('test'), {min: 0, max: 32.767, step: 0.001}) + '</td>' +
+		'<td><span class="code">D' + stCell(k('pin'), {k: 'ro'}) + '</span></td><td id="fe-' + n + '">–</td></tr>';
+}
+function pressRow(P) {
+	var p = P.toLowerCase(), k = function(x) { return 'press.' + P + '.' + x; };
+	return '<tr><td class="n">' + P + '<span class="d">' + stCell(k('note'), {k: 'ro', init: ''}) + '</span></td><td class="num"><b class="big" id="pv-' + p + '">–</b></td>' +
+		'<td>' + stCell(k('min'), {step: 0.01}) + '</td><td>' + stCell(k('max'), {step: 0.01}) + '</td><td>' + stCell(k('zero'), {step: 1}) + '</td><td>' + stCell(k('trans'), {step: 0.001}) + '</td>' +
+		'<td>' + stCell(k('test'), {step: 0.01}) + '</td><td><span class="code">AD' + stCell(k('pin'), {k: 'ro'}) + '</span></td><td class="num" id="pa-' + p + '">–</td><td id="pe-' + p + '">–</td></tr>';
+}
+function inputRow(N) {
+	var n = N.toLowerCase(), k = function(x) { return 'input.' + N + '.' + x; };
+	return '<tr><td class="n">' + N + '<span class="d">' + stCell(k('note'), {k: 'ro', init: ''}) + '</span></td><td class="num"><b class="big" id="iv-' + n + '">–</b></td>' +
+		'<td>' + stCell(k('alarm'), {min: 0, max: 1, step: 1}) + '</td><td>' + stCell(k('test'), {min: 0, max: 1, step: 1}) + '</td>' +
+		'<td><span class="code">D' + stCell(k('pin'), {k: 'ro'}) + '</span></td><td>' + stCell(k('type'), {k: 'ro'}) + '</td><td id="ie-' + n + '">–</td></tr>';
+}
+
+// ---- «Усреднить»: до 60 отсчётов расхода, новый отсчёт - когда значение изменилось или прошло 14 с ----
+var avg = null;
+function avgStart(N) {
+	if(avg) return;
+	avg = {n: N.toLowerCase(), sum: 0, cnt: 0, last: null, t: 0};
+	$('avg-' + avg.n).className = 'avg run';
+}
+function avgFeed(n, v) {
+	if(!avg || avg.n != n) return;
+	var f = parseFloat(v), now = Date.now();
+	if(isNaN(f) || (f === avg.last && now - avg.t < 14000)) return;
+	avg.last = f; avg.t = now; avg.sum += f; avg.cnt++;
+	var b = $('avg-' + n);
+	if(avg.cnt >= 60) { put('fv-' + n, (avg.sum / avg.cnt).toFixed(3)); b.className = 'avg'; b.innerHTML = 'Усреднить ⌀'; stToast('Среднее значение расхода: ' + (avg.sum / avg.cnt).toFixed(3) + ' м³/ч (60 отсчётов).'); avg = null; }
+	else b.innerHTML = avg.cnt + ' / 60';
+}
+
+// Общий опрос: значения датчиков, коды ошибок, частота, АЦП и данные счётчика
+var temps = {};		// температура насыщения по давлению (press.P.temp) приходит отдельным ключом
+function spPoll(d) {
+	for(var key in d) {
+		var v = d[key], m = /^(flow|press|input)\.([A-Za-z0-9_]+)\.(\w+)$/.exec(key);
+		if(m) {
+			var t = m[2].toLowerCase(), a = m[1] + '.' + m[3];
+			switch(a) {
+			case 'flow.value': if(!avg || avg.n != t) put('fv-' + t, num(v, 3)); avgFeed(t, v); break;
+			case 'flow.freq': put('fr-' + t, num(v, 3)); break;
+			case 'flow.ecode': put('fe-' + t, code(v)); break;
+			case 'press.value': temps[t + '.v'] = v; pressShow(t); break;
+			case 'press.temp': temps[t + '.t'] = v; pressShow(t); break;
+			case 'press.adc': put('pa-' + t, v); break;
+			case 'press.ecode': put('pe-' + t, code(v)); break;
+			case 'input.value': put('iv-' + t, v ? 1 : 0); break;
+			case 'input.ecode': put('ie-' + t, code(v)); break;
+			}
+			continue;
+		}
+		m = /^sdm\.(\w+)$/.exec(key);
+		if(!m) continue;
+		var k = m[1];
+		if(k == 'link') put('sdm-link', v ? '<span class="tag ok">есть</span>' : '<span class="tag bad">нет</span>');
+		else put('sdm-' + k, k == 'err' ? (v === null ? '–' : v) : num(v, k == 'pf' ? 2 : 1));
+	}
+}
+function pressShow(t) {
+	var v = temps[t + '.v'], q = temps[t + '.t'];
+	put('pv-' + t, q === null || q === undefined ? num(v, 2) : num(v, 2) + ' <small style="color:var(--mute);font-weight:600">bar · ' + num(q, 2) + '°</small>');
+}
+
+// ---- калькулятор коэффициентов аналоговых датчиков: две точки (АЦП, показание) -> «0» и коэффициент ----
+var calcRes = null;
+function calc() {
+	var a1 = +$('a1').value, a2 = +$('a2').value, p1 = +$('p1').value, p2 = +$('p2').value;
+	if(a1 == a2) { put('k1', '–'); put('k2', '–'); calcRes = null; return; }
+	var k2 = (p2 - p1) * 100 / (a2 - a1), k1 = p1 * 100 - k2 * a1;
+	calcRes = {zero: Math.abs(Math.round(k1)), k: Math.abs(k2).toFixed(3)};
+	put('k1', calcRes.zero); put('k2', calcRes.k);
+}
+function calcApply() {
+	var P = $('calc-for').value;
+	if(!calcRes || !P) { stToast('Введите две точки и выберите датчик.', true); return; }
+	if(!confirm('Записать датчику ' + P + ': «0» = ' + calcRes.zero + ', коэффициент = ' + calcRes.k + '? Значения применяются сразу.')) return;
+	var kz = 'press.' + P + '.zero', kt = 'press.' + P + '.trans', pairs = {};
+	pairs[kz] = calcRes.zero; pairs[kt] = calcRes.k;
+	api.set(pairs, function(D, E, err) {
+		var bad = Object.keys(E);
+		Object.keys(D).forEach(function(k) { var el = $(stKid(k)); if(el && !E[k]) stSetK(el, k, D[k]); });
+		if(err) stToast('Нет связи с контроллером.', true);
+		else if(bad.length) stToast('Датчик не принял значение (' + (ST_ERR[E[bad[0]]] || E[bad[0]]) + ').', true);
+		else { stUnsaved(true); stRefresh(); stToast('Коэффициенты записаны датчику ' + P + '.'); }
+	});
+}
+
+// ---- счётчик SDM: действия отвечают текстом - показываем его ----
+function sdmAction(act, ask) {
+	if(!confirm(ask)) return;
+	api['do'](act, function(v, e) { stToast('Счётчик: ' + (e ? ST_ERR[e] || e : v || 'команда отправлена') + '.', !!e); }, undefined, 15000);
+}
+
+window.onload = function() {
+	stPanel();
+	var p = {}, got = 0;
+	var done = function() {
+		if(++got < 3) return;
+		$('sdm-card').hidden = !api.ver.caps.sdm;
+		stLoadK();
+		var keys = [];
+		['value', 'freq', 'ecode'].forEach(function(a) { keys = keys.concat(stDevKeys('flow', p.flow, [a])); });
+		['value', 'temp', 'adc', 'ecode'].forEach(function(a) { keys = keys.concat(stDevKeys('press', p.press, [a])); });
+		['value', 'ecode'].forEach(function(a) { keys = keys.concat(stDevKeys('input', p.input, [a])); });
+		if(api.ver.caps.sdm) ['volt', 'current', 'acpower', 'pf', 'freq', 'acenergy', 'err', 'link'].forEach(function(k) { keys.push('sdm.' + k); });
+		api.poll({k: keys}, spPoll);
+	};
+	stDevices('flow', function(list) { p.flow = list; $('flow').innerHTML = list.map(flowRow).join(''); $('flow-card').hidden = !list.length; done(); });
+	stDevices('press', function(list) {
+		p.press = list; $('press').innerHTML = list.map(pressRow).join(''); $('press-card').hidden = !list.length; $('calc-card').hidden = !list.length;
+		$('calc-for').innerHTML = list.map(function(N) { return '<option>' + N + '</option>'; }).join('');
+		done();
+	});
+	stDevices('input', function(list) { p.input = list; $('inputs').innerHTML = list.map(inputRow).join(''); $('input-card').hidden = !list.length; done(); });
+	['a1', 'p1', 'a2', 'p2'].forEach(function(id) { $(id).addEventListener('input', calc); });
+	calc();
+};
+</script>
+</head>
+<body class="sensorsp">
+<div id="menu" class="menu"><script src="menu.js"></script></div>
+<div class="content">
+<div class="grid">
+	<section class="card c12" id="flow-card" hidden>
+		<h3>Частотные датчики · расход</h3>
+		<div class="scrollx"><table class="t"><thead><tr><th>Датчик</th><th>Значение</th><th>Контроль минимума<span class="hint" tabindex="0" data-tip="Включение контроля минимального протока.">1</span></th><th>Коэфф., имп/л</th><th>Теплоёмкость, Дж/(кг·°C)</th><th>Частота</th><th>Тест</th><th>Pin</th><th>Код ошибки</th></tr></thead><tbody id="flow"></tbody></table></div>
+	</section>
+	<section class="card c12" id="press-card" hidden>
+		<h3>Аналоговые датчики · давление</h3>
+		<div class="scrollx"><table class="t"><thead><tr><th>Датчик</th><th>Значение</th><th>Минимум</th><th>Максимум</th><th>«0» датчика</th><th>Коэффициент</th><th>Тест</th><th>Pin</th><th>АЦП</th><th>Код ошибки</th></tr></thead><tbody id="press"></tbody></table></div>
+	</section>
+	<section class="card c6" id="calc-card" hidden>
+		<h3>Калькулятор коэффициентов <span class="r" style="color:var(--mute);font-weight:600">две точки → «0» и коэффициент</span></h3>
+		<div class="calc">
+			<div class="pt"><h4>Точка 1</h4><div><label class="inp"><input id="a1" type="number" min="0" max="4095" step="1" value="0"></label>АЦП, 0…4095</div><div><label class="inp"><input id="p1" type="number" min="0" max="100" step="0.01" value="0"></label>показание, 0…100</div></div>
+			<div class="pt"><h4>Точка 2</h4><div><label class="inp"><input id="a2" type="number" min="0" max="4095" step="1" value="2500"></label>АЦП, 0…4095</div><div><label class="inp"><input id="p2" type="number" min="0" max="100" step="0.01" value="12"></label>показание, 0…100</div></div>
+		</div>
+		<div class="res"><span>«0» датчика <b id="k1">–</b></span><span>Коэффициент <b id="k2">–</b></span><span class="grow" style="flex:1"></span><label class="inp sel"><select id="calc-for"></select></label><button class="btn2 p" onclick="calcApply()">Установить</button></div>
+		<div class="fnote">Установка сразу записывает «0» и коэффициент выбранному датчику (с подтверждением). Чтобы сохранить после перезагрузки — «Записать в EEPROM».</div>
+	</section>
+	<section class="card c6" id="input-card" hidden>
+		<h3>Сухие контакты</h3>
+		<div class="scrollx"><table class="t"><thead><tr><th>Датчик</th><th>Значение</th><th>Состояние при аварии</th><th>Тест</th><th>Pin</th><th>Тип</th><th>Код</th></tr></thead><tbody id="inputs"></tbody></table></div>
+	</section>
+	<section class="card c12" id="sdm-card">
+		<h3>Электрический счётчик · <span id="k-sdm-name" data-kr="sdm.name">–</span> <span class="r row" style="gap:10px;color:var(--mute);font-weight:600">Modbus · связь <span id="sdm-link"></span>
+			<button class="btn2" style="padding:6px 12px" onclick="sdmAction('sdm.link','Сбросить флаг сбоя связи и попытаться прочитать данные со счётчика?')">Восстановить связь<span class="hint" tabindex="0" data-tip="При нажатии кнопки флаг сбоя связи сбрасывается и делается попытка прочитать данные со счётчика.">2</span></button>
+			<button class="btn2" style="padding:6px 12px" onclick="sdmAction('sdm.program','Записать параметры связи в счётчик? Счётчик должен быть в режиме программирования (на экране «Set»); после операции выключите его питание.')">Запрограммировать<span class="hint" tabindex="0" data-tip="Производится установка параметров связи счётчика под требуемые. Перед нажатием необходимо перевести счётчик в режим программирования (долгое нажатие на кнопку, надпись Set на экране). После этой операции счётчик надо сбросить (выключить питание).">3</span></button></span></h3>
+		<div class="sdm">
+			<div class="tile"><i>Напряжение</i><b id="sdm-volt">–</b><u>В</u></div><div class="tile"><i>Ток</i><b id="sdm-current">–</b><u>А</u></div><div class="tile"><i>Мощность</i><b id="sdm-acpower">–</b><u>Вт</u></div>
+			<div class="tile"><i>cos φ</i><b id="sdm-pf">–</b></div><div class="tile"><i>Частота</i><b id="sdm-freq">–</b><u>Гц</u></div><div class="tile"><i>Энергия</i><b id="sdm-acenergy">–</b><u>кВт·ч</u></div><div class="tile"><i>Ошибок</i><b id="sdm-err">–</b></div>
+		</div>
+		<div class="row" style="gap:24px;flex-wrap:wrap">
+			<div class="field" style="flex:1;min-width:260px"><div class="l">Максимальное напряжение<span class="hint" tabindex="0" data-tip="При выполнении условия ТН останавливается по ошибке.">4</span><small>останов ТН по ошибке · 0…400 В</small></div><label class="inp"><input id="k-sdm-maxv" data-k="sdm.maxv" type="number" min="0" max="400" step="1"><u>В</u></label></div>
+			<div class="field" style="flex:1;min-width:260px"><div class="l">Минимальное напряжение<span class="hint" tabindex="0" data-tip="При выполнении условия ТН не останавливается, генерируется уведомление.">5</span><small>только уведомление · 0…400 В</small></div><label class="inp"><input id="k-sdm-minv" data-k="sdm.minv" type="number" min="0" max="400" step="1"><u>В</u></label></div>
+			<div class="field" style="flex:1;min-width:260px"><div class="l">Контроль мощности<span class="hint" tabindex="0" data-tip="При выполнении условия ТН не останавливается, генерируется уведомление.">5</span><small>только уведомление · 0…30000 Вт</small></div><label class="inp"><input id="k-sdm-maxp" data-k="sdm.maxp" type="number" min="0" max="30000" step="1"><u>Вт</u></label></div>
+		</div>
+	</section>
+</div>
+</div>
+</body>
+</html>

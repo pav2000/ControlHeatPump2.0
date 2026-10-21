@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Пуск и защиты. Народный контроллер ТН</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<script src="scripts.js"></script>
+<script src="settings.js"></script>
+<script>
+// Пуск и защиты: повторы, задержки, генератор, звук и сброс настроек. Остальное из прежних «Настроек ТН» переехало:
+// интервал графиков и «только при работе компрессора» - на «Графики → Онлайн», запись истории - «Графики → История»,
+// дисплей Nextion - «Оборудование → Прочее», расположение файлов веб-сервера - «Файлы и обновление».
+var $ = function(id) { return document.getElementById(id); };
+function f(n, o) { o.key = 'ohp.' + n.toLowerCase(); return o; }
+var working = true;
+
+// работает ли ТН: общий опрос страницы
+function onWork(d) { if('state.work' in d) { working = d['state.work']; resetState(); } }
+// «Сброс настроек» работает только при остановленном ТН; раньше при работающем команда молча игнорировалась
+function resetState() {
+	var b = $('rs-btn'), ok = $('rs-code').value == 'RESET' && !working;
+	b.disabled = !ok;
+	b.title = working ? 'Недоступно: тепловой насос работает' : $('rs-code').value == 'RESET' ? '' : 'Введите RESET';
+	$('rs-note').innerHTML = working ? 'Кнопка недоступна: тепловой насос работает. Остановите его и повторите.' : 'Перед выполнением — окно подтверждения; результат («OK» или причина отказа) показывается сообщением.';
+}
+function resetSettings() {
+	if(!confirm('Вернуть заводские настройки контроллера? Контроллер перезагрузится, все настройки будут потеряны.')) return;
+	api['do']('reset.settings', function(v, e) {
+		stToast(!e ? 'Заводские настройки возвращены, контроллер перезагружается.' : 'Сброс не выполнен (' + (ST_ERR[e] || e) + ')' + (e == 'busy' ? ': тепловой насос не остановлен' : '') + '.', !!e);
+	});
+}
+
+window.onload = function() {
+	stPanel();
+	stFields('c1', [
+		f('ATTEMPT', {t: 'Повторные попытки пуска при ошибке', h: '0…255, 0 — не повторять', min: 0, max: 255, step: 1, n: [2, '0 — повторный пуск при ошибке не производится.']}),
+		f('DLSR', {t: 'Задержка пуска после внезапного сброса', h: '0…6000 с', u: 'с', min: 0, max: 6000, step: 1}),
+		f('DLRS', {t: 'Задержка перед повтором при ошибке', h: '0…6000 с', u: 'с', min: 0, max: 6000, step: 1}),
+		f('SAVE_ON', {k: 'sw', t: 'Сохранять состояние ТН в EEPROM', h: 'чтобы восстановить его после сброса'})
+	]);
+	stFields('c2', [
+		f('PAUSE', {t: 'Минимальный простой компрессора', h: 'перед включением · 0…200 мин', u: 'мин', min: 0, max: 200, step: 1}),
+		f('MCON', {t: 'Минимальное время работы', h: 'компрессора', u: 'с', min: 0, step: 1}),
+		f('DLONP', {t: 'Компрессор после включения насосов', h: 'задержка · 0…900 с', u: 'с', min: 0, max: 900, step: 1}),
+		f('DLTRV', {t: 'Реверсивный клапан → компрессор', h: 'задержка · 0…600 с', u: 'с', min: 0, max: 600, step: 1}),
+		f('DLOFP', {t: 'Выключение насоса отопления', h: 'после компрессора · 0…900 с', u: 'с', min: 0, max: 900, step: 1})
+	]);
+	stFields('c3', [
+		f('DLBSW', {t: 'Пауза после переключения ГВС', h: '0…1200 с', u: 'с', min: 0, max: 1200, step: 1}),
+		f('DLBOFF', {t: 'Блокировка защит при переходе с ГВС на отопление', h: '0…1200 с', u: 'с', min: 0, max: 1200, step: 1})
+	]);
+	stFields('c4', [
+		f('BPOW', {k: 'sw', t: 'Работа от генератора', h: 'ограничение мощности, электрокотёл, ТЭН бойлера и реле по суткам выключены', n: [6, 'В режиме работы от резервного источника питания происходит ограничение потребляемой мощности ТН, не включается электрокотёл, ТЭН бойлера, ежесуточные реле. Нагрев ГВС продолжается тепловым насосом, ТЭН бойлера не используется. Это не сохраняемая настройка: после сброса контроллера значение будет сброшено.']}),
+		f('BPA', {k: 'sw', t: 'Определять автоматически', h: 'вместо ручного флага'}),
+		f('MAXPOW', {t: 'Максимальная мощность ТН', h: 'от резервного источника · 0…10000 Вт', u: 'Вт', min: 0, max: 10000, step: 1})
+	]);
+	$('rs-code').addEventListener('input', resetState);
+	stLoadK();
+	api.poll({k: ['state.work']}, onWork);
+	resetState();
+};
+</script>
+</head>
+<body class="config">
+<div id="menu" class="menu"><script src="menu.js"></script></div>
+<div class="content">
+<div class="grid">
+	<section class="card c4"><h3>Запуск и повторы</h3><div id="c1"></div></section>
+	<section class="card c4"><h3>Компрессор и насосы</h3><div id="c2"></div></section>
+	<section class="card c4"><h3>ГВС ⇄ отопление</h3><div id="c3"></div></section>
+	<section class="card c6"><h3>Резервное питание · генератор</h3><div id="c4"></div><div class="fnote">Ручной флаг сбрасывается при сбросе контроллера; чтобы сохранить его, нажмите «Записать в EEPROM». На генераторе электрокотёл отопления и ТЭН бойлера отключены всегда.</div></section>
+	<section class="card c6"><h3>Сброс настроек контроллера</h3>
+		<div class="warnbox">Вернёт заводские настройки. Работает только при остановленном ТН: при работающем кнопка недоступна (раньше команда молча игнорировалась).</div>
+		<div class="row" style="gap:12px;margin:14px 0 8px;flex-wrap:wrap"><span style="color:var(--mute)">Введите RESET</span><label class="inp"><input id="rs-code" size="7" autocomplete="off" style="width:90px;text-align:left"></label><button class="btn2 bad" id="rs-btn" onclick="resetSettings()" disabled>Сбросить настройки…</button></div>
+		<div class="fnote" id="rs-note"></div>
+	</section>
+</div>
+</div>
+</body>
+</html>

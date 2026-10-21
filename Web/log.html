@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Журнал. Народный контроллер ТН</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<script src="scripts.js"></script>
+<script src="settings.js"></script>
+<style>
+.logbox{background:#101820;color:#c7d4e0;border-radius:14px;padding:12px 0;height:520px;overflow:auto;font-family:'DejaVu Sans Mono',Consolas,monospace;font-size:12.5px;line-height:1.65}
+.logbox div{white-space:pre;padding:0 14px;cursor:pointer}
+.logbox div:hover{background:rgba(255,255,255,.05)}
+.logbox div.sel{background:rgba(15,139,141,.35);color:#fff}
+.logbox div.w{color:#f2b36b}.logbox div.e{color:#ff8a8a}.logbox div.c{color:#7fa6c4}
+.refx p{margin:0 0 8px;font-size:13px;line-height:1.5}
+.refx ul{margin:0;padding-left:18px;font-size:13px;line-height:1.5}.refx li{margin-bottom:6px}
+.refx code{background:var(--bg);border-radius:5px;padding:1px 5px;font-size:12px}
+.refx table{width:100%;border-collapse:collapse;font-size:12.5px}
+.refx td,.refx th{padding:5px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+.refx th{font-size:11px;text-transform:uppercase;color:var(--mute)}
+.refcard{padding:10px 20px}
+.rhead{display:flex;justify-content:space-between;align-items:center;gap:12px;cursor:pointer}
+.rhead small{margin-left:12px;color:var(--mute);font-size:12px}
+.rhead a{font-weight:800;color:var(--acc);white-space:nowrap}
+#ref-b{margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
+.refcols{display:grid;grid-template-columns:1fr 1fr;gap:28px}
+.explain{background:var(--acc2);border-radius:12px;padding:10px 14px;margin-top:12px;font-size:13px;line-height:1.5}
+@media(max-width:1000px){.refcols{grid-template-columns:1fr}}
+</style>
+<script>
+// Журнал контроллера: файл /journal.txt целиком (обновляется кнопкой, автообновления нет, как раньше).
+// Клик по строке подсвечивает её и расшифровывает код режима и точку возврата алгоритма.
+var $ = function(id) { return document.getElementById(id); };
+function esc(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
+var ALG = {1: "выключение по подаче", 2: "включение по гистерезису", 3: "выключение по гистерезису", 4: "внутри гистерезиса (продолжение: нагрев или охлаждение)", 5: "внутри гистерезиса пауза", 6: "сброс частоты по подаче", 7: "сброс частоты по мощности", 8: "сброс частоты по температуре компрессора", 9: "сброс частоты по давлению", 10: "разгон, пид не работает", 11: "время пида не пришло", 12: "дошли до ПИДа, регулируем", 13: "включение по обратке достигнута минимальная температура обратки", 14: "работа супербойлера ПИД ГВС (заход в бойлер)", 15: "Бойлер греется от предкондесатора (заход в отопление)", 16: "сброс частоты по току инвертора", 17: "блокировка роста частоты ПИДом при подходе к уровням защиты ПОДАЧА", 18: "блокировка роста частоты ПИДом при подходе к уровням защиты МОЩНОСТЬ", 19: "блокировка роста частоты ПИДом при подходе к уровням защиты ТОК", 20: "блокировка роста частоты ПИДом при подходе к уровням защиты ТCOMP", 21: "блокировка роста частоты ПИДом при подходе к уровням защиты ДАВЛЕНИЮ", 22: "Выключение нагрева бойлера ТН для перехода в режим ДОГРЕВА его ТЭНом", 23: "Выключение режима ТН при достижении уровня защиты по подаче (достижение границы)", 24: "Выключение режима ТН при достижении уровня защиты по мощности (достижение границы)", 25: "Выключение режима ТН при достижении уровня защиты по температуре компрессора (достижение границы)", 26: "Выключение режима ТН при достижении уровня защиты по давлению (достижение границы)", 27: "Выключение режима ТН при достижении уровня защиты по току (достижение границы)", 28: "Ограничение мощности при работе от резервного источника питания (сброс частоты)", 29: "Выключение режима ТН при достижении минимальной частоты при работе от резервного источника питания.", 30: "Ограничение при работе от генератора"};
+var BITS = [[0x01, 'отопление'], [0x02, 'охлаждение'], [0x04, 'ГВС'], [0x08, 'разморозка'], [0x80, '«продолжение» (режим уже идёт, без нового пуска)']];
+var SRC = {B: 'бойлер (ГВС)', H: 'отопление', C: 'охлаждение'}, ALGN = {h: 'гистерезис', p: 'ПИД'};
+var SPEC = {none: 'в начале, решения ещё нет', MinPause: 'ждём минимальную паузу между включениями', Bdis: 'сброс тепла (слив бойлера)', Bgen: 'запрет на генераторе'};
+
+function decode(line) {
+	var out = [], m = /\b([BHC])([hp])(\d+)\b/.exec(line), s = /\b(none|MinPause|Bdis|Bgen)\b/.exec(line);
+	if(m) out.push('<b>' + m[0] + '</b> — ' + SRC[m[1]] + ', ' + ALGN[m[2]] + ', №' + m[3] + (ALG[m[3]] ? ' «' + ALG[m[3]] + '»' : ''));
+	else if(s) out.push('<b>' + s[1] + '</b> — ' + SPEC[s[1]]);
+	var c = /(?:ret=|modWork:\s*)([0-9A-Fa-f]+)/.exec(line);
+	if(c) {
+		var v = parseInt(c[1], 16), parts = [];
+		BITS.forEach(function(b) { if(v & b[0]) parts.push('0x' + (b[0] < 16 ? '0' : '') + b[0].toString(16).toUpperCase() + ' ' + b[1]); });
+		out.push('<b>' + c[0].replace(/\s/g, '') + '</b> — ' + (v ? parts.join(' + ') : 'выключено'));
+	}
+	return out.length ? out.join('<br>') : 'В этой строке нет кода режима или точки возврата.';
+}
+function refToggle() {
+	var b = $('ref-b');
+	b.hidden = !b.hidden;
+	$('ref-a').innerHTML = b.hidden ? 'показать ▾' : 'скрыть ▴';
+}
+function load() {
+	$('state').innerHTML = 'Загрузка…';
+	gFetchLog(function(t) {
+		var h = '', a = t.split('\n');
+		a.forEach(function(l) { if(l === '') return; h += '<div class="' + (/\bERR(OR)?\b|ошибк/i.test(l) ? 'e' : /WARN/i.test(l) ? 'w' : /^\s*\^/.test(l) ? 'c' : '') + '">' + esc(l) + '</div>'; });
+		$('log').innerHTML = h;
+		$('log').scrollTop = $('log').scrollHeight;
+		$('state').innerHTML = a.length + ' строк · ' + Math.round(t.length / 1024) + ' КБ';
+	}, function(c) { $('state').innerHTML = 'Не удалось загрузить журнал (' + (c || 'нет связи') + ').'; });
+}
+function gFetchLog(ok, fail) {
+	var r = new XMLHttpRequest();
+	r.open('GET', urlcontrol + '/journal.txt', true);
+	r.timeout = 60000;
+	r.onload = function() { if(r.status == 200) ok(r.responseText); else fail(r.status); };
+	r.onerror = r.ontimeout = function() { fail(0); };
+	r.send(null);
+}
+function clearLog() {
+	if(!confirm('Очистить журнал контроллера?')) return;
+	api['do']('reset.journal', function(v, e) { if(e) stToast('Не выполнено (' + (ST_ERR[e] || e) + ').', true); else { stToast('Журнал очищен.'); load(); } });
+}
+window.onload = function() {
+	$('log').addEventListener('click', function(e) {
+		var d = e.target.closest('div');
+		if(!d || d == $('log')) return;
+		var s = $('log').querySelector('.sel');
+		if(s) s.classList.remove('sel');
+		d.classList.add('sel');
+		$('explain').innerHTML = decode(d.textContent);
+	});
+	load();
+};
+</script>
+</head>
+<body class="log">
+<div id="menu" class="menu"><script src="menu.js"></script></div>
+<div class="content">
+<div class="grid">
+	<section class="card c8"><h3>Журнал контроллера <span class="r row" style="gap:8px"><button class="btn2" style="padding:6px 12px" onclick="load()">Обновить</button><a class="btn2" style="padding:6px 12px;text-decoration:none" href="/journal.txt" download>Скачать</a><button class="btn2 bad" style="padding:6px 12px" onclick="clearLog()">Очистить…</button></span></h3>
+		<div class="logbox" id="log"></div>
+		<div class="fnote" id="state"></div>
+		<div class="fnote">Показывается весь журнал; обновляется кнопкой (автообновления нет, как раньше). Нажатие на строку подсвечивает её и расшифровывает справа.</div></section>
+	<section class="card c4 refx"><h3>Расшифровка строк журнала</h3><p><b>Код режима</b> (<code>ret=</code> и <code>modWork:</code>, шестнадцатеричное число): биты складываются.
+<b>01</b> - отопление, <b>02</b> - охлаждение, <b>04</b> - ГВС, <b>08</b> - разморозка, <b>80</b> - «продолжение» (режим уже идёт, без нового пуска),
+<b>00</b> - выключено. Примеры: <b>1</b> - отопление (старт), <b>81</b> - отопление, продолжение, <b>84</b> - ГВС, продолжение.</p>
+<p><b>Точка возврата</b> (<code>Hp11</code>, <code>Bp12</code>, <code>[Hp2]</code> и т. п.): три поля <b>&lt;источник&gt;&lt;алгоритм&gt;&lt;номер&gt;</b>.
+Источник: <b>B</b> - бойлер (ГВС), <b>H</b> - отопление, <b>C</b> - охлаждение. Алгоритм: <b>h</b> - гистерезис, <b>p</b> - ПИД.
+Особые значения: <b>none</b> - в начале, решения ещё нет; <b>MinPause</b> - ждём минимальную паузу между включениями; <b>Bdis</b> - сброс тепла (слив бойлера); <b>Bgen</b> - запрет на генераторе.
+Пример: <b>Bp12</b> - бойлер, ПИД, «дошли до ПИДа, регулируем».</p>
+		<div class="explain" id="explain">Выберите строку журнала — здесь появится расшифровка кода режима и точки возврата.</div></section>
+	<section class="card c12 refx refcard"><div class="rhead" onclick="refToggle()"><div><b>Справочник журнала</b><small>строки журнала, номера алгоритмов, флаги</small></div><a id="ref-a">показать ▾</a></div>
+		<div id="ref-b" hidden>
+		<div class="refcols"><div><p><b>Строки журнала</b></p>
+<ul>
+<li><code>EvaluateWorkMode: Hp11, ret=81</code> (флаг MODW): решение алгоритма на этом проходе. <b>Hp11</b> - точка возврата (отопление, ПИД, «время ПИДа не пришло»); <b>ret=81</b> - код режима (отопление, продолжение).</li>
+<li><code>EvaluateWorkMode-Boiler: none(Hp11), ret=0, onBoiler=0, flagRBOILER=1</code> (флаг MODW): решение для ГВС. Формат <b>&lt;текущая точка&gt;(&lt;предыдущая&gt;)</b>; <b>ret</b> - код режима (0 - ГВС не нужен); <b>onBoiler</b> - 1, если ТН сейчас греет бойлер (не ТЭНом); <b>flagRBOILER</b> - 1, если идёт или скоро может пойти цикл догрева бойлера ТЭНом (бойлер ниже гистерезиса).</li>
+<li><code>Start modWork:1[Hp2]</code>: начало режима работы. <b>1</b> - код режима (отопление), в скобках точка возврата (<b>Hp2</b> - включение по гистерезису).</li>
+<li><code>modWork:81[Hp11] RCOMP:1 RPUMPI:1 … freqFC:55.00 Power:1.250 EEV:480 …</code> (флаг DUMP): строка состояния ТН. После кода режима и точки возврата идут <b>реле</b> (имя:1 - включено, 0 - выключено), <b>freqFC</b> - частота инвертора, Гц, <b>Power</b> - мощность инвертора, кВт, <b>EEV</b> - положение ЭРВ, затем <b>входы</b> (имя:состояние контакта). Вторая строка - температуры, °C, и датчики давления.</li>
+<li><code>Pumps(1), modWork: 1</code>, <code>compressorON &gt; modWork:…</code>: переключение насосов и включение компрессора, после них показан текущий код режима.</li>
+</ul></div><div><p><b>Номер алгоритма</b> (последнее число в точке возврата)</p>
+<table>
+<thead><tr><th>Номер</th><th>Что означает</th></tr></thead>
+<tbody>
+<tr><td><b>1</b></td><td>выключение по подаче</td></tr>
+<tr><td><b>2</b></td><td>включение по гистерезису</td></tr>
+<tr><td><b>3</b></td><td>выключение по гистерезису</td></tr>
+<tr><td><b>4</b></td><td>внутри гистерезиса (продолжение: нагрев или охлаждение)</td></tr>
+<tr><td><b>5</b></td><td>внутри гистерезиса пауза</td></tr>
+<tr><td><b>6</b></td><td>сброс частоты по подаче</td></tr>
+<tr><td><b>7</b></td><td>сброс частоты по мощности</td></tr>
+<tr><td><b>8</b></td><td>сброс частоты по температуре компрессора</td></tr>
+<tr><td><b>9</b></td><td>сброс частоты по давлению</td></tr>
+<tr><td><b>10</b></td><td>разгон, пид не работает</td></tr>
+<tr><td><b>11</b></td><td>время пида не пришло</td></tr>
+<tr><td><b>12</b></td><td>дошли до ПИДа, регулируем</td></tr>
+<tr><td><b>13</b></td><td>включение по обратке достигнута минимальная температура обратки</td></tr>
+<tr><td><b>14</b></td><td>работа супербойлера ПИД ГВС (заход в бойлер)</td></tr>
+<tr><td><b>15</b></td><td>Бойлер греется от предкондесатора (заход в отопление)</td></tr>
+<tr><td><b>16</b></td><td>сброс частоты по току инвертора</td></tr>
+<tr><td><b>17</b></td><td>блокировка роста частоты ПИДом при подходе к уровням защиты ПОДАЧА</td></tr>
+<tr><td><b>18</b></td><td>блокировка роста частоты ПИДом при подходе к уровням защиты МОЩНОСТЬ</td></tr>
+<tr><td><b>19</b></td><td>блокировка роста частоты ПИДом при подходе к уровням защиты ТОК</td></tr>
+<tr><td><b>20</b></td><td>блокировка роста частоты ПИДом при подходе к уровням защиты ТCOMP</td></tr>
+<tr><td><b>21</b></td><td>блокировка роста частоты ПИДом при подходе к уровням защиты ДАВЛЕНИЮ</td></tr>
+<tr><td><b>22</b></td><td>Выключение нагрева бойлера ТН для перехода в режим ДОГРЕВА его ТЭНом</td></tr>
+<tr><td><b>23</b></td><td>Выключение режима ТН при достижении уровня защиты по подаче (достижение границы)</td></tr>
+<tr><td><b>24</b></td><td>Выключение режима ТН при достижении уровня защиты по мощности (достижение границы)</td></tr>
+<tr><td><b>25</b></td><td>Выключение режима ТН при достижении уровня защиты по температуре компрессора (достижение границы)</td></tr>
+<tr><td><b>26</b></td><td>Выключение режима ТН при достижении уровня защиты по давлению (достижение границы)</td></tr>
+<tr><td><b>27</b></td><td>Выключение режима ТН при достижении уровня защиты по току (достижение границы)</td></tr>
+<tr><td><b>28</b></td><td>Ограничение мощности при работе от резервного источника питания (сброс частоты)</td></tr>
+<tr><td><b>29</b></td><td>Выключение режима ТН при достижении минимальной частоты при работе от резервного источника питания.</td></tr>
+<tr><td><b>30</b></td><td>Ограничение при работе от генератора</td></tr>
+</tbody>
+</table></div></div></div></section>
+</div>
+</div>
+</body>
+</html>

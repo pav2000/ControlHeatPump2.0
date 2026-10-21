@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Прочее. Народный контроллер ТН</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<script src="scripts.js"></script>
+<script src="settings.js"></script>
+<style>
+.themes{display:flex;gap:8px;padding-top:6px}
+.th{cursor:pointer;text-align:center;width:84px}
+.th em{display:block;font-style:normal;font-size:12px;font-weight:700;color:var(--mute);margin-top:5px}
+.pv{position:relative;height:58px;border-radius:12px;border:2px solid var(--line);overflow:hidden}
+.pv .sd{position:absolute;left:0;top:0;bottom:0;width:14px}
+.pv .cd{position:absolute;left:20px;right:6px;top:8px;bottom:8px;border-radius:7px;box-shadow:0 1px 2px rgba(0,0,0,.2)}
+.pv .cd b{position:absolute;left:6px;top:6px;width:18px;height:6px;border-radius:3px}.pv .cd b.l{top:16px;width:34px;background:#9aa6b2;opacity:.5}
+.th.on .pv{border-color:var(--acc)}.th.on em{color:var(--acc)}
+</style>
+<script>
+// Реле (/api/meta?g=relay, ключи relay.<ИМЯ>.on), дисплей Nextion и звук (BEEP). Реле переключаются сразу и только при остановленном ТН: пока он работает,
+// опрос блокирует переключатели. Блок «Корректировка электрической мощности» убран:
+// прошивка больше не поддерживает эту функцию (CORRECT_POWER220 удалён в cd50217, get_tblPwrC отвечает E01).
+urlupdate = 2000;
+var $ = function(id) { return document.getElementById(id); };
+function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
+
+function row(R) {
+	var r = R.toLowerCase(), k = function(a) { return 'relay.' + R + '.' + a; };
+	return '<tr><td class="n">' + R + '<span class="d">' + stCell(k('note'), {k: 'ro', init: ''}) + '</span></td>' +
+		'<td><div class="row" style="gap:10px">' + stCell(k('on'), {k: 'sw', now: 1, nol: 1}) + '<b id="onoff-' + r + '" style="font-size:12px;color:var(--mute)"></b></div></td>' +
+		'<td><span class="code">D' + stCell(k('pin'), {k: 'ro'}) + '</span></td></tr>';
+}
+var relays = [], working = true;
+function relayPoll(d) {
+	if('state.work' in d) {
+		working = d['state.work'];
+		$('lock').hidden = !working;
+	}
+	relays.forEach(function(R) {
+		var key = 'relay.' + R + '.on', el = $(stKid(key));
+		if(!el) return;
+		if(key in d && document.activeElement !== el) { stSetK(el, key, d[key]); put('onoff-' + R.toLowerCase(), d[key] ? 'Вкл' : 'Выкл'); }
+		el.disabled = working;
+	});
+}
+// Образцы цветовых схем: [ключ, подпись, фон, плитка, акцент, колонка]
+var THEMES = [['light', 'Светлая', '#f3f5f8', '#fff', '#0f8b8d', '#fff'], ['dark', 'Графит', '#10151b', '#1a212a', '#34c3c5', '#1a212a'],
+	['sand', 'Песок', '#f4eee0', '#fffcf5', '#2563c9', '#fffcf5'], ['ocean', 'Океан', '#eaf1f8', '#fff', '#1f6fd1', '#0f2238']];
+function iface() {
+	var cur = SH_THEMES.indexOf(shTheme) > 0 ? shTheme : 'light';
+	$('themes').innerHTML = THEMES.map(function(t) {
+		return '<div class="th' + (t[0] == cur ? ' on' : '') + '" onclick="setTheme(\'' + t[0] + '\')"><div class="pv" style="background:' + t[2] + '"><i class="sd" style="background:' + t[5] + '"></i><i class="cd" style="background:' + t[3] + '"><b style="background:' + t[4] + '"></b><b class="l"></b></i></div><em>' + t[1] + '</em></div>';
+	}).join('');
+	[].forEach.call(document.querySelectorAll('#dens a'), function(a) { a.classList.toggle('on', a.getAttribute('data-d') == (shDens == 'n' ? 'n' : 'c')); });
+}
+function setTheme(v) { shSetTheme(v); iface(); }
+function setDens(v) { shSetDens(v); iface(); }
+
+window.onload = function() {
+	stPanel();
+	iface();
+	stFields('nxt', [
+		{key: 'ohp.nxt', k: 'sw', t: 'Использовать дисплей'},
+		{key: 'ohp.nxtw', k: 'sw', t: 'Включать при пуске компрессора'},
+		{key: 'ohp.nxts', t: 'Время засыпания дисплея', h: '0…255 мин, 0 — не выключается', u: 'мин', min: 0, max: 255, step: 1, n: [7, '0 — дисплей Nextion не выключается.']},
+		{key: 'ohp.nxtd', t: 'Яркость', h: '1…100 %', u: '%', min: 1, max: 100, step: 1}
+	]);
+	stFields('snd', [{key: 'ohp.beep', k: 'sw', t: 'Звуковой сигнал', h: 'генерация сигналов контроллером'}]);
+	stDevices('relay', function(list) {
+		relays = list;
+		$('rows').innerHTML = list.map(row).join('');
+		put('rcnt', list.length + ' реле в конфигурации');
+		stLoadK();
+		api.poll({k: ['state.work'].concat(stDevKeys('relay', list, ['on']))}, relayPoll);
+	});
+};
+</script>
+</head>
+<body class="relay">
+<div id="menu" class="menu"><script src="menu.js"></script></div>
+<div class="content">
+<div class="grid">
+	<section class="card c8">
+		<h3>Реле <span class="r" style="color:var(--mute);font-weight:600" id="rcnt"></span></h3>
+		<div class="warnbox" id="lock" hidden style="margin-bottom:10px">🔒 Тепловой насос работает — ручное управление реле заблокировано. Переключать реле можно при остановленном ТН или на странице «Система → Диагностика → Тест» в режиме ручного управления.</div>
+		<div class="scrollx"><table class="t"><thead><tr><th>Реле</th><th>Состояние</th><th>Pin</th></tr></thead><tbody id="rows"></tbody></table></div>
+	</section>
+	<div class="c4" style="display:flex;flex-direction:column;gap:16px">
+		<section class="card">
+			<h3>Дисплей Nextion <span class="r" style="color:var(--mute);font-weight:600">параметры из «Настроек ТН»</span></h3>
+			<div id="nxt"></div>
+		</section>
+		<section class="card">
+			<h3>Звук</h3>
+			<div id="snd"></div>
+		</section>
+		<section class="card">
+			<h3>Интерфейс <span class="r" style="color:var(--mute);font-weight:600">только в этом браузере</span></h3>
+			<div class="field"><div class="l">Плотность<small>отступы на страницах; на телефоне не меняется</small></div><span class="seg" id="dens"><a data-d="c" onclick="setDens('c')">Компактная</a><a data-d="n" onclick="setDens('n')">Просторная</a></span></div>
+			<div class="l" style="padding:10px 0 2px"><b>Цветовая схема</b></div>
+			<div class="themes" id="themes"></div>
+		</section>
+	</div>
+</div>
+</div>
+</body>
+</html>

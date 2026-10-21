@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Расписание. Народный контроллер ТН</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<script src="scripts.js"></script>
+<script src="settings.js"></script>
+<style>
+.chips .chip{font-size:13px;padding:8px 14px;border-radius:12px;color:var(--ink)}
+.chips .chip.on{background:var(--card);color:var(--ink);border:2px solid var(--ink);padding:7px 13px}
+.chip .act{background:var(--acc);color:#fff;font-size:10px;font-weight:800;padding:1px 6px;border-radius:99px;margin-left:6px;text-transform:uppercase}
+.row2{display:flex;gap:18px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.nowt p{margin:0 0 6px;color:var(--mute)}.nowt b{color:var(--ink)}
+.brush{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0 14px}
+.brush .cap{color:var(--mute);font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.4px;margin-right:4px}
+.brush .chip{display:inline-flex;align-items:center;gap:8px}
+.brush .chip i{width:12px;height:12px;border-radius:4px;margin:0}
+.brush .chip input{width:58px;border:1px solid var(--line);border-radius:8px;padding:3px 6px;font:inherit;font-weight:700;background:var(--card)}
+.tools{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px;color:var(--mute);font-size:12.5px}
+.tools .grow{flex:1;min-width:240px}
+.tools .btn2{padding:7px 14px}
+.asel input{width:76px}
+</style>
+<script>
+var $ = function(id) { return document.getElementById(id); };
+function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
+function pad(n) { return (n < 10 ? '0' : '') + n; }
+
+// Состояние страницы: 5 календарей, активный на контроллере (active), редактируемый (cur), кисть
+var S = {names: [], active: 0, cur: 0, on: false, profs: [], brush: {t: 'prof', n: 1}, dirty: false, act: null, now: null, curProf: ''};
+
+// Запись пачки ключей с проверкой ответа: ok(значения) или toast с кодом ошибки.
+// Ключи: sched.on, sched.active, cal.<номер с 0>.name / .asm / .asw / .data
+function setKeys(pairs, ok) {
+	api.set(pairs, function(D, E, err) {
+		var bad = Object.keys(E);
+		if(err || bad.length) stToast('Контроллер не принял значение (' + (err ? 'нет связи' : ST_ERR[E[bad[0]]] || E[bad[0]]) + ').', true);
+		else { stUnsaved(true); stRefresh(); if(ok) ok(D); }
+	});
+}
+
+// ---- расшифровка календаря: ключ cal.<i>.data -> 168 значений ("" / "-" / "+0.5" / номер профиля) ----
+// Та же логика, что в обработчике ответов scripts.js: значение действует с указанного часа до следующего
+function schDecode(str) {
+	var pack = str.split(';'), out = [];
+	for(var j = 0; j < 168; j++) {
+		if(pack.length < 2) { out.push(''); continue; }
+		var found = 0, dw = j / 24 | 0, h = j % 24;
+		for(var ptr = 0; ptr < pack.length; ptr += 2) {
+			var cdw = pack[ptr] >> 5, ch = pack[ptr] & 0x1F;
+			if(cdw > dw || (cdw == dw && ch > h)) break;
+			found = ptr + 1;
+		}
+		if(!found) found = pack.length - 1;
+		var v = pack[found];
+		if(v >= 0x80 && v <= 0x9B) v = String(v ^ 0x80);
+		else if(v == 127) v = '-';
+		else { if(v >= 0x80) v -= 256; v = v / 10; if(v > 0) v = '+' + v; }
+		out.push(v ? String(v) : '');
+	}
+	return out;
+}
+function describe(v) {
+	if(v === '') return 'ТН выключен';
+	if(v == '-') return 'без изменений профиля';
+	if(/^[+-]/.test(v)) return v + '° к цели';
+	var p = S.profs.filter(function(x) { return x.n == v; })[0];
+	return 'профиль ' + v + (p ? ' («' + p.name + '»)' : '');
+}
+
+// ---- календарь ----
+function cellClass(t) { return t === '' ? '' : t == '-' ? 'off' : /^[+-]/.test(t) ? 'dl' : 'p' + (Number(t) % 10 || 9); }
+function schPaint() {
+	var c = document.querySelectorAll('#calendar .clc');
+	for(var i = 0; i < c.length; i++) c[i].className = 'clc ' + cellClass(c[i].innerHTML);
+}
+function brushText() {
+	var b = S.brush;
+	if(b.t == 'off') return '';
+	if(b.t == 'keep') return '-';
+	if(b.t == 'delta') { var d = parseFloat($('delta').value); return isNaN(d) || d == 0 ? '-' : (d > 0 ? '+' : '') + d; }
+	return String(b.n);
+}
+function setDirty(d) { S.dirty = d; stRefresh(); }
+function loadCal(i) {
+	var k = function(a) { return 'cal.' + i + '.' + a; };
+	api.get({k: [k('data'), k('asm'), k('asw')]}, function(D, E, err) {
+		if(err) return;
+		var t = schDecode(D[k('data')] || ''), c = document.querySelectorAll('#calendar .clc');
+		for(var n = 0; n < c.length; n++) c[n].innerHTML = t[n];
+		schPaint();
+		setDirty(false);
+		if(i == S.active) { S.act = t; showNow(); }
+		$('asm').value = D[k('asm')]; $('asw').value = D[k('asw')];
+	});
+	$('sch-name').value = S.names[i] || '';
+	put('cal-title', 'Календарь «' + (i + 1) + '. ' + (S.names[i] || '') + '»');
+	put('sch-nm-title', i == S.active ? '' : '');
+	$('b-active').hidden = i == S.active;
+}
+// Календарь расписания (7 суток x 24 часа; в ячейке: пусто / номер профиля / ± температура / «-») в строку
+// значение ключа cal.<N>.data: число значений;{сутки<<5|час};{код};... - только места, где код меняется
+function calEncode() {
+	var colls = document.getElementById("calendar").getElementsByClassName("clc");
+	var fprof, lprof = -255, len = 0, flen = 0, elval = "";
+	for(var j = 0; j < colls.length; j++) {
+		var prof = colls[j].innerHTML;
+		if(prof == "") prof = 0;
+		else if(prof[0] == '+') prof = Number(prof.substring(1)) * 10;
+		else if(prof == '-') prof = 127;
+		else if(prof[0] == '-') prof = 256 + Number(prof) * 10;
+		else prof = Number(prof) + 0x80;
+		if(prof != lprof) {
+			elval += (((j / 24 | 0) << 5) | (j % 24)) + ";" + prof + ";";
+			if(lprof == -255) {
+				fprof = prof;
+				flen = elval.length;
+			}
+			lprof = prof;
+			if((len += 2) == 254) break;
+		}
+	}
+	if(fprof == lprof && len > 2) {
+		elval = elval.slice(flen);
+		len -= 2;
+	}
+	return len + ";" + elval;
+}
+function saveCal(then) {
+	var p = {};
+	p['cal.' + S.cur + '.data'] = calEncode();
+	setKeys(p, function() {
+		setDirty(false);
+		stToast('Календарь передан на ТН. Записать в EEPROM — чтобы сохранить после перезагрузки.');
+		if(S.cur == S.active) { var c = document.querySelectorAll('#calendar .clc'); S.act = [].map.call(c, function(x) { return x.innerHTML; }); showNow(); }
+		if(then) then();
+	});
+}
+
+// ---- выбор расписания ----
+function renderChips() {
+	$('sch-chips').innerHTML = S.names.map(function(n, i) {
+		return '<button class="chip' + (i == S.cur ? ' on' : '') + '" onclick="pick(' + i + ')">' + (i + 1) + '. ' + n.replace(/</g, '&lt;') + (i == S.active ? '<span class="act">активно</span>' : '') + '</button>';
+	}).join('');
+}
+function pick(i) {
+	if(S.dirty && !confirm('Календарь изменён и не передан на ТН. Перейти к другому расписанию без сохранения?')) return;
+	S.cur = i;
+	renderChips();
+	loadCal(i);
+	showNow();
+}
+function makeActive() {
+	setKeys({'sched.active': S.cur}, function() { S.active = S.cur; renderChips(); $('b-active').hidden = true; loadActive(); });
+}
+function loadActive() {
+	if(S.cur == S.active && !S.dirty) return;
+	api.get({k: ['cal.' + S.active + '.data']}, function(D) { S.act = schDecode(D['cal.' + S.active + '.data'] || ''); showNow(); });
+}
+function setName(v) {
+	var p = {};
+	p['cal.' + S.cur + '.name'] = v;
+	setKeys(p, function() { S.names[S.cur] = v; renderChips(); put('cal-title', 'Календарь «' + (S.cur + 1) + '. ' + stEsc(v) + '»'); });
+}
+function setAuto() {
+	var p = {};
+	p['cal.' + S.cur + '.asm'] = $('asm').value || 0;
+	p['cal.' + S.cur + '.asw'] = $('asw').value || 0;
+	setKeys(p);
+}
+function setOn(sw) {
+	setKeys({'sched.on': sw.checked ? 1 : 0}, function() { S.on = sw.checked; showNow(); });
+}
+
+// ---- «Сейчас» ----
+function showNow() {
+	var n = S.names[S.active];
+	if(n === undefined) return;
+	var h = '<p>Активное расписание: <b>' + (S.active + 1) + '. ' + n + '</b></p><p>По расписанию: <b>' + (S.on ? 'включено' : 'выключено') + '</b>' + (S.curProf ? ' (работает профиль «' + S.curProf + '»)' : '') + '</p>';
+	var nx = '—';
+	if(S.act && S.now && S.on) {
+		var i0 = S.now.dow * 24 + S.now.h, cur = S.act[i0];
+		for(var k = 1; k <= 168; k++) {
+			var t = i0 + k, j = t % 168;
+			if(S.act[j] !== cur) {
+				var dd = Math.floor(t / 24) - S.now.dow;
+				nx = (dd == 0 ? 'сегодня' : dd == 1 ? 'завтра' : ST_DAYS[j / 24 | 0]) + ' ' + pad(j % 24) + ':00 → ' + describe(S.act[j]);
+				break;
+			}
+		}
+		if(nx == '—') nx = 'изменений нет';
+	} else if(!S.on) nx = 'расписание выключено';
+	h += '<p>Следующее изменение: <b>' + nx + '</b></p>';
+	$('now').innerHTML = h;
+}
+// время контроллера - ключи state.time ("13:18") и state.date ("07.10.2026"), опрос раз в 2 с
+function timePoll(d) {
+	var tm = /^(\d+):(\d+)/.exec(d['state.time'] || ''), dt = /^(\d+)\.(\d+)\.(\d+)/.exec(d['state.date'] || '');
+	if(!tm || !dt) return;
+	S.now = {h: +tm[1], dow: (new Date(dt[3], dt[2] - 1, dt[1]).getDay() + 6) % 7};
+	showNow();
+}
+
+// ---- кисть ----
+var COLORS = ['#0f8b8d', '#8a6fd1', '#e0a21b', '#2f7fd1', '#d6598a', '#5c9f3a', '#c0643a', '#6b7785', '#2a9d8f'];
+function renderBrush() {
+	var h = '<span class="cap">Кисть</span>';
+	var chip = function(key, click, inner) { return '<span class="chip" data-b="' + key + '" onclick="' + click + '">' + inner + '</span>'; };
+	h += chip('off', "setBrush('off')", '<i style="background:var(--line);border:1px solid var(--swoff)"></i>ТН выключен');
+	h += chip('delta', "setBrush('delta')", '<i style="background:var(--tw);border:1px solid var(--warnbd)"></i>± температура <input id="delta" type="number" step="0.5" value="0.5" onclick="event.stopPropagation()" oninput="setBrush(\'delta\')">');
+	h += chip('keep', "setBrush('keep')", '<i style="background:repeating-linear-gradient(45deg,#e6eaef,#e6eaef 3px,#fff 3px,#fff 6px)"></i>не менять');
+	S.profs.forEach(function(p) { h += chip('prof:' + p.n, "setBrush('prof'," + p.n + ")", '<i style="background:' + COLORS[(p.n % 10 || 9) - 1] + '"></i>' + p.n + '. ' + p.name.replace(/</g, '&lt;')); });
+	$('brush').innerHTML = h;
+	setBrush(S.brush.t, S.brush.n);
+}
+// выбор кисти: только подсветка, чтобы поле «± температура» не теряло фокус при вводе
+function setBrush(t, n) {
+	S.brush = {t: t, n: n || S.brush.n};
+	var key = t == 'prof' ? 'prof:' + S.brush.n : t, c = $('brush').querySelectorAll('.chip');
+	for(var i = 0; i < c.length; i++) c[i].classList.toggle('on', c[i].getAttribute('data-b') == key);
+	var d = {off: 'ТН выключен', keep: 'профиль не меняется', delta: '± температура', prof: 'профиль ' + S.brush.n};
+	put('brush-note', 'кисть выбрана: ' + d[t]);
+}
+
+window.onload = function() {
+	var cs = $('cal');
+	stCalendar(cs, {paint: function(c, erase) { c.innerHTML = erase ? '' : brushText(); c.className = 'clc ' + cellClass(c.innerHTML); }, changed: function() { setDirty(true); }});
+	stPanel({applyText: 'Применить календарь', dirtyText: 'Календарь изменён', extraDirty: function() { return S.dirty ? 1 : 0; }, onApply: saveCal,
+		onCancel: function() { loadCal(S.cur); }, note: '«Применить» отправляет календарь на ТН, «Записать в EEPROM» сохраняет всё.'});
+	var nk = [], i;
+	for(i = 0; i < 5; i++) nk.push('cal.' + i + '.name');
+	api.get({k: ['sched.on', 'sched.active', 'profile.list'].concat(nk)}, function(D) {
+		S.on = D['sched.on'] === true; $('get_schdlr-on').checked = S.on;
+		S.active = D['sched.active'] || 0;
+		S.names = nk.map(function(k) { return D[k] || ''; });
+		var list = D['profile.list'] || [];
+		S.profs = list.map(function(x) { return {n: x.i + 1, name: x.n, cur: !!x.c}; });
+		list.forEach(function(x) { if(x.c) S.curProf = x.n; });
+		if(S.profs.length) S.brush = {t: 'prof', n: S.profs[0].n};
+		renderBrush();
+		S.cur = S.active;
+		renderChips();
+		loadCal(S.cur);
+		showNow();
+	});
+	api.poll({k: ['state.time', 'state.date']}, timePoll);
+};
+</script>
+</head>
+<body class="scheduler">
+<div id="menu" class="menu"><script src="menu.js"></script></div>
+<div class="content">
+<div class="grid">
+	<section class="card c8">
+		<h3>Расписания <span class="r row" style="gap:10px;color:var(--mute)">Работа по расписанию<input type="checkbox" class="sw sm" id="get_schdlr-on" onchange="setOn(this)"></span></h3>
+		<div class="chips" id="sch-chips" style="margin-bottom:14px"></div>
+		<div class="field"><div class="l">Имя расписания<small>до 30 символов</small></div><label class="inp wide"><input id="sch-name" type="text" maxlength="30" onchange="setName(this.value)"></label></div>
+		<div class="field"><div class="l">Автовыбор расписания<small>0 — нет. Расписание включается само в выбранный месяц и декаду</small></div>
+			<span class="row asel" style="gap:8px">месяц <label class="inp"><input id="asm" type="number" min="0" max="12" onchange="setAuto()"></label> декада <label class="inp"><input id="asw" type="number" min="0" max="3" onchange="setAuto()"></label></span></div>
+	</section>
+	<section class="card c4">
+		<h3>Сейчас</h3>
+		<div class="nowt" id="now"></div>
+		<button class="btn2" id="b-active" onclick="makeActive()" hidden style="margin-top:6px">Сделать активным</button>
+	</section>
+	<section class="card c12">
+		<h3><span id="cal-title">Календарь</span> <span class="r" style="color:var(--mute)" id="brush-note"></span></h3>
+		<div class="brush" id="brush"></div>
+		<div id="cal"></div>
+		<div class="tools"><span class="grow"><b style="color:var(--ink)">Левая кнопка</b> — установить, <b style="color:var(--ink)">Shift</b> или правая — стереть. На телефоне — касанием. Чтобы текущий профиль не менялся — «не менять» или ± с нулём.</span>
+			<button class="btn2" onclick="if(confirm('Считать расписание из EEPROM? Несохранённые правки будут потеряны.')) api['do']('schedule.load', function(v, e) { if(e) stToast('Не удалось считать расписание (' + (ST_ERR[e] || e) + ').', true); else location.reload(); })">Считать из EEPROM</button>
+			<button class="btn2" onclick="api['do']('save.schedule', function(v, e) { if(e) stToast('Не удалось записать расписание (' + (ST_ERR[e] || e) + ').', true); else stToast('Расписание записано в EEPROM.'); })">Записать только расписание</button>
+			<button class="btn2 bad" onclick="if(confirm('Очистить все календари?')) api['do']('schedule.clear', function(v, e) { if(e) stToast('Не выполнено (' + (ST_ERR[e] || e) + ').', true); else location.reload(); })">Очистить все календари…</button></div>
+	</section>
+</div>
+</div>
+</body>
+</html>

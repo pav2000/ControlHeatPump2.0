@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Состав графиков. Народный контроллер ТН</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<script src="scripts.js"></script>
+<script src="settings.js"></script>
+<script>
+// Состав онлайн-графиков: для каждого из изменяемых рядов памяти контроллера - тип объекта (Temp, Press, Flow...)
+// и имя датчика (TOUT, TIN...). Ряды - /api/meta?g=chartcfg (devs), поля - chartcfg.<номер>.n / .o / .x.
+var $ = function(id) { return document.getElementById(id); };
+var TYPES = ['Temp', 'PressTemp', 'Overheat', 'Overheat2', 'Overcool', 'TCOMP_TCON', 'Delta_GEO', 'Delta_OUT', 'Press', 'Flow', 'EEV', 'Voltage', 'Power', 'Power_FC', 'Power_GEO', 'Power_OUT', 'Current_FC', 'Compressor', 'COP_Full', 'Relay'];
+window.onload = function() {
+	$('types').innerHTML = TYPES.map(function(t) { return '<option value="' + t + '">'; }).join('');
+	stPanel({note: 'Применить — отправить на ТН, «Записать в EEPROM» — сохранить после перезагрузки. Смена состава графиков меняет список рядов на странице «Онлайн».'});
+	stDevices('chartcfg', function(list) {
+		var h = '';
+		list.forEach(function(n) {
+			var k = function(a) { return 'chartcfg.' + n + '.' + a; };
+			h += '<tr><td><b>' + (Number(n) + 1) + '</b></td><td class="ro">' + stCell(k('n'), {k: 'ro', init: '–'}) + '</td>' +
+				'<td><label class="inp wide"><input id="' + stKid(k('o')) + '" data-k="' + k('o') + '" type="text" list="types"></label></td>' +
+				'<td><label class="inp wide"><input id="' + stKid(k('x')) + '" data-k="' + k('x') + '" type="text"></label></td></tr>';
+		});
+		$('rows').innerHTML = h;
+		stLoadK();
+	});
+};
+</script>
+</head>
+<body class="charts">
+<div id="menu" class="menu"><script src="menu.js"></script></div>
+<div class="content">
+<div class="grid">
+	<section class="card c12">
+		<h3>Состав онлайн-графиков <span class="r" style="color:var(--mute)">ряды памяти контроллера, которые можно перенастроить</span></h3>
+		<table class="t"><thead><tr><th>№ ряда</th><th>Описание</th><th>Тип объекта</th><th>Датчик</th></tr></thead><tbody id="rows"></tbody></table>
+		<datalist id="types"></datalist>
+		<div class="gnote">№ ряда — позиция в списке страницы «Онлайн». Тип объекта и имя датчика определяют, что именно записывается в ряд; описание ряда контроллер берёт по ним сам.</div>
+	</section>
+</div>
+</div>
+</body>
+</html>

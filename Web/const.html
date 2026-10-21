@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Константы сборки. Народный контроллер ТН</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<script src="scripts.js"></script>
+<script src="settings.js"></script>
+<script>
+// Константы сборки: то, что зашито в прошивку (ключи sys.const и sys.const1, строки «имя|описание|значение;...»). Только чтение.
+// Первая строка - версия веб-страниц, её добавляет сама страница.
+var $ = function(id) { return document.getElementById(id); };
+function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
+function rows(v) {
+	return v.split(';').filter(function(s) { return s.trim() !== ''; }).map(function(s) {
+		var a = s.split('|');
+		return '<tr><td class="c">' + esc(a[0].trim()) + '</td><td>' + esc(a[1] || '') + '</td><td class="v">' + esc(a.slice(2).join('|')) + '</td></tr>';
+	});
+}
+function show(id, cntId, list) {
+	$(id).innerHTML = list.join('');
+	$(cntId).innerHTML = list.length + ' строк';
+}
+window.onload = function() {
+	// таблицы большие (2-3 КБ каждая): по одной на запрос
+	api.get({k: ['sys.const']}, function(D) {
+		show('c1', 'n1', ['<tr><td class="c">VER_WEB</td><td>Версия веб-страниц</td><td class="v">' + VER_WEB + '</td></tr>'].concat(rows(D['sys.const'] || '')));
+		api.get({k: ['sys.const1']}, function(D2) { show('c2', 'n2', rows(D2['sys.const1'] || '')); });
+	});
+};
+</script>
+<style>
+table.t td.c{font-family:'DejaVu Sans Mono',Consolas,monospace;font-weight:700;font-size:12px;white-space:nowrap}
+table.t td.v{text-align:right;font-weight:800;font-variant-numeric:tabular-nums}
+</style>
+</head>
+<body class="const">
+<div id="menu" class="menu"><script src="menu.js"></script></div>
+<div class="content">
+<div class="grid">
+	<section class="card c6"><h3>Сборка и интерфейсы <span class="r" style="color:var(--mute);font-weight:600" id="n1"></span></h3><table class="t"><thead><tr><th>Имя</th><th>Описание</th><th style="text-align:right">Значение</th></tr></thead><tbody id="c1"></tbody></table></section>
+	<section class="card c6"><h3>Периоды и адреса памяти <span class="r" style="color:var(--mute);font-weight:600" id="n2"></span></h3><table class="t"><thead><tr><th>Имя</th><th>Описание</th><th style="text-align:right">Значение</th></tr></thead><tbody id="c2"></tbody></table></section>
+</div>
+</div>
+</body>
+</html>

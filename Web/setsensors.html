@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Привязка. Народный контроллер ТН</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<script src="scripts.js"></script>
+<script src="settings.js"></script>
+<script>
+// Привязка проводных датчиков к именам: do onewire.scan находит датчики на шине, запись ключа temp.<ИМЯ>.addr привязывает найденный к имени
+// (0 - сбросить привязку). Сканировать можно только при выключенном ТН, до 9 секунд.
+// Столбец «Шина» убран: шина всегда одна (решение владельца).
+urlupdate = 2000;
+var $ = function(id) { return document.getElementById(id); };
+function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
+function num(v, d) { var f = parseFloat(v); return isNaN(f) ? '–' : f.toFixed(d); }
+
+var sensors = [], addr = {}, found = [], working = true, scanning = false;
+
+function row(T) {
+	var t = T.toLowerCase(), k = function(a) { return 'temp.' + T + '.' + a; };
+	var tg = function(n, label) { return '<label class="tg"><input type="checkbox" id="' + stKid(k('flag' + n)) + '" data-k="' + k('flag' + n) + '"><span>' + label + '</span></label>'; };
+	return '<tr id="r-' + t + '"><td class="n">' + T + '<span class="d">' + stCell(k('note'), {k: 'ro', init: ''}) + '</span></td>' +
+		'<td class="num"><b class="big" id="v-' + t + '">–</b></td><td><span class="code" id="addr-' + t + '">–</span></td>' +
+		'<td><label class="inp sel"><select id="sel-' + t + '" data-k="' + k('addr') + '" data-sv data-noecho data-nol disabled><option>—</option></select></label></td>' +
+		'<td>' + tg(1, 'игнорировать') + tg(2, 'не логировать') + tg(3, 'не проверять CRC') + '</td><td id="code-' + t + '">–</td></tr>';
+}
+
+// Общий опрос: значение, код ошибки, адрес привязки, работает ли ТН
+function setPoll(d) {
+	for(var key in d) {
+		if(key == 'state.work') {
+			working = d[key];
+			var b = $('scan');
+			if(b) b.disabled = working || scanning;
+			put('scan-note', working ? 'Сканирование — только при выключенном тепловом насосе. Занимает до 9 секунд; пока ТН работает, кнопка недоступна.' : 'Сканирование занимает до 9 секунд.');
+			continue;
+		}
+		var m = /^temp\.([A-Za-z0-9_]+)\.(raw|ecode|addr)$/.exec(key);
+		if(!m) continue;
+		var T = m[1], t = T.toLowerCase(), v = d[key];
+		if(m[2] == 'raw') put('v-' + t, num(v, 2) + '°');
+		else if(m[2] == 'ecode') put('code-' + t, v == 0 ? '<span class="okc">OK</span>' : '<span class="errc">E' + v + '</span>');
+		else { addr[T] = /^[0-9A-Fa-f]{16}$/.test(v || '') ? v.toUpperCase() : ''; put('addr-' + t, addr[T] || '–'); showFound(); fillSelects(); }
+	}
+}
+
+// ---- сканирование ----
+function scan() {
+	if(working) return;
+	scanning = true;
+	$('scan').disabled = true;
+	put('scan-note', 'Сканирование шины…');
+	api['do']('onewire.scan', function(v, e) {
+		scanning = false;
+		$('scan').disabled = working;
+		put('scan-note', 'Сканирование занимает до 9 секунд.');
+		found = e ? [] : (v || '').split(';').filter(Boolean).map(function(s) { var f = s.split(':'); return {n: f[0], type: f[1], temp: f[2], addr: (f[3] || '').toUpperCase()}; });
+		if(!found.length) put('scan-note', 'Датчики не найдены (' + (e ? ST_ERR[e] || e : v || 'нет ответа') + ').');
+		showFound();
+		fillSelects();
+	}, undefined, 20000);
+}
+function boundTo(a) { return sensors.filter(function(T) { return addr[T] && addr[T] == a; }); }
+function showFound() {
+	if(!found.length) { put('found', '<tr><td colspan="5" style="color:var(--mute)">Сканирование ещё не выполнялось</td></tr>'); return; }
+	put('found', found.map(function(f) {
+		var b = boundTo(f.addr);
+		return '<tr><td class="n">' + f.n + '</td><td>' + f.type + '</td><td class="num"><b class="big">' + num(f.temp, 2) + '°</b></td><td><span class="code">' + f.addr + '</span></td><td>' +
+			(b.length ? b.map(function(T) { return '<span class="tag">' + T + '</span>'; }).join(' ') : '<span class="tag" style="background:var(--bg);color:var(--mute)">свободен</span>') + '</td></tr>';
+	}).join(''));
+}
+// списки привязки: «---» - не менять, «сбросить», затем найденные датчики; выбран тот, чей адрес сейчас привязан
+function fillSelects() {
+	if(!found.length) return;
+	sensors.forEach(function(T) {
+		var s = $('sel-' + T.toLowerCase());
+		if(!s) return;
+		var h = '<option value="">---</option><option value="0">сбросить</option>';
+		found.forEach(function(f) { h += '<option value="' + f.n + '">' + f.n + ' · ' + f.addr.substr(0, 8) + '…</option>'; });
+		s.innerHTML = h;
+		s.disabled = false;
+		var cur = found.findIndex(function(f) { return addr[T] && f.addr == addr[T]; });
+		s.selectedIndex = cur < 0 ? 0 : cur + 2;
+		stBase(s);
+	});
+	stRefresh();
+}
+window.stAfterApply = function() { api.pollTick(); };
+
+window.onload = function() {
+	stPanel({dirtyText: function(n) { return 'Изменено ' + n + (n % 10 == 1 && n % 100 != 11 ? ' привязка' : (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20)) ? ' привязки' : ' привязок'); },
+		note: 'Применить — привязать датчики, «Записать в EEPROM» — сохранить привязку после перезагрузки.'});
+	stDevices('temp', function(list) {
+		sensors = list;
+		$('rows').innerHTML = sensors.map(row).join('');
+		showFound();
+		stLoadK();
+		api.poll({k: ['state.work'].concat(stDevKeys('temp', list, ['raw', 'ecode', 'addr']))}, setPoll);
+	});
+	api.get({k: ['sys.onewire_pin']}, function(D) { put('onewirepin', stEsc(D['sys.onewire_pin'] || '–')); });
+};
+</script>
+</head>
+<body class="setsensors">
+<div id="menu" class="menu"><script src="menu.js"></script></div>
+<div class="content">
+<div class="grid">
+	<section class="card c12">
+		<h3>Сканирование шины OneWire <span class="r" style="color:var(--mute);font-weight:600">шина: <span id="onewirepin" style="color:var(--ink)">–</span></span></h3>
+		<div class="tbar"><button class="btn2 p" id="scan" onclick="scan()" disabled>Сканировать</button><span class="warnbox" id="scan-note">Сканирование — только при выключенном тепловом насосе.</span></div>
+		<div class="scrollx"><table class="t"><thead><tr><th>№</th><th>Тип датчика</th><th>Температура</th><th>Адрес</th><th>Сейчас привязан к</th></tr></thead><tbody id="found"></tbody></table></div>
+	</section>
+	<section class="card c12">
+		<h3>Датчики системы <span class="r" style="color:var(--mute);font-weight:600">выберите найденный датчик для каждой позиции</span></h3>
+		<div class="scrollx"><table class="t"><thead><tr><th>Датчик</th><th>Температура</th><th>Адрес</th><th>Привязка</th><th>Ошибки<span class="hint" tabindex="0" data-tip="игнорировать — при критических ошибках датчика (подряд больше NUM_READ_TEMP_ERR) ТН не останавливается по ошибке. не логировать — не писать ошибки датчика в журнал. не проверять CRC — неверные подряд GAP_NUMBER_CRC раз значения отбрасываются, если разница с предыдущим больше GAP_TEMP_VAL_CRC; без опции — GAP_NUMBER и GAP_TEMP_VAL. Для датчиков с обеими опциями («не логировать» + «не проверять CRC») число неверных подряд больше и отбрасывается значение 85°.">1</span></th><th>Код ошибки</th></tr></thead><tbody id="rows"></tbody></table></div>
+		<div class="fnote"><b>1. игнорировать</b> — при критических ошибках датчика (подряд больше NUM_READ_TEMP_ERR) ТН не останавливается по ошибке. <b>не логировать</b> — не писать ошибки датчика в журнал. <b>не проверять CRC</b> — неверные подряд GAP_NUMBER_CRC раз значения отбрасываются, если разница с предыдущим больше GAP_TEMP_VAL_CRC; без опции — GAP_NUMBER и GAP_TEMP_VAL. Для датчиков с обеими опциями («не логировать» + «не проверять CRC») число неверных подряд больше и отбрасывается значение 85°.</div>
+	</section>
+</div>
+</div>
+</body>
+</html>

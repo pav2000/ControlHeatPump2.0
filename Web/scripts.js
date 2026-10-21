@@ -1,0 +1,154 @@
+// Copyright (c) 2016-2026 by Pavel Panfilov <firstlast2007@gmail.com>
+var VER_WEB = "2.14";
+var urlcontrol = ''; //  автоопределение (если адрес сервера совпадает с адресом контроллера)
+// адрес и порт контроллера, если адрес сервера отличен от адреса контроллера (не рекомендуется)
+//var urlcontrol = 'http://192.168.0.199';
+//var urlcontrol = 'http://192.168.0.7';
+//var urlcontrol = 'http://77.50.254.24:25402';
+var urlupdate = 4000; // время обновления параметров в миллисекундах
+
+/*API-CORE*/
+// ---------------------------------------------------------------------------------------------
+// Клиент нового API контроллера (/api/...). Протокол - tools/api/spec.md.
+// Блок самодостаточен: tools/mk_min_web.py берёт его между маркерами API-CORE и вставляет в
+// аварийную страницу (вариант C). Зависит только от urlcontrol, urlupdate, NeedLogin/LPString
+// (есть ниже в scripts.js, в аварийной странице их нет - там и авторизации нет) и необязательных
+// shLinkState(ok), shLogin(). Значения в страницу вставлять через textContent / value.
+// ---------------------------------------------------------------------------------------------
+var API_PROTO = 1;                   // версия протокола, с которой работает эта морда
+var api = {
+	timeout: 3500,                     // не короче серверного ожидания мьютекса (3000 мс), иначе повторы на занятый контроллер
+	ver: null,                         // ответ /api/ver после api.init
+	meta: {},                          // группа -> описание полей
+	pollers: [], pollTimer: null, pollBusy: 0, pollAgain: 0
+};
+
+// Один запрос. cb(json, err): err = {code, net}, json - разобранное тело. Ошибки по ключам внутри json.e.
+api.call = function(verb, query, cb, tmo) {
+	var r = new XMLHttpRequest(), auth = (typeof NeedLogin != 'undefined' && NeedLogin == 2) ? '&&' + LPString : '';
+	r.open('GET', (typeof urlcontrol == 'string' ? urlcontrol : '') + '/api/' + verb + (query ? '?' + query : '') + auth, true);
+	r.timeout = tmo || api.timeout;
+	r.onload = function() {
+		var j = null;
+		if(window.shLinkState) shLinkState(true);
+		if(r.status == 401) { if(window.shLogin) shLogin(); cb(null, {code: 401}); return; }
+		try { j = JSON.parse(r.responseText); } catch(e) {}
+		if(r.status != 200 || j === null) cb(null, {code: r.status});
+		else cb(j, null);
+	};
+	r.onerror = r.ontimeout = function() { if(window.shLinkState) shLinkState(false); cb(null, {code: 0, net: true}); };
+	r.send(null);
+};
+
+// Значение в строку запроса: булево - 1/0, пустое - пустая строка
+api.enc = function(v) { return encodeURIComponent(v === true ? 1 : v === false ? 0 : v == null ? '' : v); };
+
+// Чтение: o.k - массив ключей, o.g - группа (необязательно), o.a - атрибуты группы устройств.
+// Длинный список режется на запросы по 40 ключей / 1200 знаков. cb(d, e, err).
+api.get = function(o, cb) {
+	var parts = [], cur = [], len = 0, D = {}, E = {}, fail = null, left;
+	(o.k || []).forEach(function(k) {
+		if(cur.length && (cur.length >= 40 || len + k.length > 1200)) { parts.push(cur); cur = []; len = 0; }
+		cur.push(k); len += k.length + 1;
+	});
+	if(cur.length) parts.push(cur);
+	if(o.g && !parts.length) parts.push([]);
+	if(!(left = parts.length)) { cb(D, E, null); return; }
+	parts.forEach(function(ks, i) {
+		var q = (ks.length ? 'k=' + ks.join(',') : '') + (o.g && i == 0 ? (ks.length ? '&' : '') + 'g=' + o.g + (o.a ? '&a=' + o.a : '') : '');
+		api.call('get', q, function(j, err) {
+			if(err) fail = err;
+			else { var x; for(x in j.d) D[x] = j.d[x]; for(x in j.e) E[x] = j.e[x]; }
+			if(--left == 0) cb(D, E, fail);
+		});
+	});
+};
+
+// Запись: pairs - {ключ: значение}, olds - {ключ: ожидаемое прежнее значение} (E3: при расхождении ключ даст conflict).
+// Пачки по 20 пар / 1200 знаков уходят по очереди. cb(d, e, err): d - значения, прочитанные ПОСЛЕ записи.
+api.set = function(pairs, cb, olds) {
+	var groups = [], cur = [], len = 0, D = {}, E = {}, fail = null;
+	Object.keys(pairs).forEach(function(k) {
+		var s = k + '=' + api.enc(pairs[k]) + (olds && olds[k] !== undefined ? '&if.' + k + '=' + api.enc(olds[k]) : '');
+		if(cur.length && (cur.length >= 20 || len + s.length > 1200)) { groups.push(cur); cur = []; len = 0; }
+		cur.push(s); len += s.length + 1;
+	});
+	if(cur.length) groups.push(cur);
+	(function next() {
+		var g = groups.shift();
+		if(!g) { cb(D, E, fail); return; }
+		api.call('set', g.join('&'), function(j, err) {
+			if(err) { fail = err; Object.keys(pairs).forEach(function(k) { if(!(k in D) && !(k in E)) E[k] = 'net'; }); groups = []; }
+			else { var x; for(x in j.d) D[x] = j.d[x]; for(x in j.e) E[x] = j.e[x]; }
+			next();
+		});
+	})();
+};
+
+// Действие: cb(результат, код ошибки или '', err)
+api['do'] = function(action, cb, p, tmo) {		// tmo - свой тайм-аут для долгих действий (скан шины OneWire до 9 с)
+	api.call('do', 'a=' + action + (p !== undefined ? '&p=' + api.enc(p) : ''), function(j, err) {
+		if(err) { cb(null, 'net', err); return; }
+		cb(j.d[action], j.e[action] || '', null);
+	}, tmo);
+};
+
+// Описание полей группы: api.meta[g] = {sch, m: {ключ: {t, dec, min, max, o, na, w}}, devs}
+api.metaOf = function(g, cb) {
+	if(api.meta[g]) { cb(api.meta[g]); return; }
+	var ck = null;
+	try { if(api.ver) ck = sessionStorage.getItem('am.' + g + '.' + api.ver.sch); } catch(e) {}
+	if(ck) { try { api.meta[g] = JSON.parse(ck); cb(api.meta[g]); return; } catch(e) {} }
+	api.call('meta', 'g=' + g, function(j, err) {
+		if(j) {
+			api.meta[g] = j;
+			try { if(api.ver) sessionStorage.setItem('am.' + g + '.' + api.ver.sch, JSON.stringify(j)); } catch(e) {}
+		}
+		cb(j);
+	});
+};
+
+// Проверка версии протокола и состава сборки. cb(ver). При несовпадении версии - сообщение вместо тихих сбоев.
+api.init = function(cb) {
+	if(api.ver) { cb(api.ver); return; }
+	api.call('ver', '', function(j, err) {
+		if(!j) { cb(null); return; }
+		api.ver = j;
+		if(j.proto != API_PROTO) {
+			var m = 'Версия протокола контроллера (' + j.proto + ') не совпадает с версией морды (' + API_PROTO + '): ' +
+				(j.proto > API_PROTO ? 'обновите файлы веб-морды.' : 'обновите прошивку контроллера.');
+			if(window.stToast) stToast(m, true); else alert(m);
+		}
+		cb(j);
+	});
+};
+
+// Опрос: единый таймер на страницу. spec.k - ключи, cb(d, e) получает значения своих ключей.
+// Один запрос за тик (ключи всех подписчиков), скрытая вкладка не опрашивает и обновляется сразу при возвращении.
+api.poll = function(spec, cb) {
+	api.pollers.push({k: spec.k || [], cb: cb});
+	if(api.pollBusy) api.pollAgain = 1; else api.pollTick();
+};
+api.pollTick = function() {
+	clearTimeout(api.pollTimer);
+	api.pollTimer = setTimeout(api.pollTick, urlupdate);
+	if(document.hidden || api.pollBusy || !api.pollers.length) return;
+	var seen = {}, keys = [];
+	api.pollers.forEach(function(p) { p.k.forEach(function(k) { if(!seen[k]) { seen[k] = 1; keys.push(k); } }); });
+	api.pollBusy = 1;
+	api.get({k: keys}, function(D, E, err) {
+		api.pollBusy = 0;
+		if(!err) api.pollers.forEach(function(p) {
+			var d = {}, e = {};
+			p.k.forEach(function(k) { if(k in D) d[k] = D[k]; if(k in E) e[k] = E[k]; });
+			p.cb(d, e);
+		});
+		if(api.pollAgain) { api.pollAgain = 0; api.pollTick(); }
+	});
+};
+document.addEventListener('visibilitychange', function() { if(!document.hidden && api.pollers.length) api.pollTick(); });
+/*END API-CORE*/
+
+// Вход администратора: shell.js кладёт пару логин:пароль в sessionStorage, api.call и выгрузки файлов дописывают её к адресу
+var NeedLogin = sessionStorage.getItem("NeedLogin");
+var LPString = sessionStorage.getItem("LPString");

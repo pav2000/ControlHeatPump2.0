@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Профили. Народный контроллер ТН</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<script src="scripts.js"></script>
+<script src="settings.js"></script>
+<style>
+.cur-box{display:flex;gap:28px;align-items:center;flex-wrap:wrap}
+.cur-box .cap{color:var(--mute);font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.4px}
+.cur-box .nm{font-size:26px;font-weight:800;letter-spacing:-.3px}
+.cur-box p{margin:0;color:var(--mute);max-width:720px}
+table.t td{vertical-align:middle}
+table.t td .num{display:inline-grid;place-items:center;width:30px;height:30px;border-radius:50%;background:var(--bg);font-weight:800}
+tr.pcur td{background:var(--acc2)}
+tr.pcur td:first-child{border-radius:12px 0 0 12px}tr.pcur td:last-child{border-radius:0 12px 12px 0}
+tr.pcur td .num{background:var(--acc);color:#fff}
+tr.pemp td{color:var(--mute)}
+.pin{width:100%;min-width:120px;padding:7px 10px;border:1px solid transparent;border-radius:10px;background:var(--bg);font:inherit;font-weight:700;color:var(--ink)}
+.pin.note{font-weight:500;color:var(--mute)}
+.pin:hover,.pin:focus{border-color:var(--acc);outline:0;background:var(--card)}
+.tags{display:flex;flex-direction:column;align-items:flex-start;gap:4px}
+.tag.cur{background:var(--acc);color:#fff}
+.acts{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
+.acts select.btn2{appearance:auto;padding:8px 10px}
+.acts .btn2{padding:8px 14px}
+.how p{margin:0 0 8px}
+@media(max-width:900px){table.t{display:block;overflow-x:auto}}
+</style>
+<script>
+var $ = function(id) { return document.getElementById(id); };
+
+// Таблица слотов приходит одним ключом profile.table (массив объектов, номер слота с 0). Имя, описание и «в меню» пишутся
+// ключами slot.<номер с 0>.name / .note / .enable; действия - profile.load / .copy / .erase (p = номер слота, для копии «из:в»).
+var profList = [], profCur = -1;
+var ST_FLD = {NAME: 'name', NOTE: 'note', ENABLE: 'enable'};
+function profModeName(m) { return m == 1 ? "Отопление" : (m == 2 ? "Охлаждение" : "Выключено"); }
+function profTitle(o) { return o.n + ". " + (o.used ? o.name : "пусто"); }
+function profCopyOptions(o) {
+	var h = '<option value="">Копировать в…</option>';
+	for(var i = 0; i < profList.length; i++) {
+		var t = profList[i];
+		if(t.cur || t.n == o.n) continue; // в текущий профиль копировать нельзя
+		h += '<option value="' + t.n + '">в ' + stEsc(profTitle(t)) + '</option>';
+	}
+	return h;
+}
+function profRender(rows) {
+	var html = "";
+	profList = rows.map(function(r) { return {n: r.i + 1, used: r.used, cur: r.cur, en: r.en, mode: r.mode, sch: r.sch, date: r.date, name: r.name, note: r.note}; });
+	profCur = -1;
+	profList.forEach(function(o) { if(o.cur) profCur = o.n; });
+	var cs = $("prof-cur");
+	profList.forEach(function(o) { if(o.cur && cs) cs.innerHTML = stEsc(o.n + ". " + o.name); });
+	var cnt = $("prof-cnt");
+	if(cnt) cnt.innerHTML = profList.length + " слотов";
+	profList.forEach(function(o) {
+		html += '<tr class="' + (o.cur ? 'pcur' : (o.used ? '' : 'pemp')) + '"><td><span class="num">' + o.n + '</span></td>';
+		if(o.used) {
+			html += '<td><input class="pin" maxlength="24" value="' + stEsc(o.name) + '" onchange="profSet(' + o.n + ',\'NAME\',this.value)" title="Имя профиля"></td>' +
+				'<td><input class="pin note" maxlength="40" value="' + stEsc(o.note) + '" onchange="profSet(' + o.n + ',\'NOTE\',this.value)" placeholder="описание" title="Описание"></td>' +
+				'<td><div class="tags"><span class="tag w">' + profModeName(o.mode) + '</span>' + (o.cur ? '<span class="tag cur">ТЕКУЩИЙ</span>' : '') + (o.sch ? '<span class="tag w">в расписании</span>' : '') + '</div></td>' +
+				'<td>' + stEsc(o.date) + '</td>' +
+				'<td><input type="checkbox" class="sw sm" id="prof-en-' + o.n + '"' + (o.en ? ' checked' : '') + ' onchange="profSet(' + o.n + ',\'ENABLE\',this.checked?1:0)"></td>';
+		} else html += '<td colspan="5"><i>пусто</i></td>';
+		html += '<td><div class="acts">' + actions(o) + '</div></td></tr>';
+	});
+	$("prof-tbl").innerHTML = html;
+}
+function actions(o) {
+	if(!o.used) return '<button class="btn2" onclick="profCopyTo(' + profCur + ',' + o.n + ')">Сохранить сюда</button>';
+	var h = '';
+	if(!o.cur) h += '<button class="btn2 p" onclick="profLoad(' + o.n + ')">Загрузить</button>';
+	h += '<select class="btn2" onchange="profCopy(' + o.n + ', this)">' + profCopyOptions(o) + '</select>';
+	if(!o.cur) h += '<button class="btn2 bad" onclick="profErase(' + o.n + ')"' + (o.sch ? ' disabled title="Профиль используется в расписании"' : '') + '>Стереть</button>';
+	return h;
+}
+function profRefresh() {
+	api.get({k: ['profile.table']}, function(D, E, err) { if(!err && D['profile.table']) profRender(D['profile.table']); });
+}
+function profFind(n) { for(var i = 0; i < profList.length; i++) if(profList[i].n == n) return profList[i]; return null; }
+
+// Правки профиля уходят на ТН сразу, в EEPROM - по кнопке: после каждой правки показываем «не записано»
+function profSet(n, field, val) {
+	var k = 'slot.' + (n - 1) + '.' + ST_FLD[field], p = {};
+	p[k] = val;
+	api.set(p, function(D, E, err) {
+		if(err || E[k]) stToast("Не удалось изменить профиль " + n + " (" + (err ? 'нет связи' : ST_ERR[E[k]] || E[k]) + ")", true);
+		else { stUnsaved(true); stRefresh(); }
+		profRefresh();
+	});
+}
+function profCopyTo(src, dst) {
+	api['do']('profile.copy', function(v, e) {
+		if(e) stToast(e == 'conflict' ? "В текущий профиль копировать нельзя" : "Не удалось скопировать профиль (" + (ST_ERR[e] || e) + ")", true);
+		else { stUnsaved(true); stRefresh(); }
+		profRefresh();
+	}, (src - 1) + ':' + (dst - 1));
+}
+function profCopy(src, sel) {
+	var dst = Number(sel.value);
+	sel.selectedIndex = 0;
+	if(!dst) return;
+	var t = profFind(dst);
+	if(t && t.used && !confirm("Профиль " + profTitle(t) + " будет заменён копией профиля " + src + ". Продолжить?")) return;
+	profCopyTo(src, dst);
+}
+function profErase(n) {
+	var t = profFind(n);
+	if(!confirm("Стереть профиль " + (t ? profTitle(t) : n) + "?")) return;
+	api['do']('profile.erase', function(v, e) {
+		if(e) stToast(e == 'conflict' ? "Этот профиль стереть нельзя: он текущий или используется в расписании" : "Не удалось стереть профиль (" + (ST_ERR[e] || e) + ")", true);
+		else { stUnsaved(true); stRefresh(); }
+		profRefresh();
+	}, n - 1);
+}
+function profLoad(n) {
+	var t = profFind(n);
+	if(!confirm("Загрузить профиль " + (t ? profTitle(t) : n) + "? Несохранённые правки текущего профиля будут потеряны.")) return;
+	api['do']('profile.load', function(v, e) {
+		if(e) stToast("Не удалось загрузить профиль (" + (ST_ERR[e] || e) + ")", true);
+		else location.reload();
+	}, n - 1);
+}
+
+window.onload = function() {
+	stPanel({apply: false, note: 'Имя профиля, описание, «В меню», копирование и стирание действуют сразу. Запись сохраняет профили, расписание и все настройки.'});
+	profRefresh();
+};
+</script>
+</head>
+<body class="profiles">
+<div id="menu" class="menu"><script src="menu.js"></script></div>
+<div class="content">
+<div class="grid">
+	<section class="card c12"><div class="cur-box">
+		<div><div class="cap">Текущий профиль</div><div class="nm" id="prof-cur">–</div></div>
+		<p>Профиль — набор настроек отопления, ГВС и режима дома. Правки текущего профиля действуют сразу, в память контроллера (EEPROM) они пишутся кнопкой в нижней строке — одной на все профили, расписание и настройки. Имя, описание и «В меню» меняются прямо в таблице.</p>
+	</div></section>
+	<section class="card c12">
+		<h3>Профили <span class="r" style="color:var(--mute)" id="prof-cnt"></span></h3>
+		<table class="t"><thead><tr><th>№</th><th>Имя</th><th>Описание</th><th>Режим</th><th>Сохранён</th><th>В меню</th><th style="text-align:right">Действия</th></tr></thead><tbody id="prof-tbl"></tbody></table>
+	</section>
+	<section class="card c12 how"><h3>Как работают действия</h3>
+		<p><b>Сохранить сюда</b> — копия текущего профиля в пустой слот. <b>Загрузить</b> — сделать профиль текущим; страница перезагрузится. <b>Копировать в…</b> — копия попадает в выбранный слот, в текущий профиль копировать нельзя. <b>Стереть</b> — любой профиль, кроме текущего и используемого в расписании. <b>В меню</b> — профиль без галочки не показывается в списке профилей вверху страницы.</p>
+	</section>
+</div>
+</div>
+</body>
+</html>

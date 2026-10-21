@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Флаги отладки. Народный контроллер ТН</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<script src="scripts.js"></script>
+<script src="settings.js"></script>
+<style>
+.fl{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}
+.fl:last-child{border:0}
+.fl .nm{flex:none;width:62px;font-family:'DejaVu Sans Mono',Consolas,monospace;font-weight:800;font-size:12px;background:var(--bg);border-radius:6px;padding:2px 8px}
+.fl .l{flex:1;font-size:13.5px}
+.fl .l small{display:block;color:var(--mute);font-family:'DejaVu Sans Mono',Consolas,monospace;font-size:11.5px;margin-top:2px}
+</style>
+<script>
+// Флаги отладки: /api/meta?g=dbg даёт список флагов, ключи dbg.<ИМЯ>.group / .note («описание [ключевые слова]») / .on. Переключатель действует сразу
+// (dbg.<ИМЯ>.on), в EEPROM флаги пишутся нижней панелью. Забытый включённый флаг заполняет журнал: «Сбросить по умолчанию».
+var $ = function(id) { return document.getElementById(id); };
+function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
+
+function render(list, info, on) {
+	var groups = [], by = {};
+	list.forEach(function(n) {
+		var g = info['dbg.' + n + '.group'] || '', note = info['dbg.' + n + '.note'] || '';
+		var m = /^(.*?)\s*\[(.*)\]\s*$/.exec(note), desc = m ? m[1] : note, kw = m ? m[2] : '';
+		if(!by[g]) { by[g] = []; groups.push(g); }
+		by[g].push({n: n, d: desc, k: kw, on: on['dbg.' + n + '.on'] === true});
+	});
+	var cards = groups.map(function(g) {
+		return '<h3 style="margin-top:' + (g == groups[0] ? 0 : 18) + 'px">' + esc(g) + '</h3>' + by[g].map(function(x) {
+			return '<div class="fl"><span class="nm">' + esc(x.n) + '</span><div class="l">' + esc(x.d) + (x.k ? '<small>[' + esc(x.k) + ']</small>' : '') + '</div><input type="checkbox" class="sw" id="dbg-' + x.n + '"' + (x.on ? ' checked' : '') + ' onchange="setFlag(\'' + x.n + '\', this)"></div>';
+		}).join('');
+	});
+	// группы раскладываем в две колонки по очереди: короткие группы идут вторыми
+	var half = Math.ceil(cards.length / 2);
+	$('c1').innerHTML = cards.slice(0, half).join('');
+	$('c2').innerHTML = cards.slice(half).join('').replace('margin-top:18px', 'margin-top:0');
+}
+function load() {
+	stDevices('dbg', function(list) {
+		api.get({k: stDevKeys('dbg', list, ['group', 'note'])}, function(info) {
+			api.get({k: stDevKeys('dbg', list, ['on'])}, function(on) { render(list, info, on); });
+		});
+	});
+}
+function setFlag(n, el) {
+	var k = 'dbg.' + n + '.on', p = {};
+	p[k] = el.checked ? 1 : 0;
+	api.set(p, function(D, E, err) {
+		if(err || E[k]) { stToast('Не удалось изменить флаг ' + n + ' (' + (err ? 'нет связи' : ST_ERR[E[k]] || E[k]) + ').', true); load(); }
+		else { stUnsaved(true); stRefresh(); }
+	});
+}
+function resetFlags() {
+	if(!confirm('Сбросить все флаги отладки в значения по умолчанию?')) return;
+	api['do']('dbg.default', function(v, e) { if(e) stToast('Не выполнено (' + (ST_ERR[e] || e) + ').', true); else { load(); stToast('Флаги возвращены к рабочему набору.'); } });
+}
+window.onload = function() {
+	stPanel({apply: false, note: 'Переключатель действует сразу; в EEPROM флаги записываются этой кнопкой.'});
+	load();
+};
+</script>
+</head>
+<body class="dbg">
+<div id="menu" class="menu"><script src="menu.js"></script></div>
+<div class="content">
+<div class="card" style="margin-top:16px;display:flex;gap:16px;align-items:center;flex-wrap:wrap"><span style="flex:1;min-width:280px;color:var(--mute)">Флаги включают и выключают сообщения в журнал и консоль. Изменение действует сразу, в память контроллера флаги записываются кнопкой «Записать в EEPROM». Забытый включённый флаг заполняет журнал: «Сбросить по умолчанию» возвращает рабочий набор. В скобках — ключевые слова, по которым строки ищутся в журнале.</span>
+	<button class="btn2" onclick="resetFlags()">Сбросить по умолчанию…</button><a class="btn2" style="text-decoration:none" href="debug-help.html">Справка по флагам ↗</a></div>
+<div class="grid">
+	<section class="card c6" id="c1"></section>
+	<section class="card c6" id="c2"></section>
+</div>
+</div>
+</body>
+</html>

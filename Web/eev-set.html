@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Настройки ЭРВ. Народный контроллер ТН</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<script src="scripts.js"></script>
+<script src="settings.js"></script>
+<style>
+.sens td{padding:6px 8px;font-size:12.5px;vertical-align:top}
+.sens td:first-child{font-weight:800;white-space:nowrap}
+.rem{color:var(--mute);font-size:12.5px;margin-top:6px}
+#e8{display:grid;grid-template-columns:1fr 1fr;column-gap:36px}
+#e8 .field:first-child{grid-column:1/-1}
+@media(max-width:900px){#e8{grid-template-columns:1fr}}
+</style>
+<script>
+// Настройки ЭРВ: формула перегрева, диапазон и скорость, пуск и останов компрессора, прямой алгоритм, корректировка перегрева.
+// Ключи eev.* из /api/meta; единицы положений (шаги или проценты хода) - по ver.caps.eev_units.
+// «ПИД пропорционально измерению» (eev.pom) и поля, которых нет в прошивке (T2C, BF, BS, SP_2: прежние ответы E10 прятали их), со страницы убраны.
+var $ = function(id) { return document.getElementById(id); };
+function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
+function f(n, o) { o.key = 'eev.' + n.toLowerCase(); return o; }
+
+function notes() {
+	api.get({k: ['eev.pins', 'eev.remark']}, function(D) {
+		if(D['eev.pins'] !== undefined) shSubNote('Выводы шагового двигателя: <b style="font-size:13px">' + stEsc(D['eev.pins']).replace(/</g, '&lt;') + '</b> (только чтение)');
+		if(D['eev.remark'] !== undefined) put('rem', 'Описание формулы: ' + stEsc(D['eev.remark']).replace(/</g, '&lt;'));
+	});
+}
+// «Прямой алгоритм» - плитки прямого управления доступны только при включённом режиме
+function deps() {
+	var d = $('k-eev-dir'), on = d && d.checked;
+	['tth', 'trg2', 'trg2d', 't2l', 't2h', 'tmt'].forEach(function(n) {
+		var e = $('k-eev-' + n), r = $('f-k-eev-' + n);
+		if(e) e.disabled = !on;
+		if(r) r.classList.toggle('dis', !on);
+	});
+	['cd', 'coh_min', 'coh_start', 'coh_max', 'cdelay', 'cperiod', 'cdt', 'cdm'].forEach(function(n) {
+		var e = $('k-eev-' + n), r = $('f-k-eev-' + n), c = $('k-eev-ccorrect');
+		if(e) e.disabled = !(c && c.checked);
+		if(r) r.classList.toggle('dis', !(c && c.checked));
+	});
+}
+window.stChanged = deps;
+window.stAfterApply = function() { deps(); notes(); };
+
+window.onload = function() {
+	stPanel();
+	api.init(function(v) { build(v && v.caps && v.caps.eev_units == 'pct'); });
+};
+function build(pct) {
+	var pu = pct ? '%' : 'шаг', ps = pct ? 0.01 : 1;
+	stFields('e1', [
+		f('RULE', {k: 'sel', t: 'Формула перегрева', n: [7, 'В зависимости от выбранной формулы нужны определённые датчики, иначе возникает ошибка ERR_TYPE_OVERHEAT (−38): см. таблицу «Какие датчики нужны для формулы».']}),
+		f('FREON', {k: 'ro', t: 'Тип фреона', h: 'только чтение'}),
+		f('CONST', {t: 'Поправка', h: '−5…5 °C', u: '°C', min: -5, max: 5, step: 0.1, dec: 2}),
+		f('MANUAL', {t: 'Положение ЭРВ вручную', h: pct ? '% хода' : 'шаги', u: pu, step: ps})
+	]);
+	$('e1').insertAdjacentHTML('beforeend', '<div class="rem" id="rem"></div>');
+	stFields('e2', [
+		f('MIN', {t: 'Минимум шагов', h: '0 … максимум', u: 'шаг', step: 1}),
+		f('MAX', {t: 'Максимум шагов', h: 'минимум … 2000', u: 'шаг', step: 1}),
+		f('SPEED', {t: 'Скорость', h: '5…120 импульсов/с', step: 1})
+	]);
+	stFields('e2b', [
+		f('ZERO', {k: 'sw', t: 'Однократный поиск «0»', h: 'только при первом включении ТН', n: [5, 'Если выбрана эта опция, то поиск нуля производится только один раз при первом включении ТН.']}),
+		f('HM', {k: 'sw', t: 'Удержание двигателя в простое', h: 'удержание шагового двигателя'})
+	]);
+	stFields('e3', [
+		f('P2D', {t: 'Порог уменьшения ПИД, Δ', h: '0 — выкл., °C', u: '°C', step: 0.01, n: [6, 'Разница, при которой происходит уменьшение ПИД, или порог в прямом алгоритме (6), 0 — выключено.']}),
+		f('PMAX', {t: 'Ограничение за итерацию', h: '1…200 шагов', u: 'шаг', min: 1, max: 200, step: 1}),
+		f('DIR', {k: 'sw', t: 'Прямой алгоритм без ПИД', h: 'по двум перегревам', n: [6, 'Управление без ПИД по двум перегревам. В зависимости от ошибки и её тренда крутим ЭРВ в нужную сторону. Если есть превышение порога, то по множителю, иначе по одному шагу. Сначала по выбранной формуле, затем по перегреву на входе компрессора (TCOMPIN − T[PEVA]).']})
+	]);
+	stFields('e4', [
+		f('TTH', {t: 'Порог тренда', u: '°C', step: 1}),
+		f('TRG2', {t: 'Целевой перегрев 2', h: 'TCOMPIN − T[PEVA]', u: '°C', min: 0, step: 0.01}),
+		f('TRG2D', {t: 'Дельта целевого перегрева 2', h: 'TCOMPIN − T[PEVA]', u: '°C', min: 0, step: 0.01}),
+		f('T2L', {t: 'Нижняя граница перегрева 2', h: 'быстрое закрытие ЭРВ', u: '°C', min: 0, step: 0.01}),
+		f('T2H', {t: 'Гистерезис нижней границы', u: '°C', min: 0, step: 0.01}),
+		f('TMT', {t: 'Разница с предыдущей дельтой', h: 'больше — тренд × 2', u: '°C', min: 0, step: 0.01})
+	]);
+	stFields('e5', [
+		f('DOP', {t: 'Задержка начала регулирования', h: '0…255 с, 255 — навсегда', u: 'с', min: 0, max: 255, step: 1, n: [4, 'Время от начала раскрутки компрессора до момента начала работы ПИД ЭРВ; должно быть больше «времени на раскрутку» (2). Если 255, то будет использована всегда либо фиксированная позиция, либо рассчитанная по подаче позиция.']}),
+		f('LST', {k: 'sw', t: 'Специальная позиция при пуске', h: 'облегчить пуск компрессора', n: [1, 'Позиция ЭРВ, с которой начинается раскрутка компрессора.']}),
+		f('PSP', {t: 'Позиция при пуске', h: 'мин … макс', u: pu, step: ps}),
+		f('DSP', {t: 'Время на раскрутку', h: '0…255 с', u: 'с', min: 0, max: 255, step: 1, n: [2, 'Время, после которого специальная позиция ЭРВ меняется на стартовую.']}),
+		f('START', {k: 'sw', t: 'Старт со стартовой позиции', h: 'иначе — с позиции при останове', n: [3, 'Если эта опция не выбрана, то работа ЭРВ начинается с позиции, которая была при остановке компрессора.']}),
+		f('SP', {t: 'Стартовая позиция', h: 'мин … макс', u: pu, step: ps})
+	]);
+	stFields('e6', [
+		f('SPT', {k: 'sw', t: 'По температуре подачи', h: '10…45°'}),
+		f('PHT', {t: 'Положение при подаче 45°', h: 'мин … при 10°', u: pu, step: ps})
+	]);
+	stFields('e7', [
+		f('CLOSE', {k: 'sw', t: 'Закрытие ЭРВ при выключении'}),
+		f('DOFF', {t: 'Задержка закрытия после насосов', h: '0…255 с', u: 'с', min: 0, max: 255, step: 1}),
+		f('DON', {t: 'Задержка открытия перед пуском', h: '0…255 с', u: 'с', min: 0, max: 255, step: 1})
+	]);
+	stFields('e8', [
+		f('cCORRECT', {k: 'sw', t: 'Корректировка перегрева', h: 'включить подстройку перегрева'}),
+		f('cD', {t: 'Разница нагнетание − конденсация', h: 'при 0° кипения и начальном перегреве (30°)', u: '°C', min: 0, step: 0.01}),
+		f('cOH_MIN', {t: 'Минимальный перегрев', u: '°C', min: 0, step: 0.01}),
+		f('cOH_START', {t: 'Начальный (оптимальный) перегрев', u: '°C', min: 0, step: 0.01}),
+		f('cOH_MAX', {t: 'Максимальный перегрев', u: '°C', min: 0, step: 0.01}),
+		f('cDELAY', {t: 'Задержка после старта', u: 'с', min: 0, step: 1}),
+		f('cPERIOD', {t: 'Период', h: 'в циклах ЭРВ', min: 0, step: 1}),
+		f('cDT', {t: 'Порог разницы', u: '°C', min: 0, step: 0.1, dec: 2}),
+		f('cDM', {t: 'Максимальная разница нагн. − конд.', h: '%', u: '%', min: 0, step: 1, n: [8, 'Граница разницы нагнетание-конденсация для пропорционального изменения перегрева в %. Перегрев устанавливается пропорционально между минимальным и начальным перегревом. Если разница меньше, то устанавливается начальный или максимальный перегрев.']})
+	]);
+	stLoadK(function() { deps(); notes(); });
+}
+</script>
+</head>
+<body class="eev-set">
+<div id="menu" class="menu"><script src="menu.js"></script></div>
+<div class="content">
+<div class="grid">
+	<section class="card c4"><h3>Определение перегрева</h3><div id="e1"></div></section>
+	<section class="card c4"><h3>Диапазон и скорость</h3><div id="e2"></div><h3 style="margin-top:18px">Опции</h3><div id="e2b"></div></section>
+	<section class="card c4"><h3>Управление</h3><div id="e3"></div></section>
+	<section class="card c4"><h3>Прямой алгоритм <span class="r" style="color:var(--mute);font-weight:600">доступно при включённом</span></h3><div id="e4"></div></section>
+	<section class="card c4"><h3>Пуск компрессора</h3><div id="e5"></div></section>
+	<section class="card c4"><h3>Стартовая позиция по подаче и ГВС</h3><div id="e6"></div><h3 style="margin-top:18px">Останов компрессора</h3><div id="e7"></div></section>
+	<section class="card c8"><h3>Корректировка перегрева</h3><div id="e8"></div></section>
+	<section class="card c4"><h3>Какие датчики нужны для формулы<span class="hint" tabindex="0" data-tip="В зависимости от выбранной формулы нужны определённые датчики, иначе возникает ошибка ERR_TYPE_OVERHEAT (−38).">7</span></h3>
+		<table class="t sens"><tbody>
+			<tr><td>TEVAOUT_TEVAIN</td><td>TEVAOUT, TEVAIN + (TCONIN или TCOMPIN)</td></tr>
+			<tr><td>TCOMPIN_TEVAIN</td><td>TCOMPIN, TEVAIN</td></tr>
+			<tr><td>TEVAOUT_PEVA</td><td>TEVAOUT, PEVA + (TCONIN или TCOMPIN)</td></tr>
+			<tr><td>TCOMPIN_PEVA</td><td>TCOMPIN, PEVA</td></tr>
+			<tr><td>TABLE</td><td>TEVAIN и (TEVAOUT, PEVA + (TCONIN или TCOMPIN)) или (TCOMPIN, PEVA) или (TEVAOUT, TEVAIN + (TCONIN или TCOMPIN)) или (TEVAIN, TCOMPIN)</td></tr>
+			<tr><td>MANUAL</td><td>(TEVAOUT, PEVA + (TCONIN или TCOMPIN)) или (TCOMPIN, PEVA) или (TEVAOUT, TEVAIN + (TCONIN или TCOMPIN)) или (TEVAIN, TCOMPIN), иначе перегрев устанавливается в 0</td></tr>
+		</tbody></table>
+		<div class="fnote">Без нужных датчиков — ошибка ERR_TYPE_OVERHEAT (−38).</div>
+	</section>
+</div>
+</div>
+</body>
+</html>

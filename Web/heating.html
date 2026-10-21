@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Отопление. Народный контроллер ТН</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<script src="scripts.js"></script>
+<script src="settings.js"></script>
+<script src="chart.js"></script>
+<style>
+.cool{display:none}
+.showcool .cool{display:block}.showcool .heat{display:none}
+.onlyheat .cool{display:none!important}
+.card .seg a{cursor:pointer}
+#wg,#wg2{margin-bottom:6px}
+#wg text,#wg2 text{fill:var(--mute);font-size:11px}
+#wg .g,#wg2 .g{stroke:var(--line)}
+.wnote{color:var(--mute);font-size:12px;margin:0 0 8px;line-height:1.45}
+.formula{background:var(--bg);border-radius:10px;padding:6px 10px;font-family:'DejaVu Sans Mono',Consolas,monospace;font-size:11.5px;margin:6px 0 4px}
+.stt{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:99px;font-size:11.5px;font-weight:800;text-transform:none;letter-spacing:0}
+.stt i{width:8px;height:8px;border-radius:50%}
+.stt.on{background:var(--tok);color:var(--ok)}.stt.on i{background:var(--ok)}
+.stt.off{background:var(--cell);color:var(--mute)}.stt.off i{background:#aab4bf}
+.stt.na{background:var(--tw);color:var(--warnfg)}.stt.na i{background:var(--heat)}
+.msg{border-radius:12px;padding:8px 12px;font-size:12.5px;line-height:1.45;margin:2px 0 6px}
+.msg.on{background:var(--tok);color:var(--ok)}
+.msg.off{background:var(--cell);color:var(--ink)}
+.msg.na{background:var(--warnbg);border:1px solid var(--warnbd);color:var(--warnfg)}
+.msg.off b,.msg.na b{color:var(--ink)}
+.wdim #wg,.wdim #wg2{opacity:.35;filter:grayscale(1)}.wdim .formula,.wdim .nowline{opacity:.55}
+.field.hl .inp{border-color:var(--heat);background:var(--warnbg)}
+.sub-h{font-size:12px;font-weight:700;color:var(--mute);margin:8px 0 0}
+</style>
+<script>
+// Параметры отопления и охлаждения одного вида: P = 'Heat' | 'Cool'. Разметка собирается из описания полей,
+// ключи API (heat.temp1), id элементов k-heat-temp1; значения и варианты списков приходят из /api/get и /api/meta.
+var $ = function(id) { return document.getElementById(id); };
+function kk(P, n) { return P.toLowerCase() + '.' + n.toLowerCase(); }     // ключ API: ('Heat','TEMP1') -> heat.temp1
+function pid(P) { return P.toLowerCase(); }
+
+function cardTarget(P) {
+	var heat = P == 'Heat', q = pid(P);
+	var f = [
+		{key: kk(P, 'RULE'), k: 'sel', t: 'Алгоритм работы', n: [1, 'Для ПИДа производится стабилизация заданной температуры подачи.']},
+		{key: kk(P, 'TARGET'), k: 'sel', t: 'Что является целью'},
+		{key: kk(P, 'TEMP1'), t: 'Температура в доме', h: '0…30 °C', u: '°C', min: 0, max: 40, step: 0.1},
+		{key: kk(P, 'TEMP2'), t: 'Температура обратки', h: '10…50 °C', u: '°C', min: 10, max: 50, step: 0.1},
+		{key: kk(P, 'DTEMP'), t: 'Гистерезис', h: '0…30 °C', u: '°C', min: 0, max: 30, step: 0.1, n: [2, 'Диапазон регулирования равен: целевая температура − гистерезис целевой температуры.']}
+	];
+	if(heat) f.push({key: 'heat.dtg', t: 'Гистерезис при работе от генератора', h: '0…30 °C', u: '°C', min: 0, max: 30, step: 0.1});
+	var pf = [
+		{key: kk(P, 'TEMP_PID'), t: 'Целевая температура подачи', h: '10…50 °C; при погодозависимости — для улицы 0°', u: '°C', min: 5, max: 50, step: 0.1,
+			n: [4, 'При использовании погодозависимости целевая температура подачи указывается для уличной температуры 0 градусов.']},
+		{key: kk(P, 'HP_TIME'), t: 'Постоянная интегрирования времени', h: '10…600 с', u: 'с', min: 10, max: 600, step: 1},
+		{key: kk(P, 'HP_PRO'), t: 'Пропорциональная составляющая', h: '0…32', min: 0, max: 32, step: 0.001},
+		{key: kk(P, 'HP_IN'), t: 'Интегральная составляющая', h: '0…32', min: 0, max: 32, step: 0.001},
+		{key: kk(P, 'HP_DIF'), t: 'Дифференциальная составляющая', h: '0…32', min: 0, max: 32, step: 0.001},
+		{key: kk(P, 'W'), k: 'sw', t: 'Погодозависимость для ПИД', h: 'подача растёт при похолодании', n: [5, 'Изменение целевой температуры подачи в зависимости от уличной температуры, доступно только для ПИД.']},
+		{key: kk(P, 'KW'), t: 'Коэффициент погодозависимости', h: 'повышение подачи на 1° похолодания', u: 'К/°', step: 0.001,
+			n: [6, 'Увеличение температуры подачи при уменьшении уличной температуры на 1 градус.']},
+		{key: kk(P, 'TP'), k: 'ro', t: 'Расчётная температура подачи', h: 'при улице <span class="tout">–</span>°', u: '°C', cls: 'big-ro'}
+	];
+	if(heat) pf = pf.filter(function(x) { return !/\.(temp_pid|w|kw|tp)$/.test(x.key); });		// у отопления они в карточке «Кривая подачи ПИД»
+	var h = '<div class="card ' + (heat ? 'c4' : 'c6') + '"><h3>Что поддерживаем</h3>';
+	if(heat) h += '<div class="field"><div class="l"><span class="noh">Режим работы ТН</span><span class="oh">Отопление</span><small>режим работы ТН (сборка «только отопление»)</small></div>' +
+		'<label class="inp sel noh"><select id="k-state-mode_house" data-k="state.mode_house" data-now></select></label>' +
+		'<input type="checkbox" class="sw oh" id="mode_sw" onchange="modeSw(this)"></div>';
+	h += f.map(stField).join('');
+	h += '<div class="nowline">Текущая цель в доме <b id="trg-' + q + '">–</b> <span id="trgp-' + q + '"></span></div>';
+	h += '<div class="more"><div><b>ПИД · тонкая настройка</b><span class="hint" tabindex="0" data-tip="Для ПИДа производится стабилизация заданной температуры подачи.">1</span><small id="pids-' + q + '"></small></div><a onclick="pidToggle(\'' + q + '\', this)">показать ▾</a></div>';
+	h += '<div id="pidf-' + q + '" hidden>' + pf.map(stField).join('') + '</div></div>';
+	return h;
+}
+
+// Две карточки погодозависимости с состоянием (работает / выключена / недоступна) и инструкцией, как включить. ids: wa-* - поправка цели, wc-* - кривая подачи
+function wcard(key, title, tip, scope, note, formula, fields) {
+	return '<div class="card c4" id="w' + key + '"><h3>' + title + '<span class="hint" tabindex="0" data-tip="' + stEsc(tip) + '">i</span><span class="r"><span class="stt off" id="w' + key + '-st"><i></i>…</span></span></h3>' +
+		'<div class="msg off" id="w' + key + '-msg"></div><div class="wnote">' + note + '</div><svg id="' + (key == 'a' ? 'wg' : 'wg2') + '" width="100%" height="170"></svg>' +
+		'<div class="formula">' + formula + '</div>' + fields.map(stField).join('') + '<div class="nowline" id="w' + key + '-now">–</div></div>';
+}
+function cardWeather() {
+	return wcard('a', 'Поправка цели по улице', 'Сдвигает цель помещения вслед за уличной температурой: в мороз выше, в тепло ниже. Добавка = К × (база − улица), ограничена ± максимальным изменением. Работает при любом алгоритме; при К = 0 выключена.', 'цель помещения',
+		'Сдвигает цель в доме вслед за погодой: в мороз чуть выше, в тепло ниже. Работает при любом алгоритме.',
+		'цель = уставка + K × (база − улица), не более ± макс. изменения', [
+		{key: 'heat.kwb', t: 'Базовая температура', h: 'при ней поправка равна нулю', u: '°C', step: 1},
+		{key: 'heat.kwt', t: 'Коэффициент К', h: 'градусов цели на градус улицы; 0 — выключено', step: 0.001},
+		{key: 'heat.kwr', t: 'Максимальное изменение', h: '± от уставки', u: '°C', step: 0.1}
+	]);
+}
+function cardCurve() {
+	return wcard('c', 'Кривая подачи ПИД', 'Отопительная кривая для ПИД: цель подачи = цель ПИД + K × (0 − улица). Чем холоднее на улице, тем выше температура теплоносителя; в оттепель ниже, и компрессору выгоднее работать (выше COP). Базовая температура фиксирована: 0 °C. Подача ограничена 7…50 °C и максимальной подачей − 0,5 °C.', 'цель подачи',
+		'Только для алгоритма ПИД: чем холоднее на улице, тем выше температура теплоносителя. Компрессору выгоднее работать на пониженной подаче.',
+		'подача = цель ПИД + K × (0 − улица), в пределах 7…50 °C и не выше макс. подачи − 0,5', [
+		{key: 'heat.w', k: 'sw', t: 'Использовать кривую'},
+		{key: 'heat.temp_pid', t: 'Цель ПИД при 0 °C на улице', h: 'подача при нулевой улице', u: '°C', min: 5, max: 50, step: 0.1,
+			n: [4, 'При использовании погодозависимости целевая температура подачи указывается для уличной температуры 0 градусов.']},
+		{key: 'heat.kw', t: 'Коэффициент К', h: 'градусов подачи на градус улицы', step: 0.001, n: [6, 'Увеличение температуры подачи при уменьшении уличной температуры на 1 градус.']}
+	]);
+}
+function cardNight(P) {
+	var heat = P == 'Heat';
+	return '<div class="card c4"><h3>Ночной тариф</h3>' + [
+		{key: 'heat.adt', t: 'Добавка к цели', h: '−30…+50 °C, 0 — не работает', u: '°C', step: 0.1, n: [3, 'При установке значения добавки 0 °C данная опция не работает.']},
+		{key: 'heat.adh', t: 'Начальный час', h: '0…23', u: 'ч', min: 0, max: 23, step: 1},
+		{key: 'heat.adeh', t: 'Конечный час', h: '0…23', u: 'ч', min: 0, max: 23, step: 1}
+	].map(stField).join('') + '<div id="nbar" style="margin-top:12px"></div></div>';
+}
+function cardElectric() {
+	return '<div class="card c4"><h3>Контур отопления · электрокотёл</h3>' + [
+		{key: 'ohp.heat_list', k: 'sel', t: 'Дополнительный ТЭН', h: 'Reserve — если в доме ниже заданной; Bivalent — если на улице ниже',
+			n: [7, 'Reserve — ТЭН включается, если температура в доме ниже заданной; bivalent — ТЭН включится, если уличная температура ниже заданной.']},
+		{key: 'ohp.temp_rheat', t: 'Температура управления ТЭНом', h: '−30…30 °C', u: '°C', min: -30, max: 30, step: 0.1},
+		{key: 'ohp.pump_work', t: 'Работа насосов отопления в паузе ТН', h: '0…65535 с, 0 — не работают', u: 'с', min: 0, step: 1, n: [8, 'Установка 0 — насос вообще не работает.']},
+		{key: 'ohp.pump_pause', t: 'Период останова насосов отопления в паузе ТН', h: '0…65535 с, 0 — непрерывно', u: 'с', min: 0, step: 1, n: [9, 'Установка 0 — насос работает непрерывно.']}
+	].map(stField).join('') + '</div>';
+}
+function cardProtect(P) {
+	var heat = P == 'Heat';
+	return '<div class="card ' + (heat ? 'c4' : 'c6') + '"><h3>Защиты при работе ТН</h3>' + [
+		{key: kk(P, 'TEMP_IN'), t: heat ? 'Максимальная температура подачи' : 'Минимальная температура подачи', h: heat ? '0…70 °C' : '0…30 °C', u: '°C', min: 0, max: heat ? 70 : 30, step: 0.1},
+		{key: kk(P, 'TEMP_OUT'), t: heat ? 'Минимальная температура обратки' : 'Максимальная температура обратки', h: heat ? '−10…70 °C' : '0…35 °C', u: '°C', min: heat ? -10 : 0, max: heat ? 70 : 35, step: 0.1},
+		{key: kk(P, 'D_TEMP'), t: 'Максимальная разность на конденсаторе', h: '0…40 °C', u: '°C', min: 0, max: 40, step: 0.1}
+	].map(stField).join('') + '</div>';
+}
+
+// ---- что зависит от чего ----
+// Алгоритм «гистерезис» не использует ПИД; цель «дом» отключает температуру обратки, и наоборот
+function deps(P) {
+	var q = pid(P), set = function(n, dis, why) {
+		var e = $('k-' + q + '-' + n);
+		if(!e) return;
+		e.disabled = dis;
+		var f = $('f-k-' + q + '-' + n), s = f && f.querySelector('small');
+		if(f) f.classList.toggle('dis', dis);
+		if(s) { if(s.dataset.h === undefined) s.dataset.h = s.innerHTML; s.innerHTML = s.dataset.h + (dis && why ? ' · ' + why : ''); }
+	};
+	var rule = $('k-' + q + '-rule'), tg = $('k-' + q + '-target');
+	if(rule && rule.options.length) {
+		var off = rule.selectedIndex == 0;
+		['hp_pro', 'hp_in', 'hp_dif', 'temp_pid', 'w', 'kw', 'hp_time'].forEach(function(n) { set(n, off, 'недоступно: алгоритм без ПИД'); });
+		if(tg) { tg.disabled = rule.selectedIndex == 2; }
+	}
+	if(tg && tg.options.length) {
+		set('temp2', tg.selectedIndex == 0, 'недоступно: цель — дом');
+		set('temp1', tg.selectedIndex != 0, 'недоступно: цель — обратка');
+	}
+}
+function pidSummary(P) {
+	var q = pid(P), v = function(n) { var e = $('k-' + q + '-' + n); return e && e.value !== '' ? e.value : '–'; };
+	put('pids-' + q, 'подача ' + v('temp_pid') + '° · Kp ' + v('hp_pro') + ' · Ki ' + v('hp_in') + ' · Kd ' + v('hp_dif'));
+}
+function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
+function pidToggle(q, a) {
+	var b = $('pidf-' + q);
+	b.hidden = !b.hidden;
+	a.innerHTML = b.hidden ? 'показать ▾' : 'скрыть ▴';
+}
+
+// ---- графики и состояние погодозависимости ----
+var tout = NaN, feedNow = NaN;
+function num(n) { var e = $('k-heat-' + n); return e ? parseFloat(e.value) : NaN; }
+function fmt(x, d) { return isNaN(x) ? '–' : x.toFixed(d == null ? 1 : d).replace('.', ','); }
+function sgn(x) { return (x > 0 ? '+' : x < 0 ? '−' : '') + fmt(Math.abs(x)); }
+// рисует кривую f(t), t = -25...25; ref - горизонтальная линия {v, text}
+function drawCurve(svgId, f, ref) {
+	var svg = $(svgId);
+	if(!svg) return;
+	var W = svg.clientWidth || 380, H = 170, L = 34, R = 8, T = 10, B = 22, pts = [], lo = 1e9, hi = -1e9;
+	for(var t = -25; t <= 25; t++) { var y = f(t); pts.push([t, y]); if(y < lo) lo = y; if(y > hi) hi = y; }
+	if(ref && ref.v != null) { if(ref.v < lo) lo = ref.v; if(ref.v > hi) hi = ref.v; }
+	if(hi - lo < 1) { hi += 0.5; lo -= 0.5; }
+	var st = SvgChart.niceStep(lo, hi, 4);
+	lo = Math.floor(lo / st) * st; hi = Math.ceil(hi / st) * st;
+	var X = function(t) { return L + (W - L - R) * (t + 25) / 50; }, Y = function(y) { return T + (H - T - B) * (1 - (y - lo) / (hi - lo)); };
+	var h = '';
+	for(var k = Math.ceil(lo / st) * st; k <= hi + st / 1000; k += st) h += '<line class="g" x1="' + L + '" x2="' + (W - R) + '" y1="' + Y(k) + '" y2="' + Y(k) + '"/><text x="' + (L - 5) + '" y="' + (Y(k) + 4) + '" text-anchor="end">' + Math.round(k * 100) / 100 + '</text>';
+	for(k = -25; k <= 25; k += 10) h += '<text x="' + X(k) + '" y="' + (H - 6) + '" text-anchor="middle">' + k + '°</text>';
+	if(ref && ref.v != null) h += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + Y(ref.v) + '" y2="' + Y(ref.v) + '" stroke="#d64545" stroke-dasharray="4 3"/><text x="' + (W - R - 4) + '" y="' + (Y(ref.v) - 4) + '" text-anchor="end" style="fill:#d64545">' + ref.text + '</text>';
+	h += '<path d="M' + pts.map(function(p) { return X(p[0]).toFixed(1) + ',' + Y(p[1]).toFixed(1); }).join('L') + '" fill="none" stroke="#0f8b8d" stroke-width="2.4" stroke-linejoin="round"/>';
+	if(!isNaN(tout) && tout >= -25 && tout <= 25) h += '<line x1="' + X(tout) + '" x2="' + X(tout) + '" y1="' + T + '" y2="' + (H - B) + '" stroke="#9aa5b1" stroke-dasharray="3 3"/><circle cx="' + X(tout) + '" cy="' + Y(f(tout)) + '" r="5" fill="#fff" stroke="#0f8b8d" stroke-width="2.5"/>';
+	svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+	svg.innerHTML = h;
+}
+// состояние карточки: on - работает, off - выключена, na - недоступна; msg - пояснение с инструкцией, now - строка расчёта
+function wstate(key, st, msg, now) {
+	var e = $('w' + key + '-st'), m = $('w' + key + '-msg'), c = $('w' + key);
+	if(!e) return;
+	e.className = 'stt ' + st;
+	e.innerHTML = '<i></i>' + (st == 'on' ? 'Работает' : st == 'off' ? 'Выключена' : 'Недоступна');
+	m.className = 'msg ' + st;
+	m.innerHTML = (st == 'on' ? '✓ ' : '') + msg;
+	$('w' + key + '-now').innerHTML = now;
+	c.classList.toggle('wdim', st != 'on');
+}
+function weather() {
+	if(!$('wa')) return;
+	// --- поправка цели: цель помещения от улицы ---
+	var rule = $('k-heat-rule'), tg = $('k-heat-target'), ri = rule ? rule.selectedIndex : 1;
+	var t1 = (tg && tg.selectedIndex != 0 && ri != 2) ? num('temp2') : num('temp1');
+	var kb = num('kwb'), kt = num('kwt'), kr = num('kwr');
+	var fa = function(t) { return t1 + Math.max(-kr, Math.min(kr, (kb - t) * kt)); };
+	if([t1, kb, kt, kr].every(function(x) { return !isNaN(x); })) {
+		drawCurve('wg', fa);
+		var kfield = $('f-k-heat-kwt');
+		if(kfield) kfield.classList.toggle('hl', kt == 0);
+		if(kt != 0) wstate('a', 'on', 'Включена: цель в доме сдвигается по уличной температуре (К = ' + fmt(kt, 3) + ').',
+			isNaN(tout) ? 'Нет данных об уличной температуре' : 'Сейчас: улица <b>' + fmt(tout) + '°</b> → поправка <b>' + sgn(fa(tout) - t1) + '°</b> → цель <b>' + fmt(fa(tout)) + '°</b>');
+		else wstate('a', 'off', 'Выключена: коэффициент К равен 0. <b>Чтобы включить</b>, задайте К больше 0, например 0,100, и нажмите «Применить».', 'Сейчас поправка <b>0,0°</b> → цель = уставка <b>' + fmt(t1) + '°</b>');
+	}
+	// --- кривая подачи ПИД ---
+	var w = $('k-heat-w'), tp = num('temp_pid'), kw = num('kw'), lim = num('temp_in');
+	if($('wc') && w && !isNaN(tp) && !isNaN(kw)) {
+		var cap = isNaN(lim) ? 50 : lim - 0.5;
+		var fc = function(t) { var v = tp + kw * (0 - t); v = Math.min(v, cap); v = Math.max(v, 7); return Math.min(v, 50); };
+		drawCurve('wg2', fc, isNaN(lim) ? null : {v: Math.min(cap, 50), text: 'предел подачи'});
+		var pidOn = ri == 1;
+		if(!pidOn) {
+			var rn = rule && rule.options[ri] ? ({HYSTERESIS: 'Гистерезис', PID: 'ПИД', HYBRID: 'Гибрид'}[rule.options[ri].text] || rule.options[ri].text) : '';
+			wstate('c', 'na', 'Недоступна: сейчас выбран алгоритм «' + rn + '». <b>Чтобы включить</b>, выберите «Алгоритм работы → PID» в карточке «Что поддерживаем».', 'Кривая подачи не применяется при этом алгоритме');
+		} else if(w.checked) {
+			wstate('c', 'on', 'Включена: цель подачи сдвигается по уличной температуре (алгоритм ПИД).',
+				isNaN(tout) ? 'Нет данных об уличной температуре' : 'Сейчас: улица <b>' + fmt(tout) + '°</b> → цель подачи <b>' + fmt(fc(tout)) + '°</b>' + (isNaN(feedNow) ? '' : ' <span>(фактическая ' + fmt(feedNow) + '°)</span>'));
+		} else wstate('c', 'off', 'Выключена: цель подачи постоянная. <b>Чтобы включить</b>, включите переключатель «Использовать кривую» и нажмите «Применить».', 'Сейчас цель подачи постоянная: <b>' + fmt(tp) + '°</b>');
+	}
+}
+
+function refreshAll() {
+	['Heat', 'Cool'].forEach(function(P) { deps(P); pidSummary(P); });
+	var nb = $('nbar');
+	if(nb && $('k-heat-adt')) stNightBar(nb, 'k-heat-');
+	weather();
+}
+var rt = 0;
+window.stChanged = refreshAll;
+window.stAfterApply = function() { refreshAll(); api.pollTick(); };
+// Значения общего опроса: улица, фактическая подача, текущая цель дома
+function heatPoll(d) {
+	if('temp.TOUT.value' in d) {
+		tout = d['temp.TOUT.value'] === null ? NaN : d['temp.TOUT.value'];
+		var a = document.querySelectorAll('.tout');
+		for(var i = 0; i < a.length; i++) a[i].textContent = isNaN(tout) ? '–' : tout.toFixed(1);
+	}
+	if('temp.TCONOUTG.value' in d) feedNow = d['temp.TCONOUTG.value'] === null ? NaN : d['temp.TCONOUTG.value'];
+	if('state.trg_home' in d) {
+		var t = d['state.trg_home'], p = d['state.trg_pid'], txt = t === null ? '–' : t.toFixed(1) + '°', sub = p == null ? '' : 'подача ' + p.toFixed(1) + '°';
+		put('trg-heat', txt); put('trg-cool', txt);
+		put('trgp-heat', sub); put('trgp-cool', sub);
+	}
+	if(!rt) rt = setTimeout(function() { rt = 0; refreshAll(); }, 30);
+}
+// Переключатель «Отопление» (сборка только на отопление): режим дома 1 / 0
+function modeSw(sw) {
+	api.set({'state.mode_house': sw.checked ? 1 : 0}, function(D, E) {
+		if(E['state.mode_house']) { sw.checked = !sw.checked; stToast('Режим не изменён (' + (ST_ERR[E['state.mode_house']] || E['state.mode_house']) + ').', true); return; }
+		stSetK($('k-state-mode_house'), 'state.mode_house', D['state.mode_house']);
+		api.pollTick();
+	});
+}
+function showMode(m, a) {
+	document.body.classList.toggle('showcool', m == 'cool');
+	var s = a.parentNode.children;
+	for(var i = 0; i < s.length; i++) s[i].className = s[i] == a ? 'on' : '';
+	weather();
+}
+
+window.onload = function() {
+	$('m-heat').innerHTML = '<div class="grid">' + cardTarget('Heat') + cardWeather() + cardCurve() + cardNight('Heat') + cardElectric() + cardProtect('Heat') + '</div>';
+	$('m-cool').innerHTML = '<div class="grid">' + cardTarget('Cool') + cardProtect('Cool') + '</div>';
+	stPanel();
+	api.init(function(v) {
+		if(!v) return;
+		if(v.caps.cool) $('modeseg').hidden = false; else document.body.classList.add('onlyheat');		// сборка «только отопление» прячет всё про охлаждение
+	});
+	stLoadK(function() {
+		var mh = $('k-state-mode_house'), ms = $('mode_sw');
+		if(mh && ms) ms.checked = mh.selectedIndex != 0;
+	});
+	stPollRo();
+	api.poll({k: ['temp.TOUT.value', 'temp.TCONOUTG.value', 'state.trg_home', 'state.trg_pid']}, heatPoll);		// улица, подача и цель для плашек состояния
+};
+</script>
+</head>
+<body class="heating">
+<div id="menu" class="menu"><script src="menu.js"></script></div>
+<div class="content">
+	<div class="subnav" id="modeseg" hidden><div class="seg"><a class="on" onclick="showMode('heat', this)">Отопление</a><a onclick="showMode('cool', this)">Охлаждение</a></div></div>
+	<div id="m-heat" class="heat"></div>
+	<div id="m-cool" class="cool"></div>
+</div>
+</body>
+</html>

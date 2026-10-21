@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Температура. Народный контроллер ТН</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<script src="scripts.js"></script>
+<script src="settings.js"></script>
+<script>
+// Датчики температуры: список устройств - из /api/meta?g=temp (devs), на каждый датчик - значение проводного датчика (raw), пределы, поправка (err),
+// тестовое значение (test), флаги flag4..5 («средняя для TIN», «минимальная для TIN»), счётчик (esum) и код ошибки (ecode).
+// Флаг flag6 («тёплый пол», реле RPUMPFL) убран из прошивки при чистке (cd50217) и здесь не показывается.
+// Столбец «Шина» убран: шина всегда одна (решение владельца).
+urlupdate = 2000;
+var $ = function(id) { return document.getElementById(id); };
+function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
+function num(v, d) { return v === null || v === undefined || isNaN(parseFloat(v)) ? '–' : parseFloat(v).toFixed(d); }
+
+function row(T) {
+	var t = T.toLowerCase(), k = function(a) { return 'temp.' + T + '.' + a; };
+	var tg = function(n, label) { return '<label class="tg" title="' + (n == 4 ? 'Средняя температура TIN' : 'Минимальная температура TIN') + '"><input type="checkbox" id="' + stKid(k('flag' + n)) + '" data-k="' + k('flag' + n) + '"><span>' + label + '</span></label>'; };
+	return '<tr id="r-' + t + '"><td class="n">' + T + '<span class="d">' + stCell(k('note'), {k: 'ro', init: ''}) + '</span></td>' +
+		'<td class="num"><b class="big" id="v-' + t + '">–</b></td>' +
+		'<td class="num" style="color:var(--mute)">' + stCell(k('min'), {k: 'ro', init: ''}) + ' … ' + stCell(k('max'), {k: 'ro', init: ''}) + '</td>' +
+		'<td>' + stCell(k('err'), {step: 0.01, dec: 2, u: '°'}) + '</td>' +
+		'<td>' + stCell(k('test'), {step: 0.01, dec: 2, u: '°'}) + '</td>' +
+		'<td>' + tg(4, 'ср') + tg(5, 'мин') + '</td>' +
+		'<td class="num" id="es-' + t + '">–</td><td id="code-' + t + '">–</td></tr>';
+}
+
+var hasBus = {};
+// Общий опрос: значение проводного датчика, число ошибок, код ошибки и привязка к шине
+function tempPoll(d) {
+	for(var key in d) {
+		var m = /^temp\.([A-Za-z0-9_]+)\.(raw|esum|ecode|bus)$/.exec(key);
+		if(!m) continue;
+		var T = m[1], t = T.toLowerCase(), v = d[key];
+		if(m[2] == 'raw') put('v-' + t, hasBus[t] === false ? '—' : num(v, 2) + '°');
+		else if(m[2] == 'esum') put('es-' + t, v);
+		else if(m[2] == 'ecode') put('code-' + t, hasBus[t] === false ? 'не подключён' : (v == 0 ? '<span class="okc">OK</span>' : '<span class="errc">E' + v + '</span>'));
+		else {		// null - датчик не привязан к адресу
+			hasBus[t] = v !== null;
+			var r = $('r-' + t);
+			if(r) r.classList.toggle('dis', !hasBus[t]);
+			if(!hasBus[t]) { put('v-' + t, '—'); put('code-' + t, 'не подключён'); }
+		}
+	}
+}
+// Удалённые датчики IP: «—» вместо пустых значений, единицы как раньше
+function ipPoll(d) {
+	for(var key in d) {
+		var m = /^ipsens\.(\d+)\.(temp|age|ip|rssi|vcc|count)$/.exec(key);
+		if(!m) continue;
+		var j = m[1], v = d[key], a = m[2], id = {temp: 'ip-t-', age: 'ip-age-', ip: 'ip-ip-', rssi: 'ip-rssi-', vcc: 'ip-vcc-', count: 'ip-cnt-'}[a];
+		put(id + j, v === null ? '–' : a == 'temp' ? num(v, 1) + '°' : a == 'age' ? v + ' с' : a == 'rssi' ? num(v, 1) + ' дБ' : a == 'vcc' ? num(v, 2) + ' В' : stEsc(String(v)));
+	}
+}
+
+function resetErrors() {
+	if(confirm('Сбросить счётчики и коды ошибок датчиков температуры?')) api['do']('reset.terr', function(v, e) { if(e) stToast('Не выполнено (' + (ST_ERR[e] || e) + ').', true); else stToast('Счётчики и коды ошибок сброшены.'); });
+}
+
+window.onload = function() {
+	stPanel();
+	stDevices('temp', function(list) {
+		$('rows').innerHTML = list.map(row).join('');
+		stLoadK();
+		api.poll({k: stDevKeys('temp', list, ['raw', 'esum', 'ecode', 'bus'])}, tempPoll);
+		// удалённые датчики (при сборке без SENSOR_IP группы нет)
+		stDevices('ipsens', function(ips) {
+			if(!ips.length) return;
+			$('remote').hidden = false;
+			var opts = '<option value="">Reset</option>' + list.map(function(T) { return '<option value="' + T + '">' + T + '</option>'; }).join('');
+			$('rrows').innerHTML = ips.map(function(j) {
+				var k = function(a) { return 'ipsens.' + j + '.' + a; };
+				return '<tr><td class="n">' + j + '</td><td class="num"><b class="big" id="ip-t-' + j + '">–</b></td><td id="ip-age-' + j + '">–</td><td><span class="code" id="ip-ip-' + j + '">–</span></td><td id="ip-rssi-' + j + '">–</td><td id="ip-vcc-' + j + '">–</td><td id="ip-cnt-' + j + '">–</td>' +
+					'<td>' + stCell(k('use'), {k: 'sw'}) + '</td><td>' + stCell(k('rule'), {k: 'sw'}) + '</td>' +
+					'<td>' + stCell(k('link'), {k: 'sel', sv: 1, opts: opts}) + '</td></tr>';
+			}).join('');
+			stLoadK();
+			api.poll({k: stDevKeys('ipsens', ips, ['temp', 'age', 'ip', 'rssi', 'vcc', 'count'])}, ipPoll);
+		});
+	});
+	api.get({k: ['sys.onewire_pin']}, function(D) { put('onewirepin', stEsc(D['sys.onewire_pin'] || '–')); });
+};
+</script>
+</head>
+<body class="sensorst">
+<div id="menu" class="menu"><script src="menu.js"></script></div>
+<div class="content">
+<div class="grid">
+	<section class="card c12">
+		<h3>Датчики температуры <span class="r row" style="gap:12px;color:var(--mute);font-weight:600">шина OneWire: <span id="onewirepin" style="color:var(--ink)">–</span> <button class="btn2" style="padding:6px 12px" onclick="resetErrors()">Сброс ошибок</button></span></h3>
+		<div class="scrollx"><table class="t"><thead><tr><th>Датчик</th><th>Значение</th><th>Допустимо</th><th>Поправка</th><th>Тест</th>
+			<th>TIN: средн / мин<span class="hint" tabindex="0" data-tip="Для TIN усреднение и/или выбор минимальной температуры по всем датчикам с флагами. TIN должен быть не привязан к проводному датчику, иначе не работает.">1</span></th>
+			<th>Ошибок</th><th>Код ошибки</th></tr></thead><tbody id="rows"></tbody></table></div>
+		<div class="fnote"><b>1.</b> Для TIN усреднение и/или выбор минимальной температуры по всем датчикам с флагами. TIN должен быть не привязан к проводному датчику, иначе не работает. Датчики, не привязанные к шине, показаны серыми.</div>
+	</section>
+	<section class="card c12" id="remote" hidden>
+		<h3>Удалённые датчики <span class="r" style="color:var(--mute)">радиодатчики по IP</span></h3>
+		<div class="scrollx"><table class="t"><thead><tr><th>№</th><th>Температура</th><th>Обновлён</th><th>IP</th><th>RSSI</th><th>VCC</th><th>Пакеты</th><th>Использование</th><th>Усреднение</th><th>Привязка</th></tr></thead><tbody id="rrows"></tbody></table></div>
+	</section>
+</div>
+</div>
+</body>
+</html>

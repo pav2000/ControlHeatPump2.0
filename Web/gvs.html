@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>ГВС. Народный контроллер ТН</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<script src="scripts.js"></script>
+<script src="settings.js"></script>
+<style>
+.calbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:6px 0 12px}
+.calbar .grow{flex:1;color:var(--mute);font-size:12.5px;min-width:240px}
+.calbar .btn2{padding:7px 14px}
+.calsw{display:flex;gap:18px;align-items:center;color:var(--mute);font-weight:600;flex-wrap:wrap}
+.calsw label{display:flex;gap:8px;align-items:center}
+</style>
+<script>
+var $ = function(id) { return document.getElementById(id); };
+function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
+window.calendar_act_chr = "&#9899";		// символ во включённых ячейках календаря
+
+function f(n, o) { o.key = 'boiler.' + n.toLowerCase(); return o; }
+
+function cardBoiler() {
+	return '<div class="card c4"><h3>Бойлер</h3>' + [
+		f('ON', {k: 'sw', now: true, t: 'Нагрев бойлера', h: 'включение нагрева'}),
+		f('URG', {k: 'sw', now: true, t: 'Нагреть срочно', h: 'снимается сама после нагрева',
+			n: [11, 'Принудительно включить нагрев бойлера (отключается расписание и устанавливается гистерезис 0.1°C), после нагрева флаг автоматически снимается. На дисплее Nextion - нажать на ванну.']}),
+		f('TRG', {t: 'Целевая температура', h: '5…90 °C', u: '°C', min: 5, max: 90, step: 0.1}),
+		f('DTRG', {t: 'Гистерезис', h: '0…30 °C', u: '°C', min: 0, max: 30, step: 0.1, n: [1, 'Диапазон регулирования равен: целевая температура − гистерезис целевой температуры.']})
+	].map(stField).join('') + '<div class="nowline">Сейчас в бойлере <b id="tb">–</b></div>' +
+	'<div class="more"><div><b>ПИД · тонкая настройка</b><small id="pids"></small></div><a onclick="pidToggle(this)">показать ▾</a></div><div id="pidf" hidden>' + [
+		f('PID', {k: 'sw', t: 'ПИД управление инвертором', h: 'использовать при нагреве бойлера'}),
+		f('TEMP', {t: 'Целевая температура подачи', h: '30…70 °C', u: '°C', min: 30, max: 70, step: 0.1}),
+		f('PT', {t: 'Постоянная интегрирования времени', h: '5…600 с', u: 'с', min: 5, max: 600, step: 1}),
+		f('PP', {t: 'Пропорциональная составляющая', h: '0…50', min: 0, max: 50, step: 0.001}),
+		f('PI', {t: 'Интегральная составляющая', h: '0…50', min: 0, max: 50, step: 0.001}),
+		f('PD', {t: 'Дифференциальная составляющая', h: '0…50', min: 0, max: 50, step: 0.001})
+	].map(stField).join('') + '</div></div>';
+}
+function cardNight() {
+	return '<div class="card c4"><h3>Ночной тариф</h3>' + [
+		f('ADT', {t: 'Добавка к цели', h: '−50…+50 °C, 0 — не работает', u: '°C', step: 0.1, n: [2, 'При установке значения добавки 0 °C данная опция не работает.']}),
+		f('ADH', {t: 'Начальный час', h: '0…23', u: 'ч', min: 0, max: 23, step: 1}),
+		f('ADEH', {t: 'Конечный час', h: '0…23', u: 'ч', min: 0, max: 23, step: 1})
+	].map(stField).join('') + '<div id="nbar" style="margin-top:12px"></div></div>';
+}
+function cardHeater() {
+	return '<div class="card c4"><h3>Встроенный ТЭН</h3>' + [
+		f('HONLY', {k: 'sw', t: 'Бойлер греет только ТЭН', h: 'ТН бойлер не греет', n: [12, 'Весь нагрев ГВС ведёт ТЭН, ТН бойлер не греет. ТЭН включается, когда температура бойлера ниже цели минус гистерезис, и греет до цели; он работает только при включённом ТН (выключатель «ТН») и по расписанию нагрева. При работе от генератора режим приостанавливается: бойлер греет ТН, ТЭН не используется, а после снятия режима генератора «только ТЭН» возобновляется. Пока режим действует, опции совместной работы ТН и ТЭНа, ПИД, сброс тепла и ограничение подачи недоступны; их значения сохраняются.']}),
+		f('TURBO', {k: 'sw', t: 'Ускоренный нагрев', h: 'ТН и ТЭН параллельно', n: [3, 'Одновременно с нагревом бойлера включается ТЭН (параллельная работа), это уменьшает время нагрева, раздельный нагрев ТН и ТЭНом блокируется.']}),
+		f('ADDH', {k: 'sw', t: 'Догрев ТЭНом', h: 'двухступенчатый нагрев', n: [4, 'Двухступенчатый нагрев бойлера. ТН греет бойлер до температуры догрева, далее до целевой температуры греет ТЭН.']}),
+		f('TEMPR', {t: 'Температура догрева', h: 'ТН выкл., ТЭН вкл. · 0…90 °C', u: '°C', min: 0, max: 90, step: 0.1}),
+		f('dAH', {t: 'Гистерезис цели ТН без расписания', h: 'если догрев не по расписанию', u: '°C', step: 0.1}),
+		f('AHF', {k: 'sw', t: 'Догрев, если ТН не догрел', h: 'при граничных условиях', n: [5, 'Включение догрева даже если не достигнута температура догрева (нагрев ТН) по причине достижения граничных условий (например температуры нагнетания).']})
+	].map(stField).join('') + '</div>';
+}
+function cardCirc() {
+	return '<div class="card c6"><h3>Циркуляция и сброс тепла</h3>' + [
+		f('CIRC', {k: 'sw', t: 'Циркуляционный насос ГВС', h: 'если есть контур циркуляции', n: [7, 'Управление циркуляцией в системе ГВС (если есть контур циркуляции).']}),
+		f('CIRCW', {t: 'Время работы насоса', h: '0…60 мин, 0 — не работает', u: 'мин', min: 0, max: 60, step: 1, n: [8, 'Если установить 0 — насос циркуляции ГВС вообще не работает.']}),
+		f('CIRCP', {t: 'Пауза между включениями', h: '0…60 мин, 0 — непрерывно', u: 'мин', min: 0, max: 60, step: 1, n: [9, 'Если установить 0 — насос циркуляции ГВС работает непрерывно.']}),
+		f('RESH', {k: 'sw', t: 'Сбрасывать «избыточное» тепло', h: 'при нагреве бойлера', n: [10, 'Переключение на отопление при достижении максимальной температуры подачи − 1 градус.']}),
+		f('RESHT', {t: 'Время сброса тепла', h: '1…10000 с', u: 'с', min: 1, max: 10000, step: 1}),
+		f('DD', {t: 'Сброс в отопление при приближении к максимуму', h: 'подача к максимуму / догреву, на °C', u: '°C', min: 0, step: 0.1})
+	].map(stField).join('') + '</div>';
+}
+function cardOptions() {
+	return '<div class="card c6"><h3>Опции и защиты</h3>' + [
+		f('TGHEAT', {k: 'sw', t: 'Греть вместе с отоплением', h: 'если на ГВС и отопление разные насосы', n: [6, 'Актуально, если на ГВС и систему отопления стоят разные насосы (нет трёхходового крана).']}),
+		f('SLMN', {k: 'sw', t: 'Профилактика сальмонеллы', h: '1 раз в неделю'}),
+		f('SLMNH', {k: 'sw', t: 'Длительная обработка сальмонеллы', h: 'держать 70 °C до конца цикла', n: [13, 'Обычно цикл профилактики сальмонеллы (по средам в 01:00) заканчивается, как только бойлер нагрелся до 70 °C, после чего вода сразу начинает остывать. При включении этой опции ТЭН поддерживает 70 °C (гистерезис 0,5 °C) до конца цикла, но не более 4 часов, поэтому ТЭН работает дольше и включается чаще. Действует только при включённой «Профилактике сальмонеллы» и не на генераторе (там ТЭН бойлера отключён).']}),
+		f('MAX', {t: 'Максимальная температура подачи', h: 'защита при работе ТН · 20…70 °C', u: '°C', min: 20, max: 70, step: 0.1})
+	].map(stField).join('') + '</div>';
+}
+
+function pidSummary() {
+	var v = function(n) { var e = $('k-boiler-' + n); return e && e.value !== '' ? e.value : '–'; };
+	var on = $('k-boiler-pid');
+	put('pids', 'ПИД ' + (on && on.checked ? 'вкл' : 'выкл') + ' · подача ' + v('temp') + '° · Kp ' + v('pp') + ' · Ki ' + v('pi') + ' · Kd ' + v('pd') + (heaterOnlyEff() ? ' · недоступно: бойлер греет только ТЭН' : ''));
+}
+function pidToggle(a) {
+	var b = $('pidf');
+	b.hidden = !b.hidden;
+	a.innerHTML = b.hidden ? 'показать ▾' : 'скрыть ▴';
+}
+// ---- режим «бойлер греет только ТЭН»: что от него недоступно ----
+// Действует, когда тумблер включён и нет работы от генератора (на генераторе греет ТН без ТЭНа: режим приостановлен, значение сохраняется).
+var genOn = false, hasTen = false;
+var HO_OFF = ['turbo', 'addh', 'tempr', 'dah', 'ahf', 'pid', 'temp', 'pt', 'pp', 'pi', 'pd', 'resh', 'resht', 'dd', 'tgheat', 'max'];
+function setDis(n, dis, why) {
+	var e = $('k-boiler-' + n);
+	if(!e) return;
+	e.disabled = dis;
+	var f = $('f-k-boiler-' + n), s = f && f.querySelector('small');
+	if(f) f.classList.toggle('dis', dis);
+	if(s) { if(s.dataset.h === undefined) s.dataset.h = s.innerHTML; s.innerHTML = s.dataset.h + (dis && why ? ' · ' + why : ''); }
+}
+function heaterOnlyEff() { var h = $('k-boiler-honly'); return !!(h && h.checked && !genOn && hasTen); }
+function deps() {
+	var eff = heaterOnlyEff(), why = 'недоступно: бойлер греет только ТЭН';
+	HO_OFF.forEach(function(n) { setDis(n, eff, why); });
+	var ah = $('k-boiler-sch_ah');
+	if(ah) { ah.disabled = eff; ah.parentNode.style.opacity = eff ? .55 : ''; ah.parentNode.title = eff ? 'Недоступно: при режиме «только ТЭН» расписание и так относится только к ТЭНу' : ''; }
+	setDis('honly', genOn, 'приостановлено: работа от генератора, бойлер греет ТН');
+	var sl = $('k-boiler-slmn');
+	setDis('slmnh', !!sl && !sl.checked, 'нужна «Профилактика сальмонеллы»');
+	var row = $('f-k-boiler-honly');
+	if(row) row.style.display = hasTen ? '' : 'none';
+}
+function refreshAll() {
+	deps();
+	pidSummary();
+	if($('k-boiler-adt')) stNightBar($('nbar'), 'k-boiler-');
+}
+window.stChanged = refreshAll;
+// «по расписанию» и «только для ТЭНа» влияют друг на друга в прошивке: после записи перечитываем оба
+window.stAfterApply = function() {
+	refreshAll();
+	api.get({k: ['boiler.sch_on', 'boiler.sch_ah']}, function(D) {
+		['sch_on', 'sch_ah'].forEach(function(n) { var el = $('k-boiler-' + n); if(el && ('boiler.' + n) in D) stSetK(el, 'boiler.' + n, D['boiler.' + n]); });
+	});
+};
+var rt = 0;
+function boilerPoll(d) {
+	var t = d['temp.TBOILER.value'];
+	put('tb', t == null ? '–' : t.toFixed(1) + '°');
+	if('ohp.bp' in d) genOn = d['ohp.bp'] === true;
+	if(!rt) rt = setTimeout(function() { rt = 0; refreshAll(); }, 30);
+}
+
+// ---- календарь нагрева: непустая ячейка - нагрев разрешён ----
+var calDirty = false;
+function calMark(d) {
+	calDirty = d;
+	var b = $('cal-save');
+	b.className = 'btn2' + (d ? ' p' : '');
+	b.innerHTML = d ? 'Запомнить расписание ●' : 'Запомнить расписание';
+}
+function calFill(fn) {
+	var c = document.querySelectorAll('#calendar .clc');
+	for(var i = 0; i < c.length; i++) c[i].innerHTML = fn(i) ? window.calendar_act_chr : '';
+	calMark(true);
+}
+function calCopyMon(days) {		// рисунок понедельника - на остальные дни
+	var c = document.querySelectorAll('#calendar .clc');
+	calFill(function(i) { return i < 24 ? c[i].innerHTML != '' : (i / 24 | 0) < days ? c[i % 24].innerHTML != '' : c[i].innerHTML != ''; });
+}
+// Расписание в API - строка: 7 суток по 24 знака '0'/'1', после каждых суток '/' (175 знаков)
+function calToStr() {
+	var c = document.querySelectorAll('#calendar .clc'), s = '';
+	for(var i = 0; i < c.length; i++) s += (c[i].innerHTML != '' ? '1' : '0') + ((i % 24 == 23) ? '/' : '');
+	return s;
+}
+function calFromStr(s) {
+	var c = document.querySelectorAll('#calendar .clc');
+	for(var i = 0; i < c.length; i++) c[i].innerHTML = s.charAt((i / 24 | 0) * 25 + i % 24) == '1' ? window.calendar_act_chr : '';
+	calMark(false);
+}
+function calSave() {
+	api.set({'boiler.scheduler': calToStr()}, function(D, E) {
+		if(E['boiler.scheduler']) { stToast('Расписание не принято (' + (ST_ERR[E['boiler.scheduler']] || E['boiler.scheduler']) + ').', true); return; }
+		calMark(false);
+		stToast('Расписание нагрева передано на ТН. Записать в EEPROM — чтобы сохранить после перезагрузки.');
+		stUnsaved(true);
+		stRefresh();
+	});
+}
+
+window.onload = function() {
+	$('g1').innerHTML = cardBoiler() + cardNight() + cardHeater();
+	$('g2').innerHTML = cardCirc() + cardOptions();
+	var cs = $('cal');
+	cs.classList.add('bin');
+	stCalendar(cs, {paint: function(c, erase) { c.innerHTML = erase ? '' : window.calendar_act_chr; }, changed: function() { calMark(true); }});
+	stPanel();
+	stLoadK();
+	api.get({k: ['boiler.scheduler']}, function(D) { if(D['boiler.scheduler']) calFromStr(D['boiler.scheduler']); });
+	api.get({k: ['relay.RBOILER.present']}, function(D) { hasTen = D['relay.RBOILER.present'] === true; refreshAll(); });
+	api.poll({k: ['temp.TBOILER.value', 'ohp.bp']}, boilerPoll);
+};
+</script>
+</head>
+<body class="gvs">
+<div id="menu" class="menu"><script src="menu.js"></script></div>
+<div class="content">
+	<div class="grid" id="g1"></div>
+	<div class="grid" id="g2" style="padding-top:16px"></div>
+	<div class="grid" style="padding-top:16px"><section class="card c12">
+		<h3>Расписание нагрева <span class="r calsw"><label>По расписанию<input type="checkbox" class="sw sm" id="k-boiler-sch_on" data-k="boiler.sch_on"></label><label>Расписание только для ТЭНа<input type="checkbox" class="sw sm" id="k-boiler-sch_ah" data-k="boiler.sch_ah"></label></span></h3>
+		<div class="calbar"><span class="grow"><b style="color:var(--ink)">Левая кнопка</b> — включить, <b style="color:var(--ink)">Shift</b> или правая — стереть. Протяжкой по нескольким ячейкам. На телефоне — касанием.</span>
+			<button class="btn2" onclick="calCopyMon(5)">Будни как в Пн</button><button class="btn2" onclick="calCopyMon(7)">Все дни как в Пн</button><button class="btn2" onclick="if(confirm('Очистить календарь нагрева?')) calFill(function() { return false; })">Очистить</button>
+			<button class="btn2" id="cal-save" onclick="calSave()">Запомнить расписание</button></div>
+		<div id="cal"></div>
+	</section></div>
+</div>
+</body>
+</html>

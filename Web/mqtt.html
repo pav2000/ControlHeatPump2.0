@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>MQTT и мониторинг. Народный контроллер ТН</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<script src="scripts.js"></script>
+<script src="settings.js"></script>
+<style>
+.ls1{display:none}
+body.ts .ls0{display:none}body.ts .ls1{display:inline}
+.proto{color:var(--ink);font-size:13px;line-height:1.55}
+.proto p{margin:0 0 8px}
+</style>
+<script>
+// MQTT-клиент (свой брокер или ThingSpeak) и «Народный мониторинг». В режиме ThingSpeak дополнительные наборы данных недоступны,
+// а подписи полей меняются (Channel ID, Write API Key, имя устройства) - переключаем классом body.ts.
+var $ = function(id) { return document.getElementById(id); };
+function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
+function f(n, o) { o.key = 'mqtt.' + n.toLowerCase(); return o; }
+function two(a, b) { return '<span class="ls0">' + a + '</span><span class="ls1">' + b + '</span>'; }
+
+function mode() {
+	var ts = $('k-mqtt-use_ts') && $('k-mqtt-use_ts').checked;
+	document.body.classList.toggle('ts', !!ts);
+	['big_mqtt', 'sdm_mqtt', 'fc_mqtt', 'cop_mqtt'].forEach(function(n) {
+		var e = $('k-mqtt-' + n), r = $('f-k-mqtt-' + n);
+		if(e) e.disabled = !!ts;
+		if(r) r.classList.toggle('dis', !!ts);
+	});
+	put('ts-note', ts ? 'режим ThingSpeak: наборы данных, кроме базового, недоступны' : '');
+}
+window.stChanged = mode;
+stDnsCfg = {mqtt: {key: 'mqtt.adr_mqtt', ip: 'ip-mqtt', get: 'mqtt.ip_mqtt'}, narmon: {key: 'mqtt.adr_narmon', ip: 'ip-narmon', get: 'mqtt.ip_narmon'}};
+window.stAfterApply = function() { mode(); api.pollTick(); };
+// Общий опрос страницы: IP серверов (получены через DNS) и MAC для идентификатора на мониторинге
+function mqttPoll(d) {
+	if('mqtt.ip_mqtt' in d) put('ip-mqtt', stEsc(d['mqtt.ip_mqtt']));
+	if('mqtt.ip_narmon' in d) put('ip-narmon', stEsc(d['mqtt.ip_narmon']));
+	if('net.mac' in d) put('narmon-id', stEsc(d['net.mac']));
+}
+function testNarmon() {
+	if(!confirm('Отправить показания на «Народный мониторинг» сейчас? Если с прошлой отправки не прошло 5 минут, сервер ответит ошибкой INTERVAL; за систематические злоупотребления прибор блокируется.')) return;
+	api['do']('test.narodmon', function(v, e) {
+		if(e) stToast('Не отправлено (' + (e == 'na' ? 'передача на «Народный мониторинг» выключена' : ST_ERR[e] || e) + ').', true);
+		else stToast('Отправка поставлена в очередь: ' + v + '. Пакет и ответ сервера — в журнале.');
+	});
+}
+function toggleProto(a) {
+	var b = $('proto-b');
+	b.hidden = !b.hidden;
+	a.innerHTML = b.hidden ? 'показать ▾' : 'скрыть ▴';
+}
+
+window.onload = function() {
+	stPanel();
+	stFields('m1', [
+		f('USE_MQTT', {k: 'sw', t: 'Передача данных клиента MQTT', h: two('TOUT, TIN, TBOILER, RCOMP или FC, ERROR', 'TOUT, TIN, TBOILER, RCOMP или FC, TCOMP, OWERHEAT, posEEV, ERROR'), n: [1, 'Передаются: TOUT, TIN, TBOILER, RCOMP или FC, ERROR. Для ThingSpeak: TOUT, TIN, TBOILER, RCOMP или FC, TCOMP, OWERHEAT, posEEV, ERROR.']}),
+		f('USE_TS', {k: 'sw', t: 'Отсылка данных на ThingSpeak', h: 'вместо своего брокера'}),
+		f('BIG_MQTT', {k: 'sw', t: 'Дополнительные данные', h: 'TCOMP, OWERHEAT, PCON, PEVA, EEV, powerCO, TCONING, TCONOUTG, TEVAOUTG, TEVAING', n: [2, 'Передаются: TCOMP, OWERHEAT, PCON, PEVA, EEV, powerCO, TCONING, TCONOUTG, TEVAOUTG, TEVAING.']}),
+		f('SDM_MQTT', {k: 'sw', t: 'Данные электросчётчика SDM120', h: 'fullPOWER, CURRENT, VOLTAGE', n: [3, 'Передаются: fullPOWER, CURRENT, VOLTAGE.']}),
+		f('FC_MQTT', {k: 'sw', t: 'Данные об инверторе', h: 'powerFC, freqFC, currentFC', n: [4, 'Передаются: powerFC, freqFC, currentFC.']}),
+		f('COP_MQTT', {k: 'sw', t: 'Данные об эффективности ТН', h: 'COP, fullCOP', n: [5, 'Передаются: COP, fullCOP.']}),
+		f('TIME_MQTT', {t: 'Интервал передачи', h: '1…1000 мин', u: 'мин', min: 1, max: 1000, step: 1}),
+		f('ADR_MQTT', {k: 'text', max: 31, t: 'Адрес сервера', h: 'после записи показывается IP: <span class="mono" id="ip-mqtt">–</span>' + stDnsBtn('mqtt')}),
+		f('PORT_MQTT', {t: 'Порт сервера', h: '1…65000', min: 1, max: 65000, step: 1}),
+		f('LOGIN_MQTT', {k: 'text', max: 31, t: two('Логин для входа', 'Channel ID'), h: two('', 'для обычного MQTT — «Логин для входа»')}),
+		f('PASSWORD_MQTT', {k: 'text', pw: 1, max: 31, t: two('Пароль для входа', 'Write API Key'), h: two('', 'для обычного MQTT — «Пароль для входа»')}),
+		f('ID_MQTT', {k: 'text', max: 31, t: two('Идентификатор клиента', 'Имя устройства на ThingSpeak'), h: 'топик датчика: Идентификатор/Имя_датчика', n: [6, 'Топик конкретного датчика: Идентификатор_клиента/Имя_датчика.']})
+	]);
+	stFields('m2', [
+		f('USE_NARMON', {k: 'sw', t: 'Передача данных', h: 'TOUT, TIN, TBOILER, FC или RCOMP, ERROR', n: [1, 'Передаются: TOUT, TIN, TBOILER, FC (при наличии инвертора) либо RCOMP (старт-стоп компрессор), ERROR. Температуры отправляются только с датчиков, установленных в конфигурации.']}),
+		f('BIG_NARMON', {k: 'sw', t: 'Расширенный набор', h: 'TCOMP, OWERHEAT, PCON, PEVA, EEV, powerCO', n: [2, 'Передаются: TCOMP, OWERHEAT, PCON, PEVA, EEV, powerCO.']}),
+		f('ADR_NARMON', {k: 'text', max: 31, t: 'Адрес сервера', h: 'после записи показывается IP: <span class="mono" id="ip-narmon">–</span>' + stDnsBtn('narmon')}),
+		f('PORT_NARMON', {t: 'Порт сервера', h: 'обычно 8283 · 1…65000', min: 1, max: 65000, step: 1}),
+		f('LOGIN_NARMON', {k: 'text', max: 15, t: 'Логин владельца', h: 'логин, e-mail или телефон из профиля участника · до 15 знаков', n: [5, 'Логин (или e-mail, или телефон) владельца в профиле участника проекта. Передаётся метрикой OWNER и один раз используется сервером для автоматической привязки ничейного прибора к учётной записи. Сменить владельца прибора этим полем нельзя. Пока в поле стоит значение по умолчанию (login), метрика не передаётся. До 15 знаков.']}),
+		f('ID_NARMON', {k: 'text', max: 15, t: 'Имя устройства', h: 'название прибора · до 15 знаков', n: [3, 'Название прибора на «Народном мониторинге», до 15 знаков.']})
+	]);
+	$('m2').insertAdjacentHTML('beforeend', '<div class="field dis"><div class="l">Личный код для передачи<small>не используется</small></div><span class="ro" id="k-mqtt-password_narmon" data-kr="mqtt.password_narmon">–</span></div>' +
+		'<div class="field"><div class="l">Идентификатор на мониторинге<span class="hint" tabindex="0" data-tip="MAC-адрес должен быть уникален: для этого измените его с дефолтного (страница «Сеть»). С дефолтного адреса отправка блокируется.">4</span><small>MAC-адрес W5xxx: должен быть уникален, с адреса по умолчанию отправка блокируется</small></div><span class="mono" style="font-weight:800" id="narmon-id">–</span></div>');
+	stLoadK();
+	api.poll({k: ['mqtt.ip_mqtt', 'mqtt.ip_narmon', 'net.mac']}, mqttPoll);
+	setTimeout(mode, 1500);
+};
+</script>
+</head>
+<body class="mqtt">
+<div id="menu" class="menu"><script src="menu.js"></script></div>
+<div class="content">
+<div class="grid">
+	<section class="card c6"><h3><span id="mq-title">Клиент MQTT</span> <span class="r" id="ts-note" style="color:var(--mute);font-weight:600"></span></h3><div id="m1"></div></section>
+	<section class="card c6"><h3>«Народный мониторинг»</h3><div id="m2"></div>
+		<div class="row" style="gap:14px;margin-top:12px;align-items:flex-start"><button class="btn2" onclick="testNarmon()" style="white-space:nowrap">Отправить показания сейчас<span class="hint" tabindex="0" data-tip="Отладочный режим: отправка ставится в очередь, выполняется основным потоком в течение примерно 10 секунд, сам пакет и ответ сервера пишутся в журнал. Интервал не проверяется, жать кнопку можно подряд. Но помните: если с прошлой отправки не прошло 5 минут, сервер ответит ошибкой INTERVAL, а за систематические злоупотребления блокирует прибор. Штатная отправка после нажатия отсчитывается заново, от момента проверки.">6</span></button>
+			<span class="fnote" style="margin:0">Отладка: отправка встаёт в очередь на ≈10 с, пакет и ответ пишутся в журнал. Если с прошлой отправки не прошло 5 минут, сервер ответит INTERVAL; за систематическое злоупотребление прибор блокируется.</span></div></section>
+	<section class="card c12"><h3>Справка по протоколу «Народного мониторинга» <span class="r"><a style="cursor:pointer;font-weight:800;color:var(--acc)" onclick="toggleProto(this)">показать ▾</a></span></h3>
+		<div id="proto-b" class="proto" hidden>
+			<p>С декабря 2022 года используется API народного мониторинга через TCP-пакеты (передача показаний по протоколам TCP/UDP на narodmon.ru:8283). TCP также можно использовать для массовой загрузки показаний на сервер «задним числом» путём передачи в одном пакете данных показаний датчика в разные моменты времени, но не более 4 КБ на пакет для TCP и 512 байт для UDP. Предпочтительно отправлять показания всех датчиков в одном пакете данных для минимизации издержек на инициализацию соединения с сервером и импорт показаний датчиков.</p>
+			<p>Ответ сервера при успешной отправке будет OK (или текст ошибки или команда на исполнение), что рекомендуется использовать в качестве подтверждения получения данных, а при отсутствии ответа повторить отправку, когда восстановится связь с сервером. При сообщениях об ошибках НЕ ПОВТОРЯТЬ! Конец строки ответа сервера завершается спецсимволом \n, код 10 (0A).</p>
+		</div>
+		<div class="fnote">Текст справки перенесён целиком; свёрнут, чтобы не занимать страницу.</div></section>
+</div>
+</div>
+</body>
+</html>

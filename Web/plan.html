@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Схема. Народный контроллер ТН</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<script src="scripts.js"></script>
+<script src="settings.js"></script>
+<script src="chart.js"></script>
+<style>
+#sc{position:relative;margin:0 auto;overflow:hidden;background:#fff;border-radius:14px}
+#sc .pic{position:absolute;left:0;top:0;width:930px;height:400px;transform-origin:0 0}
+#sc img{position:absolute;left:0;top:0;width:930px;height:400px}
+.vb{position:absolute;font-size:12px;font-weight:800;background:rgba(255,255,255,.95);border:1.5px solid currentColor;border-radius:8px;padding:1px 7px;white-space:nowrap;line-height:1.5}
+.vb.c{transform:translateX(-50%)}
+.vb.fx{box-sizing:border-box;text-align:center}
+.vb small{font-weight:600;opacity:.75}
+.vb.red{color:#d64545}.vb.blue{color:#2f7fd1}.vb.lblue{color:#5aa6e8}.vb.orange{color:#f2762e}.vb.amber{color:#c99317}.vb.violet{color:#8a6fd1}
+.leg{display:flex;gap:14px;font-size:12px;color:var(--mute);text-transform:none;letter-spacing:0;font-weight:600;flex-wrap:wrap}
+.leg i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px}
+.chip.st{cursor:default;font-weight:700}
+.chip.st.on{background:var(--card);color:var(--ok);border-color:var(--line)}
+.tiles.t4{grid-template-columns:repeat(4,1fr)}
+.tile b.sm{font-size:17px}
+.rule{display:flex;justify-content:space-between;color:var(--mute);font-size:12.5px;gap:10px;flex-wrap:wrap;margin-top:6px}
+.rule b{color:var(--ink)}
+.lnk{font-weight:800;text-decoration:none}
+@media(max-width:1100px){.tiles.t4{grid-template-columns:repeat(2,1fr)}}
+</style>
+<script>
+urlupdate = 2000;
+var $ = function(id) { return document.getElementById(id); };
+function num(v, d) { var f = parseFloat(v); return isNaN(f) ? '–' : f.toFixed(d); }
+function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
+
+// Плашки схемы: id, подпись, цвет. Положение (в пикселях картинки 930x400) задаёт раскладка:
+// картинка plan1.png.
+var BADGES = {
+	tboiler: ['бойлер', 'red'], tevaing: ['из ГК', 'blue'], tevaoutg: ['в ГК', 'lblue'], tevain: ['', 'blue'], tevaout: ['', 'blue'],
+	tcompin: ['вход комп.', 'blue'], tcomp: ['нагнетание', 'red'], tconoutg: ['подача', 'orange'], tconing: ['обратка', 'amber'],
+	peva: ['', 'blue'], pcon: ['', 'red'], fc: ['', 'violet'], eev: ['', 'violet'], floweva: ['вход', 'blue'], flowcon: ['выход', 'amber'],
+	tconout: ['фреон', 'orange']
+};
+var LAYOUT = {
+	plain: {img: 'plan1.png', pos: {
+		tboiler: [819, 30], tevaing: [134, 184], tevaoutg: [134, 330], tevain: [251, 330], tevaout: [251, 184], peva: [297, 102],
+		tcompin: [441, 124], tcomp: [441, 150], pcon: [586, 102], fc: [509, 270], eev: [346, 358],
+		tconout: [583, 334], tconoutg: [718, 186], tconing: [702, 332], flowcon: [420, 344], floweva: [44, 330]}}
+};
+// метки у теплообменников и компрессора выровнены по симметрии: у части координата x - центр метки, у части задана общая ширина
+var CENTER = {tboiler: 1, peva: 1, pcon: 1, fc: 1, eev: 1};
+var FIXW = {tevaing: 72, tevaoutg: 72, tevaout: 72, tevain: 72, tconout: 72, tconoutg: 72, tconing: 72, tcompin: 104, tcomp: 104};
+var layout = null, vals = {}, lastData = Date.now();
+
+function drawScheme(kind) {
+	var L = LAYOUT[kind], h = '<img src="' + L.img + '" alt="Схема теплового насоса">';
+	for(var k in L.pos) {
+		var b = BADGES[k];
+		h += '<span class="vb ' + b[1] + (CENTER[k] ? ' c' : '') + (FIXW[k] ? ' fx' : '') + '" id="b-' + k + '" style="left:' + L.pos[k][0] + 'px;top:' + L.pos[k][1] + 'px' + (FIXW[k] ? ';min-width:' + FIXW[k] + 'px' : '') + '">–</span>';
+	}
+	layout = L;
+	put('pic', h);
+	for(var n in vals) onKey(n, vals[n]);		// значения, пришедшие раньше картинки
+	fit();
+}
+// Картинка рассчитана на 930 px; вписываем в ширину карточки (не крупнее 1,15)
+function fit() {
+	var box = $('sc'), s = Math.min(1.15, (box.parentNode.clientWidth) / 930);
+	$('pic').style.transform = 'scale(' + s + ')';
+	box.style.width = (930 * s) + 'px';
+	box.style.height = (400 * s) + 'px';
+}
+window.addEventListener('resize', fit);
+
+function badge(id, text) { var e = $('b-' + id); if(e) e.innerHTML = text; }
+function withSub(v, sub) { return v + (sub ? ' <small>' + sub + '</small>' : ''); }
+// давление и температура насыщения приходят отдельными ключами: press.<имя>.value и press.<имя>.temp
+function press(p, t) {
+	if(p === null || p === undefined || isNaN(parseFloat(p))) return '–';
+	return p + ' бар' + (t === null || t === undefined || isNaN(parseFloat(t)) ? '' : ' <small>(' + t + '°)</small>');
+}
+var fcHz = '–', fcKw = '';
+var ohBase = {}, ruleV = null, ruleLab = null;
+
+// ключ API -> обработка (прежние имена команд заменены ключами реестра)
+var TEMPS = {tboiler: 'TBOILER', tevaing: 'TEVAING', tevaoutg: 'TEVAOUTG', tevain: 'TEVAIN', tevaout: 'TEVAOUT', tcompin: 'TCOMPIN', tcomp: 'TCOMP', tconoutg: 'TCONOUTG', tconing: 'TCONING'};
+var SUBLAB = {tboiler: 1, tevaing: 1, tevaoutg: 1, tcompin: 1, tcomp: 1, tconoutg: 1, tconing: 1};
+var KEYS = ['eev.rule', 'fc.cfc', 'fc.info1', 'eev.pospp', 'eev.error', 'eev.trg', 'state.overheat', 'state.overcool', 'press.PEVA.value', 'press.PEVA.temp', 'press.PCON.value', 'press.PCON.temp',
+	'temp.TCONOUT.value', 'temp.TOUT.value', 'temp.TIN.value', 'flow.FLOWEVA.value', 'flow.FLOWCON.value', 'relay.RPUMPI.on', 'relay.RPUMPO.on', 'relay.RBOILER.on', 'ohp.bp',
+	'state.mode', 'state.trg_home', 'state.trg_pid', 'state.power_220', 'state.power_geo', 'state.power_out', 'state.cop'];
+for(var tk in TEMPS) KEYS.push('temp.' + TEMPS[tk] + '.value');
+var TEMPK = {};
+for(var tn in TEMPS) TEMPK['temp.' + TEMPS[tn] + '.value'] = tn;
+
+function planPoll(d, e) {
+	lastData = Date.now();
+	for(var k in d) { vals[k] = d[k]; onKey(k, d[k]); }
+	for(k in e) { vals[k] = null; onKey(k, null); }		// нет датчика в сборке или отказ: плашка показывает прочерк
+}
+function onKey(n, v) {
+	var tn = TEMPK[n];
+	if(tn) { badge(tn, SUBLAB[tn] ? withSub(num(v, 1) + '°', BADGES[tn][0]) : num(v, 1) + '°'); return; }
+	switch(n) {
+	case 'press.PEVA.value': case 'press.PEVA.temp': badge('peva', press(vals['press.PEVA.value'], vals['press.PEVA.temp'])); break;
+	case 'press.PCON.value': case 'press.PCON.temp': badge('pcon', press(vals['press.PCON.value'], vals['press.PCON.temp'])); break;
+	case 'flow.FLOWEVA.value': badge('floweva', withSub(isNaN(parseFloat(v)) ? '–' : num(v, 2) + ' м³/ч', BADGES.floweva[0])); break;
+	case 'flow.FLOWCON.value': badge('flowcon', withSub(isNaN(parseFloat(v)) ? '–' : num(v, 2) + ' м³/ч', BADGES.flowcon[0])); break;
+	case 'fc.cfc':   fcHz = num(v, 0); showFc(); break;
+	case 'fc.info1': fcKw = v || ''; showFc(); break;
+	case 'eev.pospp': badge('eev', 'ЭРВ ' + (v === null ? '–' : v)); put('e-pos', parseInt(v) >= 0 ? parseInt(v) : '–'); break;
+	case 'state.overheat': put('e-oh', num(v, 1)); put('s-oh', num(v, 1) + '°'); break;
+	case 'eev.trg':  put('e-trg', num(v, 1)); ohBase.t = parseFloat(v); break;
+	case 'state.overcool': put('s-oc', num(v, 1) + '°'); break;
+	case 'temp.TCONOUT.value': put('s-tco', num(v, 1) + '°'); badge('tconout', withSub(num(v, 1) + '°', BADGES.tconout[0])); break;
+	case 'eev.error': put('e-err', v == 0 ? '<span class="tag ok">ошибок нет</span>' : '<span class="tag bad">ошибка ' + v + '</span>'); break;
+	case 'eev.rule': ruleV = v; rule(); break;
+	case 'relay.RPUMPI.on':  chip('k-pi', 'Насос ГК', v === true); break;
+	case 'relay.RPUMPO.on':  chip('k-po', 'Насос СО', v === true); break;
+	case 'relay.RBOILER.on': chip('k-rb', 'Реле бойлера', v === true, v === true ? ' ϟ' : ''); break;
+	case 'ohp.bp':   chip('k-bp', 'Генератор', v === true, '', v === true ? 'да' : 'нет'); break;
+	case 'state.mode': put('s-mode', v); break;
+	case 'temp.TOUT.value': put('s-tout', num(v, 1)); break;
+	case 'temp.TIN.value':  put('s-tin', num(v, 1)); break;
+	case 'state.trg_home': put('s-trg', num(v, 1)); break;
+	case 'state.trg_pid':  put('s-trg2', '/ ' + num(v, 1) + '°'); break;
+	case 'state.power_220': put('s-p220', num(v, 1)); break;
+	case 'state.power_geo': put('s-pgeo', num(v, 1)); break;
+	case 'state.power_out': put('s-pco', num(v, 1)); break;
+	case 'state.cop': put('s-cop', num(v, 1)); break;
+	}
+}
+function showFc() {
+	var kw = /^\s*([\d.]+)/.exec(fcKw);
+	badge('fc', fcHz + ' Гц' + (kw ? ' · ' + kw[1] + ' кВт' : ''));
+}
+function chip(id, name, on, extra, text) {
+	var e = $(id);
+	if(!e) return;
+	e.style.display = '';
+	e.className = 'chip st' + (on ? ' on' : '');
+	e.innerHTML = (on ? '● ' : '○ ') + name + ': ' + (text || (on ? 'вкл' : 'выкл')) + (extra || '');
+}
+// формула перегрева ЭРВ: eev.rule - номер, подписи берутся из meta группы eev
+function rule() {
+	if(ruleV === null || !ruleLab) return;
+	var t = ruleLab[ruleV];
+	if(t !== undefined) put('e-rule', stEsc(t).replace(/-/g, ' − '));
+}
+// что скрыто в этой конфигурации
+var hid = {};
+function hidden(k, yes, text) {
+	hid[k] = yes ? text : null;
+	var l = [];
+	for(var i in hid) if(hid[i]) l.push(hid[i]);
+	put('hid', l.length ? 'Скрыто по конфигурации: ' + l.join(', ') : '');
+}
+
+// мини-график перегрева ЭРВ: get_Chart(OH) + пунктир цели
+var ohChart = null, ohTimer = null, ohStep = 30;
+function ohRefresh() {
+	chartLoad('OH', function(d) {
+		if(d.length < 2) return;
+		if(!ohChart) ohChart = new SvgChart($('e-chart'), {});
+		var t = isNaN(ohBase.t) ? null : d.map(function() { return ohBase.t; });
+		var s = [{name: 'Перегрев', color: '#f2762e', data: d, area: true, w: 2}];
+		if(t) s.push({name: 'Цель', color: '#8a6fd1', data: t, w: 1.4, dash: '4 3'});
+		ohChart.o = {lanes: [{h: 70, minSpan: 2, series: s}], step: ohStep, end: Date.now(), pad: {l: 30, r: 6, t: 6, b: 4}, noTime: true};
+		ohChart.draw();
+	});
+	clearTimeout(ohTimer);
+	ohTimer = setTimeout(ohRefresh, 60000);
+}
+
+window.onload = function() {
+	drawScheme('plain');
+	api.init(function(v) {
+		var caps = (v && v.caps) || {};
+		hidden('tcompin', !caps.tcompin, 'датчики фреона на входе испарителя и компрессора');
+		hidden('cool', !caps.cool, 'охлаждение');
+		api.metaOf('eev', function(m) {
+			var o = m && m.m && m.m['eev.rule'];
+			if(o) { ruleLab = o.o; rule(); }
+		});
+		api.get({k: ['ohp.time_chart']}, function(D) { ohStep = parseInt(D['ohp.time_chart']) || 30; ohRefresh(); });
+		api.poll({k: KEYS}, planPoll);
+	});
+	if(window.shellUser) put('e-link', '');
+	setInterval(function() { put('age', 'обновлено ' + Math.round((Date.now() - lastData) / 1000) + ' с назад'); }, 1000);
+};
+</script>
+</head>
+<body class="plan">
+<div id="menu" class="menu"><script src="menu.js"></script></div>
+<div class="content">
+<div class="grid">
+
+	<section class="card c12" style="padding-bottom:10px">
+		<h3>Схема теплового насоса <span class="r leg"><span><i style="background:#2f7fd1"></i>геоконтур</span><span><i style="background:#d64545"></i>хладагент, горячая сторона</span><span><i style="background:#f2762e"></i>отопление</span><span id="age"></span></span></h3>
+		<div id="sc"><div class="pic" id="pic"></div></div>
+		<div class="row" style="justify-content:space-between;margin-top:6px;flex-wrap:wrap">
+			<span class="chips"><span class="chip st" id="k-pi" style="display:none"></span><span class="chip st" id="k-po" style="display:none"></span><span class="chip st" id="k-rb" style="display:none"></span><span class="chip st" id="k-bp" style="display:none"></span>
+				<span class="chip st">Перегрев: <b id="s-oh">–</b></span><span class="chip st">Переохлаждение: <b id="s-oc">–</b></span><span class="chip st">Фреон, выход конденсатора: <b id="s-tco">–</b></span></span>
+			<span style="color:var(--mute);font-size:12px" id="hid"></span>
+		</div>
+	</section>
+
+	<section class="card c7">
+		<h3>Показатели</h3>
+		<div class="tiles t4">
+			<div class="tile"><i>Режим</i><b class="sm" id="s-mode">–</b></div>
+			<div class="tile"><i>На улице</i><b id="s-tout">–</b><u>°</u></div>
+			<div class="tile"><i>В доме</i><b id="s-tin">–</b><u>°</u></div>
+			<div class="tile"><i>Цель</i><b id="s-trg">–</b><u id="s-trg2"></u></div>
+			<div class="tile"><i>Потребление</i><b id="s-p220">–</b><u>кВт</u></div>
+			<div class="tile"><i>Вход (геоконтур)</i><b id="s-pgeo">–</b><u>кВт</u></div>
+			<div class="tile"><i>Выход (отопление)</i><b id="s-pco">–</b><u>кВт</u></div>
+			<div class="tile acc"><i>COP</i><b id="s-cop">–</b></div>
+		</div>
+	</section>
+
+	<section class="card c5">
+		<h3>ЭРВ <span class="r" id="e-err"></span></h3>
+		<div class="tiles">
+			<div class="tile"><i>Положение</i><b id="e-pos">–</b><u>шаг</u></div>
+			<div class="tile"><i>Перегрев</i><b id="e-oh">–</b><u>K</u></div>
+			<div class="tile"><i>Цель</i><b id="e-trg">–</b><u>K</u></div>
+		</div>
+		<div id="e-chart" style="margin:6px 0 2px"></div>
+		<div class="rule"><span>Формула: <b id="e-rule">–</b></span><span id="e-link"><a class="lnk" href="eev-set.html">Настройки ЭРВ →</a></span></div>
+	</section>
+
+</div>
+</div>
+</body>
+</html>

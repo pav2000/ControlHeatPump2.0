@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Уведомления. Народный контроллер ТН</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<script src="scripts.js"></script>
+<script src="settings.js"></script>
+<style>
+.nest{margin:0 0 6px 18px;background:var(--bg);border-radius:12px;padding:0 12px}
+.nest .field{padding:8px 0}
+.res{display:inline-flex;align-items:center;gap:8px;padding:7px 12px;border-radius:12px;font-size:12.5px;font-weight:600;background:var(--warnbg);color:var(--warnfg);border:1px solid var(--warnbd)}
+.res.ok{background:var(--tok);color:var(--ok);border-color:#bfe6d2}
+.res.bad{background:var(--tbad);color:var(--bad);border-color:#f3c3c3}
+</style>
+<script>
+// Уведомления: что сообщать, почта (SMTP без SSL/TLS), SMS. Тест отправки ставится в очередь, результат контроллер отдаёт
+// через message.scan_mail / message.scan_sms - опрашиваем каждые 3 секунды и показываем на странице.
+var $ = function(id) { return document.getElementById(id); };
+function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
+function f(n, o) { o.key = 'message.' + n.toLowerCase(); return o; }
+
+// порог температуры доступен, только если включено «Достижение граничной температуры»
+function deps() {
+	var on = $('k-message-mess_temp') && $('k-message-mess_temp').checked;
+	['mess_tin', 'mess_tboiler', 'mess_tcomp'].forEach(function(n) { var e = $('k-message-' + n); if(e) e.disabled = !on; });
+	var nb = $('nest'); if(nb) nb.style.opacity = on ? 1 : .55;
+	var mail = $('k-message-mail') && $('k-message-mail').checked, sms = $('k-message-sms') && $('k-message-sms').checked;
+	$('mail-body').style.opacity = mail ? 1 : .6; $('sms-body').style.opacity = sms ? 1 : .6;
+	testBtn('Mail', 'почте'); testBtn('SMS', 'SMS');
+	var au = $('k-message-mail_auth') && $('k-message-mail_auth').checked;
+	['smtp_login', 'smtp_pass'].forEach(function(n) { var e = $('k-message-' + n), r = $('f-k-message-' + n); if(e) e.disabled = !au; if(r) r.classList.toggle('dis', !au); });
+}
+// Кнопка теста доступна, только когда отправка включена и уже применена на контроллере (тест идёт по его настройкам, а не по несохранённым полям)
+function testBtn(kind, what) {
+	var c = $('k-message-' + kind.toLowerCase()), b = $('b-' + kind), r = $('t-' + kind);
+	if(!c || !b) return;
+	var on = c.checked, applied = c.dataset.x === 'true', ok = on && applied;
+	b.disabled = !ok;
+	b.title = ok ? '' : on ? 'Сначала нажмите «Применить»' : 'Включите «Посылать уведомления по ' + what + '»';
+	if(r && !r.dataset.done) r.textContent = ok ? 'результат появится здесь' : on ? 'сначала нажмите «Применить»' : 'включите «Посылать уведомления по ' + what + '»';
+}
+window.stChanged = deps;
+stDnsCfg = {smtp: {key: 'message.smtp_server', ip: 'smtp-ip', get: 'message.smtp_ip'}, sms: {key: 'message.sms_list', ip: 'sms-ip', get: 'message.sms_ip'}};
+window.stAfterApply = function() { deps(); api.pollTick(); };
+// Общий опрос страницы: IP серверов и подписи полей выбранного SMS-сервиса
+function messPoll(d) {
+	if('message.smtp_ip' in d) put('smtp-ip', stEsc(d['message.smtp_ip']));
+	if('message.sms_ip' in d) put('sms-ip', stEsc(d['message.sms_ip']));
+	if('message.sms_namep1' in d) put('sms-n1', stEsc(d['message.sms_namep1']));
+	if('message.sms_namep2' in d) { var r = $('f-k-message-sms_p2'); put('sms-n2', stEsc(d['message.sms_namep2'])); if(r) r.style.display = d['message.sms_namep2'] == 'none' ? 'none' : ''; }
+}
+
+// ---- тесты ----
+var polls = {};
+function testMsg(kind) {
+	var out = $('t-' + kind);
+	out.className = 'res'; out.dataset.done = 1; out.innerHTML = '⌛ отправка поставлена в очередь…';
+	api['do']('test.' + kind.toLowerCase(), function(v, e) {
+		if(e) { out.className = 'res bad'; out.innerHTML = '✗ не отправлено (' + (ST_ERR[e] || e) + ')'; return; }
+		poll(kind, 'wait response', 0);
+	});
+}
+function poll(kind, v, n) {
+	var out = $('t-' + kind);
+	if(v == 'wait response' && n < 25) {
+		out.innerHTML = '⌛ ожидание ответа сервера… (результат появится здесь, проверка каждые 3 с)';
+		clearTimeout(polls[kind]);
+		polls[kind] = setTimeout(function() { api.get({k: ['message.scan_' + kind.toLowerCase()]}, function(D) { poll(kind, D['message.scan_' + kind.toLowerCase()] || '', n + 1); }); }, 3000);
+		return;
+	}
+	var bad = v == 'wait response' || /^(E\d+|error|fail|ошиб)|не отправлено/i.test(v);
+	out.className = 'res ' + (bad ? 'bad' : 'ok');
+	out.innerHTML = (bad ? '✗ ' : '✓ ') + (v == 'wait response' ? 'ответа нет за 75 с' : (v || 'нет ответа').replace(/</g, '&lt;'));
+}
+
+window.onload = function() {
+	stPanel();
+	stFields('w1', [
+		f('MESS_RESET', {k: 'sw', t: 'Сброс контроллера'}),
+		f('MESS_ERROR', {k: 'sw', t: 'Возникновение ошибок'}),
+		f('MESS_LIFE', {k: 'sw', t: 'Сигнал «жизни»', h: 'ежедневно в 12:00'}),
+		f('MESS_TEMP', {k: 'sw', t: 'Достижение граничной температуры'})
+	]);
+	stFields('w2', [
+		f('MESS_TIN', {dec: 2, t: 'Дом, если меньше', h: '0…30 °C', u: '°C', min: 0, max: 30, step: 0.1}),
+		f('MESS_TBOILER', {dec: 2, t: 'Бойлер, если меньше', h: '0…70 °C', u: '°C', min: 0, max: 70, step: 0.1}),
+		f('MESS_TCOMP', {dec: 2, t: 'Компрессор, если больше', h: '0…80 °C', u: '°C', min: 0, max: 80, step: 0.1})
+	]);
+	stFields('w3', [
+		f('MESS_SD', {k: 'sw', t: 'Проблемы с SD-картой или SPI Flash'}),
+		f('MESS_WARNING', {k: 'sw', t: 'Прочие уведомления'})
+	]);
+	stFields('mail', [
+		f('MAIL', {k: 'sw', t: 'Посылать уведомления по почте'}),
+		f('SMTP_SERVER', {k: 'text', max: 31, t: 'Адрес SMTP-сервера', h: 'после записи показывается IP: <span class="mono" id="smtp-ip">–</span>' + stDnsBtn('smtp')}),
+		f('SMTP_PORT', {t: 'Порт SMTP-сервера', h: '1…65534', min: 1, max: 65534, step: 1}),
+		f('MAIL_AUTH', {k: 'sw', t: 'Авторизация на сервере'}),
+		f('SMTP_LOGIN', {k: 'text', max: 31, t: 'Логин для входа'}),
+		f('SMTP_PASS', {k: 'text', pw: 1, max: 31, t: 'Пароль для входа', h: 'скрыт, показ по значку'}),
+		f('MAIL_INFO', {k: 'sw', t: 'Добавлять в письмо состояние ТН'}),
+		f('SMTP_MAILTO', {k: 'text', max: 31, t: 'Адрес отправителя'}),
+		f('SMTP_RCPTTO', {k: 'text', max: 31, t: 'Адрес получателя'})
+	]);
+	stFields('sms', [
+		f('SMS', {k: 'sw', t: 'Посылать уведомления по SMS'}),
+		f('SMS_list', {k: 'sel', t: 'Сервис отправки SMS', h: 'после записи показывается IP сервиса: <span class="mono" id="sms-ip">–</span>' + stDnsBtn('sms')}),
+		f('SMS_P1', {k: 'text', max: 100, t: '<span id="sms-n1">API ID</span>', h: 'подпись поля берётся из выбранного сервиса'}),
+		f('SMS_P2', {k: 'text', max: 100, t: '<span id="sms-n2">–</span>', h: 'показывается, только если сервису он нужен'}),
+		f('SMS_PHONE', {k: 'text', max: 20, t: 'Телефон получателя', h: 'формат 79161234567, до 20 знаков'})
+	]);
+	stLoadK();
+	api.poll({k: ['message.smtp_ip', 'message.sms_ip', 'message.sms_namep1', 'message.sms_namep2']}, messPoll);
+	setTimeout(deps, 1500);
+};
+</script>
+</head>
+<body class="notice">
+<div id="menu" class="menu"><script src="menu.js"></script></div>
+<div class="content">
+<div class="grid">
+	<section class="card c4"><h3>О чём сообщать</h3><div id="w1"></div><div class="nest" id="nest"><div id="w2"></div></div><div id="w3"></div>
+		<div class="fnote">Пороги температуры задаются отдельно и отправляются при включённом «Достижении граничной температуры».</div></section>
+	<section class="card c8"><h3>Почта</h3><div id="mail-body"><div id="mail"></div>
+		<div class="warnbox" style="margin:10px 0">Отправка — только через SMTP-сервер без шифрования SSL/TLS.<span class="hint" tabindex="0" data-tip="Отправлять почту можно только через SMTP-сервер без шифрования SSL или TLS.">1</span></div>
+		<div class="row" style="gap:12px;flex-wrap:wrap"><button class="btn2" id="b-Mail" onclick="testMsg('Mail')">Отправить тестовое письмо</button><span class="res" id="t-Mail" style="display:inline-flex">результат появится здесь</span></div></div></section>
+	<section class="card c12"><h3>SMS</h3><div id="sms-body"><div id="sms"></div>
+		<div class="row" style="gap:12px;flex-wrap:wrap;margin-top:10px"><button class="btn2" id="b-SMS" onclick="testMsg('SMS')">Отправить тестовое SMS</button><span class="res" id="t-SMS" style="display:inline-flex">результат появится здесь</span></div>
+		<div class="fnote">Второй параметр сервиса показывается, только если он нужен (у sms.ru его нет, поэтому скрыт). Сервисы: sms.ru, smsc.ru, smsc.ua, smsclub.mobi.</div></div></section>
+</div>
+</div>
+</body>
+</html>

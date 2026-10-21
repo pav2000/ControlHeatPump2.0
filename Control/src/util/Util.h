@@ -1,0 +1,171 @@
+/*
+ * Copyright (c) 2016-2026 by Pavel Panfilov <firstlast2007@gmail.com>  telegram @pav20000
+ * &                       by Vadim Kulakov vad7@yahoo.com, vad711
+ * "Народный контроллер 2.0" для тепловых насосов.
+ * Данное программное обеспечение предназначено для управления
+ * различными типами тепловых насосов для отопления и ГВС.
+ *
+ * This file is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public
+ * License as published by the Free Software Foundation; either
+ * version 3.0 of the License, or (at your option) any later version.
+ *
+ * This file is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
+ * GNU General Public License for more details.
+ */
+// ---- функции общего использования ----
+/*
+ * Функции общего назначения. Делятся на две части:
+ *
+ *   Util.cpp - чистые: числа, строки, разбор, base64, CRC16, расписания.
+ *              Отдельная единица трансляции, о проекте ничего не знает,
+ *              проверяется тестами (tests/test_util.cpp).
+ *              Здесь же шестнадцатеричные
+ *              преобразования и общий буфер _buf: железа они не касаются.
+ *   слой железа - SD, SPI-флеш, регистры SAM, EEPROM и часы по I2C.
+ *   Network.cpp - функции с IPAddress: этот тип из Arduino, а сюда Arduino
+ *              не входит, и ради него тащить его нельзя.
+ *
+ * Заголовок обязан быть самодостаточным: его включает и Util.cpp, где
+ * никакого Arduino.h нет. Включается из Constant.h, то есть виден всему
+ * проекту, поэтому определять здесь объекты нельзя - только объявлять.
+ */
+#ifndef Util_h
+#define Util_h
+
+#include <stdint.h>
+#include <stdlib.h>          // abs() для макросов ниже
+
+#define sign(a) (a > 0 ? 1 : a < 0 ? -1 : 0)
+#define signm(a,t) ((a > 0 ? 1 : a < 0 ? -1 : 0) * (abs(a) > t ? 2 : 1))
+
+// ---- Util.cpp: числа и строки ----
+char* _itoa(int value, char *string);                 // дописывает в конец строки
+uint8_t _ftoa(char *outstr, float val, unsigned char precision);
+void _dtoa(char *outstr, int val, int precision);     // дробное, приведённое к целому
+void int_to_dec_str(int32_t value, int32_t div, char **ret, uint8_t maxfract);
+#define ATOF_ERROR       -9876543.00  // Возврат my_atof при ошибке преобразования
+float my_atof(const char* s);
+int16_t rd(float num, int16_t mul);                   // округление float*mul, mul: 10/100/1000
+int32_t round_div_int32(int32_t value, int16_t div);
+float fromInt16ToFloat(uint16_t wordHigh, uint16_t wordLow);  // порядок слов Modbus
+uint8_t calc_bits_in_mask(uint32_t mask);
+void str_replace(char *str, char find, char replace);
+
+// ---- Util.cpp: разбор строк ----
+bool parseBytes(const char* str, char sep, uint8_t* bytes, int maxBytes, int base);
+bool parseInt16_t(const char* str, char sep, int16_t* ints, int maxNum, int base);
+void urldecode(char *dst, char *src, uint16_t len);
+char *web_fill_tag_select(char *str, const char *select, uint8_t selected);
+
+// ---- Util.cpp: расписание (одно число - один день, массив 7 дней) ----
+bool set_Schedule(char *c, uint32_t *sh);
+char *get_Schedule(uint32_t *sh);
+
+// ---- Util.cpp: base64 ----
+int base64_encode(char *output, char *input, int inputLen);
+int base64_decode(char *output, char *input, int inputLen);
+int base64_enc_len(int plainLen);
+int base64_dec_len(char *input, int inputLen);
+
+// ---- Util.cpp: CRC16 и сериализация ----
+uint16_t calc_crc16(unsigned char * pcBlock, unsigned short len, uint16_t crc = 0xFFFF);
+uint16_t _crc16(uint16_t crc, uint8_t a);             // побайтно, для потоковых расчётов
+void load_struct(void *to, uint8_t **from, uint16_t to_size);
+
+// Общий буфер вывода и шестнадцатеричные преобразования. Определены в Util.cpp.
+// ВНИМАНИЕ: буфер ОДИН на всех, включая ResetCause. Пользоваться только в
+// веб-потоке или под замком xWebThreadSemaphore.
+#define UTIL_BUF_SIZE 20
+extern char _buf[UTIL_BUF_SIZE];
+char *MAC2String(uint8_t *mac);      // MAC в строку 01:23:45:67:89:AB
+char *addressToHex(uint8_t *f);      // адрес OneWire, восемь байт
+char *byteToHex(uint8_t f);          // байт, вида 0xf5
+char *uint16ToHex(uint16_t f);       // слово, вида 0xf50e
+char *uint32ToHex(uint32_t f);       // двойное слово, вида 0xabcdf50e
+                                     // Вызывающих в прошивке нет, оставлен намеренно: третий
+                                     // член семейства byteToHex/uint16ToHex, без него набор
+                                     // выглядел бы недосмотром. Во flash не попадает -
+                                     // --gc-sections выбрасывает; проверен тестами.
+
+// ---- Util.cpp: режим загрузки, выбранный кнопкой KEY1 ----
+//
+// Кнопка опрашивается в самом начале setup, и по длительности удержания
+// выбирается режим:
+//   короче KEY_PRESS_MIN      - нажатия не было (касание, дребезг разъёма)
+//   до KEY_HOLD_SAFENET       - грузить встроенную морду из кода
+//   KEY_HOLD_SAFENET и дольше - safeNetwork И встроенная морда, аварийный режим
+//
+// Пороги стоят здесь, а не в Constant.h, потому что Util.cpp его не включает
+// (модуль чистый, без Arduino), а пороги - контракт функции. Так же объявлены
+// ATOF_ERROR и REC_HDR_SIZE.
+// KEY_PRESS_MIN отделяет намеренное нажатие от дребезга, и только. Дребезг
+// контакта - единицы миллисекунд, поэтому 50 мсек это десятикратный запас.
+// Порог 300 мсек отвергал живое нажатие человека (290 мсек): он был назначен
+// на глаз и попал в диапазон обычных нажатий. Опрос идёт шагом 10 мсек, так что
+// 50 - это пять отсчётов.
+#define KEY_PRESS_MIN       50    // мсек, короче - нажатия не было
+#define KEY_HOLD_SAFENET  3000    // мсек, удержание для аварийного режима
+enum KeyBootMode { KEY_BOOT_NONE = 0, KEY_BOOT_MINWEB, KEY_BOOT_SAFENET };
+KeyBootMode key_boot_mode(uint32_t held_ms);
+
+// ---- Каркас записи НОВОГО формата настроек (версия 150) ----
+//
+// Запись: [тег: uint16][длина: uint16][данные ... длина байт]
+//
+// Четыре байта на запись, без хитростей. Старый каркас экономил байт на
+// коротких записях: длина была переменной ширины, младший бит служил
+// признаком, а теги вкраплялись сырыми словами и отличались от длины только
+// тем, что лежали в отрицательном диапазоне. Это работало, пока значение
+// длины не могло попасть в диапазон тегов, и ломало номер элемента массива
+// у записей длиннее 128 байт - он читался как buffer[1], то есть занимал
+// место старшего байта длины.
+//
+// С фиксированным заголовком незнакомый тег пропускается безусловно:
+// сдвиг = REC_HDR_SIZE + длина, гадать не о чем.
+#define REC_HDR_SIZE  4
+
+void     rec_hdr_put(uint8_t *buf, uint16_t tag, uint16_t len);  // положить заголовок
+uint16_t rec_hdr_tag(const uint8_t *buf);                        // тег записи
+uint16_t rec_hdr_len(const uint8_t *buf);                        // длина данных записи
+
+// Проверка заголовка и каркаса блока настроек нового формата (чистая логика,
+// проверяется на хосте). Блок: [длина:2][пролог][записи][контрольная сумма:2].
+enum SettingsHead { SETHEAD_OK = 0, SETHEAD_EMPTY, SETHEAD_NEWER };
+// size - длина после поля длины (с контрольной суммой), ver - байт версии.
+// EMPTY: область не опознана (пустая память 0xFFFF, нулевая или короче пролога,
+// версия 0 или 0xFF). NEWER: версия новее, чем умеет прошивка (max_ver).
+// min_size - наименьший допустимый size (константы формата в Util.cpp не видны).
+SettingsHead settings_head_check(uint16_t size, uint8_t ver, uint8_t max_ver, uint16_t min_size);
+
+struct SettingsScan {
+	uint16_t records;      // записей разобрано (без END)
+	uint16_t truncated;    // записей, вылезающих за границу блока
+	uint16_t unknown;      // записей с тегом выше max_tag
+	bool     end_seen;     // встретилась запись END
+};
+// Обход записей от p до p_max. Ничего не копирует, только считает.
+void settings_scan(const uint8_t *p, const uint8_t *p_max, uint16_t end_tag, uint16_t max_tag, SettingsScan *s);
+
+// Обход области профилей нового формата: [tag][длина][номер слота][данные]..., END.
+// Проверка до записи файла в EEPROM: испорченная область ломает профили при
+// следующей загрузке. Ничего не копирует, только считает.
+struct ProfileScan {
+	uint8_t  slots;        // годных записей
+	uint8_t  bad_len;      // длина записи не равна ожидаемой
+	uint8_t  bad_slot;     // номер слота не меньше max_slots
+	uint8_t  bad_tag;      // чужой тег вместо записи профиля или END
+	uint8_t  truncated;    // запись вылезает за границу буфера
+	bool     end_seen;     // встретилась запись END
+	uint32_t bytes;        // длина от начала до конца записи END (без контрольной суммы)
+};
+void profile_scan(const uint8_t *p, const uint8_t *p_max, uint16_t tag, uint16_t end_tag,
+                  uint16_t rec_len, uint8_t max_slots, ProfileScan *s);
+
+// ---- требуют железа (Board.cpp) ----
+void getIDchip(char *outstr);
+// Функции работы со временем - в DateTime.h.
+
+#endif

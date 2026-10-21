@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Сеть. Народный контроллер ТН</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<script src="scripts.js"></script>
+<script src="settings.js"></script>
+<script>
+// Сеть: адресация, безопасность (пароли скрыты, показ по значку), сетевой чип Wiznet W5xxx, состояние сокетов.
+// Адреса и MAC проверяются до отправки (поле краснеет, «Применить» не отправит). Сами настройки вступают в силу после
+// «Применить настройки сети» (set_updateNet - повторная инициализация сетевого чипа).
+var $ = function(id) { return document.getElementById(id); };
+function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
+function f(n, o) { o.key = 'net.' + n.toLowerCase(); return o; }
+var IP = '^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$', MAC = '^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$';
+
+// при DHCP адреса выдаёт роутер - поля недоступны
+function dhcp() {
+	var on = $('k-net-dhcp') && $('k-net-dhcp').checked;
+	['ip', 'subnet', 'gateway', 'dns'].forEach(function(n) {
+		var e = $('k-net-' + n), r = $('f-k-net-' + n);
+		if(e) e.disabled = on;
+		if(r) r.classList.toggle('dis', on);
+	});
+}
+window.stChanged = dhcp;
+window.stAfterApply = dhcp;
+function applyNet() {
+	if(!confirm('Применить сетевые настройки? Сетевой чип будет инициализирован заново; при неверных настройках связь с контроллером пропадёт (аварийный вход — safeNetwork: сброс контроллера при нажатой кнопке «On/Off»).')) return;
+	api['do']('net.apply', function(v, err) { stToast('Сеть переинициализирована' + '. Если страница не отвечает — подключитесь по новому адресу.'); });
+}
+
+// ---- сокеты чипа: «№|статус|MAC|IP|порт;...» ----
+// интервалы приходят из прошивки по-английски («never», «30 sec») - переводим подписи списков
+function ru(id) {
+	var e = $(id);
+	if(!e) return;
+	for(var i = 0; i < e.options.length; i++) e.options[i].text = e.options[i].text.replace(/^never$/, 'никогда').replace(/ sec$/, ' сек').replace(/ min$/, ' мин').replace(/ hours$/, ' ч');
+}
+function sockets(d) {
+	if('sys.socket_res' in d) put('sock-res', 'сброшено зависших: ' + d['sys.socket_res']);
+	if('sys.sockets' in d) put('socks', d['sys.sockets'].map(function(s) {
+		var st = stEsc(s.c + ' ' + s.s) + (s.h ? '<span class="hint" style="margin-left:6px">' + s.h + '</span>' : ''), cls = s.s == 'ESTABLISHED' ? 'ok' : s.s == 'LISTEN' ? 'b' : '';
+		return '<tr><td class="n">' + s.n + '</td><td><span class="tag ' + cls + '" style="' + (cls ? '' : 'background:var(--bg);color:var(--mute)') + '">' + st + '</span></td><td class="mono">' + stEsc(s.m) + '</td><td class="mono">' + s.ip + '</td><td>' + s.p + '</td></tr>';
+	}).join(''));
+}
+
+window.onload = function() {
+	stPanel();
+	stFields('n1', [
+		f('DHCP', {k: 'sw', t: 'Использовать DHCP', h: 'адрес выдаёт роутер'}),
+		f('IP', {k: 'text', mono: 1, pattern: IP, title: 'Адрес вида 192.168.0.177', t: 'IP-адрес контроллера'}),
+		f('SUBNET', {k: 'text', mono: 1, pattern: IP, title: 'Маска вида 255.255.255.0', t: 'Маска подсети'}),
+		f('GATEWAY', {k: 'text', mono: 1, pattern: IP, title: 'Адрес вида 192.168.0.1', t: 'Шлюз'}),
+		f('DNS', {k: 'text', mono: 1, pattern: IP, title: 'Адрес вида 8.8.8.8', t: 'DNS-сервер'}),
+		f('PORT', {t: 'Порт веб-сервера', h: '1…65534', min: 1, max: 65534, step: 1}),
+		f('MAC', {k: 'text', mono: 1, pattern: MAC, title: 'Формат XX:XX:XX:XX:XX:XX', t: 'MAC-адрес', h: 'XX:XX:XX:XX:XX:XX'})
+	]);
+	stFields('n2', [
+		f('NSLP', {k: 'sel', t: 'Проверка ping до сервера', h: 'при отсутствии — сброс сети'}),
+		f('PING', {k: 'text', mono: 1, t: 'Адрес пингуемого сервера', h: 'лучше IP шлюза или 8.8.8.8, не имя', n: [1, 'Желательно указывать IP-адрес (8.8.8.8), а не доменное имя сервера (google.com); рекомендуется вводить IP шлюза.']}),
+		f('INIT', {k: 'sw', t: 'Ежеминутный контроль связи с чипом', h: 'при необходимости — сброс чипа'}),
+		f('NSLS', {k: 'sel', t: 'Сброс «зависших» сокетов', h: 'через'}),
+		f('NSLR', {k: 'sel', t: 'Регулярный сброс сетевого чипа', h: 'раз в'}),
+		f('SIZE', {t: 'Размер пакета', h: 'MTU − 40 байт · 64…2048', u: 'байт', min: 64, max: 2048, step: 1}),
+		f('NO_ACK', {k: 'sw', t: 'Не ждать ACK перед следующим пакетом', h: 'быстрее при большом ping, доставка не гарантируется', n: [2, 'Рекомендуется использовать в сетях с большим ping, позволяет увеличить скорость обмена. В этом режиме пакет отправляется после паузы (без ожидания ACK), доставка пакетов не гарантируется.']}),
+		f('DELAY_ACK', {t: 'Пауза без ожидания ACK', h: '1…50 мс, подбирается опытным путём', u: 'мс', min: 1, max: 50, step: 1, n: [3, 'Параметр необходимо подобрать опытным путём, ориентируясь на потерю пакетов.']})
+	]);
+	stFields('n3', [
+		f('NO_PING', {k: 'sw', t: 'Запрет пинга контроллера', h: 'рекомендуется при прямом выходе в интернет'}),
+		f('PASS', {k: 'sw', t: 'Требовать пароль для входа', h: 'в режиме safeNetwork пароль не спрашивается'}),
+		f('PASSUSER', {k: 'text', pw: 1, max: 10, t: 'Пароль пользователя', h: 'до 10 символов. Пустой — простой веб без пароля'}),
+		f('PASSADMIN', {k: 'text', pw: 1, max: 10, t: 'Пароль администратора', h: 'до 10 символов'})
+	]);
+	stLoadK(function() { ru('k-net-nslp'); ru('k-net-nsls'); ru('k-net-nslr'); });
+	api.poll({k: ['sys.sockets', 'sys.socket_res']}, sockets);
+};
+</script>
+</head>
+<body class="lan">
+<div id="menu" class="menu"><script src="menu.js"></script></div>
+<div class="content">
+<div class="warnbox" style="margin-top:16px"><b>Внимание.</b> Неправильные сетевые настройки могут привести к потере управления ТН. Аварийный вход (safeNetwork): сброс контроллера при нажатой аппаратной кнопке «On/Off». В этом режиме сетевые настройки берутся по умолчанию, но выводятся значения из EEPROM (их можно корректировать), пароли не спрашиваются.</div>
+<div class="grid">
+	<section class="card c4"><h3>Сетевые настройки</h3><div id="n1"></div>
+		<div class="fnote">Адреса проверяются перед отправкой: неверный формат подсвечивается красным, кнопка «Применить» недоступна. При включённом DHCP поля адресов недоступны.</div>
+		<div class="act" style="display:flex;margin-top:10px"><button class="btn2" onclick="applyNet()">Применить настройки сети…<span class="hint" tabindex="0" data-tip="Производится инициализация сетевого чипа с текущими сетевыми настройками.">2</span></button></div></section>
+	<section class="card c4"><h3>Сетевой чип Wiznet W5xxx</h3><div id="n2"></div></section>
+	<section class="card c4"><h3>Безопасность</h3><div id="n3"></div>
+		<div class="fnote"><b>Пользователь</b> видит главную, схему и «О контроллере»; <b>администратор</b> — всё. Пароли скрыты точками и показываются по значку глаза.</div></section>
+	<section class="card c12"><h3>Сокеты сетевого чипа <span class="r" id="sock-res" style="color:var(--mute)"></span></h3>
+		<table class="t"><thead><tr><th>№</th><th>Статус</th><th>MAC-адрес</th><th>IP-адрес</th><th>Порт</th></tr></thead><tbody id="socks"></tbody></table>
+		<div class="fnote"><b>1.</b> Переходное состояние сокета. <b>2.</b> Сокеты-«кандидаты» на сброс.</div></section>
+</div>
+</div>
+</body>
+</html>
