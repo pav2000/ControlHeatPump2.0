@@ -7,6 +7,7 @@
 <link rel="stylesheet" href="style.css">
 <script src="scripts.js"></script>
 <script src="settings.js"></script>
+<script src="weather.js"></script>
 <style>
 .themes{display:flex;gap:8px;padding-top:6px}
 .th{cursor:pointer;text-align:center;width:84px}
@@ -16,6 +17,9 @@
 .pv .cd{position:absolute;left:20px;right:6px;top:8px;bottom:8px;border-radius:7px;box-shadow:0 1px 2px rgba(0,0,0,.2)}
 .pv .cd b{position:absolute;left:6px;top:6px;width:18px;height:6px;border-radius:3px}.pv .cd b.l{top:16px;width:34px;background:#9aa6b2;opacity:.5}
 .th.on .pv{border-color:var(--acc)}.th.on em{color:var(--acc)}
+.wxr{border:1px solid var(--line);border-radius:10px;margin:0 0 6px;overflow:hidden}
+.wxr div{padding:8px 12px;border-top:1px solid var(--line);cursor:pointer;display:flex;justify-content:space-between;gap:10px}
+.wxr div:first-child{border-top:0}.wxr div:hover{background:var(--acc2)}.wxr small{color:var(--mute)}
 </style>
 <script>
 // Реле (/api/meta?g=relay, ключи relay.<ИМЯ>.on), дисплей Nextion и звук (BEEP). Реле переключаются сразу и только при остановленном ТН: пока он работает,
@@ -54,12 +58,53 @@ function iface() {
 	}).join('');
 	[].forEach.call(document.querySelectorAll('#dens a'), function(a) { a.classList.toggle('on', a.getAttribute('data-d') == (shDens == 'n' ? 'n' : 'c')); });
 }
+// ---- прогноз погоды: тумблер, поиск места, число дней, свои координаты (weather.js) ----
+var wxTimer = null;
+function wxShow() {
+	$('wx-on').checked = !!WX.on;
+	$('wx-set').hidden = !WX.on;
+	$('wx-cur').textContent = wxHasPlace() ? WX.name + ' (' + WX.lat.toFixed(2) + '; ' + WX.lon.toFixed(2) + ')' : 'не выбрана';
+	[].forEach.call(document.querySelectorAll('#wx-days a'), function(a) { a.classList.toggle('on', a.getAttribute('data-d') == WX.days); });
+}
+function wxToggle(on) { WX.on = on ? 1 : 0; wxSave(); wxShow(); }
+function wxDays(n) { WX.days = n; wxSave(); wxShow(); }
+function wxFind(text) {
+	clearTimeout(wxTimer);
+	var r = $('wx-res');
+	if(text.trim().length < 2) { r.innerHTML = ''; return; }
+	wxTimer = setTimeout(function() {
+		wxSearch(text.trim(), function(list) {
+			WX.found = list;
+			r.innerHTML = list.length ? '<div class="wxr">' + list.map(function(p, i) { return '<div onclick="wxPick(' + i + ')"><span>' + wxEsc(p.name) + '</span><small>' + wxEsc(p.sub) + '</small></div>'; }).join('') + '</div>' :
+				'<div class="l" style="padding:4px 0 8px"><small>Ничего не найдено</small></div>';
+		}, function() { r.innerHTML = '<div class="l" style="padding:4px 0 8px"><small>Нет связи с сервером поиска. Нужен интернет в браузере.</small></div>'; });
+	}, 400);
+}
+function wxPick(i) {
+	var p = WX.found[i];
+	WX.name = p.name; WX.lat = p.lat; WX.lon = p.lon;
+	wxSave();
+	$('wx-q').value = '';
+	$('wx-res').innerHTML = '';
+	$('wx-lat').value = p.lat.toFixed(4);
+	$('wx-lon').value = p.lon.toFixed(4);
+	wxShow();
+}
+function wxCoord() {
+	var a = parseFloat($('wx-lat').value), b = parseFloat($('wx-lon').value);
+	if(!(a >= -90 && a <= 90 && b >= -180 && b <= 180)) return;
+	WX.name = 'Свои координаты'; WX.lat = a; WX.lon = b;
+	wxSave();
+	wxShow();
+}
 function setTheme(v) { shSetTheme(v); iface(); }
 function setDens(v) { shSetDens(v); iface(); }
 
 window.onload = function() {
 	stPanel();
 	iface();
+	wxShow();
+	if(wxHasPlace()) { $('wx-lat').value = WX.lat.toFixed(4); $('wx-lon').value = WX.lon.toFixed(4); }
 	stFields('nxt', [
 		{key: 'ohp.nxt', k: 'sw', t: 'Использовать дисплей'},
 		{key: 'ohp.nxtw', k: 'sw', t: 'Включать при пуске компрессора'},
@@ -100,6 +145,13 @@ window.onload = function() {
 			<div class="field"><div class="l">Плотность<small>отступы на страницах; на телефоне не меняется</small></div><span class="seg" id="dens"><a data-d="c" onclick="setDens('c')">Компактная</a><a data-d="n" onclick="setDens('n')">Просторная</a></span></div>
 			<div class="l" style="padding:10px 0 2px"><b>Цветовая схема</b></div>
 			<div class="themes" id="themes"></div>
+			<div class="field" style="margin-top:10px;border-top:1px solid var(--line)"><div class="l">Показывать прогноз погоды<small>на главной странице; запрос идёт из браузера, нужен интернет</small></div><input type="checkbox" class="sw" id="wx-on" onchange="wxToggle(this.checked)"></div>
+			<div id="wx-set" hidden>
+				<div class="field"><div class="l">Местность<small id="wx-cur"></small></div><input type="text" id="wx-q" placeholder="Название города" autocomplete="off" oninput="wxFind(this.value)"></div>
+				<div id="wx-res"></div>
+				<div class="field"><div class="l">Дней в прогнозе</div><span class="seg" id="wx-days"><a data-d="5" onclick="wxDays(5)">5</a><a data-d="7" onclick="wxDays(7)">7</a></span></div>
+				<div class="field"><div class="l">Свои координаты<small>широта и долгота, градусы; для места, которого нет в поиске</small></div><input type="number" id="wx-lat" min="-90" max="90" step="any" placeholder="широта" onchange="wxCoord()"><input type="number" id="wx-lon" min="-180" max="180" step="any" placeholder="долгота" onchange="wxCoord()"></div>
+			</div>
 		</section>
 	</div>
 </div>

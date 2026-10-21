@@ -8,6 +8,7 @@
 <script src="scripts.js"></script>
 <script src="settings.js"></script>
 <script src="chart.js"></script>
+<script src="weather.js"></script>
 <style>
 .home-t{display:flex;justify-content:space-between;align-items:flex-end}
 .stepper{display:flex;align-items:center;gap:10px}
@@ -40,6 +41,21 @@
 .card .ctl-mode select{min-width:0}
 .ev-empty{color:var(--mute);font-size:13px;padding:8px 0}
 .lnk{font-weight:800;text-decoration:none}
+.card#wx{padding-top:8px;padding-bottom:8px}#wx h3{margin-bottom:4px}
+.wxbody{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:center}
+.wxdays{display:grid;grid-template-columns:repeat(var(--n),1fr);gap:4px}
+.wxd{display:flex;flex-direction:column;align-items:center;gap:0;padding:3px 2px 4px;border-radius:12px;text-align:center}
+.wxd.today{background:var(--acc2)}
+.wxd b{font-size:12px;white-space:nowrap}.wxd i{font-style:normal;font-size:11px;font-weight:600;color:var(--mute)}
+.wxd svg{width:22px;height:22px;margin:1px 0}.wxd svg .s{stroke:#e0a21b}.wxd svg .c{stroke:var(--mute)}.wxd svg .cf{fill:var(--card)}.wxd.today svg .cf{fill:var(--acc2)}.wxd svg .r{stroke:var(--cold)}
+.wxd .mx{font-weight:800;font-size:14px;color:var(--heat)}.wxd .mn{font-weight:700;font-size:12px;color:var(--cold)}.wxd .pr{font-size:10px;color:var(--mute)}
+.wxchart svg{display:block}.wxchart text{font-size:10.5px;font-weight:700;text-anchor:middle;fill:var(--ink);paint-order:stroke;stroke:var(--card);stroke-width:3px;stroke-linejoin:round}.wxchart .tl{fill:var(--cold)}.wxchart .th{fill:var(--heat)}.wxchart .td{font-size:10px;fill:var(--mute)}
+.wxchart .lh,.wxchart .ll{fill:none;stroke-width:2;stroke-linejoin:round}.wxchart .lh{stroke:var(--heat)}.wxchart .ll{stroke:var(--cold)}.wxchart .dh{fill:var(--heat)}.wxchart .dl{fill:var(--cold)}
+.wxchart .neg{fill:var(--tb)}.wxchart .zero{stroke:var(--cold);stroke-width:1;stroke-dasharray:4 3}
+html.m .wxbody{display:block}
+html.m .wxchart{display:none}
+html.m .wxdays{display:flex;overflow-x:auto;padding-bottom:4px}
+html.m .wxd{flex:none;width:64px}
 </style>
 <script>
 urlupdate = 4000;
@@ -292,6 +308,8 @@ window.onload = function() {
 	});
 	showEvents();
 	chartInit();
+	wxRender($('wx'));
+	setInterval(function() { wxRender($('wx')); }, 30 * 60 * 1000);
 };
 </script>
 </head>
@@ -365,6 +383,8 @@ window.onload = function() {
 		<h3 style="margin-top:6px">События <span class="r" style="color:var(--mute);font-weight:600">с открытия страницы</span></h3>
 		<div id="events"></div>
 	</section>
+
+	<section class="card c12" id="wx" hidden></section>
 
 </div>
 </div>
