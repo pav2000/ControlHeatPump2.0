@@ -49,7 +49,7 @@
 #endif
 
 // ---- ОПЦИИ КОМПИЛЯЦИИ ПРОЕКТА ----
-#define VERSION			"2.19"	// Версия прошивки после слияния веток
+#define VERSION			"2.20"	// Версия прошивки: приём Modbus включается до возврата планировщика
 // Версия формата, которой прошивка ПИШЕТ настройки в I2C память.
 // Должна совпадать с версией каркаса, которым пишутся настройки (150): иначе Option.ver по
 // умолчанию неверен, первое сохранение на чистом контроллере печатает
@@ -183,7 +183,7 @@ const uint16_t  defaultPort=80;
 #define MODBUS_PORT_CONFIG   SERIAL_8N1     // Конфигурация порта куда прицеплен инвертор и счетчик
 #define MODBUS_TIME_WAIT     2000           // Время ожидания захвата мютекса для modbus мсек
 #ifndef MODBUS_TIME_TRANSMISION
-#define MODBUS_TIME_TRANSMISION 4           // Пауза (msec) между запросом и ответом по Modbus
+#define MODBUS_TIME_TRANSMISION 4           // Не используется с 2.20: приём включается сразу после передачи (postTransmission)
 #endif
 #endif
 

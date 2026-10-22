@@ -290,19 +290,20 @@ static inline void preTransmission() // Функция вызываемая ПЕ
       Modbus_Entered_Critical = TaskSuspendAll(); // Запрет других задач во время передачи по Modbus 	
  
      }
+// Приёмник включается ДО возврата планировщика. Раньше после xTaskResumeAll шла
+// пауза через vTaskDelay, и линия оставалась на передаче, пока задача ждала
+// процессор: при загруженных задачах приоритета 3-4 (пуск ТН) начало ответа
+// инвертора приходилось на выключенный приёмник - таймаут, код -47. Пауза не
+// нужна: flush() в библиотеке возвращается по TXEMPTY, то есть кадр ушёл целиком.
 static inline void postTransmission() // Функция вызываемая ПОСЛЕ окончания передачи
     {
+    #ifdef PIN_MODBUS_RSE
+    digitalWriteDirect(PIN_MODBUS_RSE, LOW);
+    #endif
   	if(Modbus_Entered_Critical) {
 	xTaskResumeAll();
 	Modbus_Entered_Critical = 0;
-	}    	
-    #ifdef PIN_MODBUS_RSE
-	#if MODBUS_TIME_TRANSMISION != 0
-    _delay(MODBUS_TIME_TRANSMISION);// Минимальная пауза между командой и ответом 3.5 символа
-	#endif
-    digitalWriteDirect(PIN_MODBUS_RSE, LOW);
-    #endif
-
+	}
 }
 
 // Инициализация Modbus без проверки связи связи
