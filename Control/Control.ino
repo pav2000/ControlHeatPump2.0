@@ -1648,7 +1648,7 @@ void vUpdateEEV(void *)
 void vUpdateStepperEEV(void *)
 {
   // Размер стека не позволяет использовать внутри jprintf.* !!!
-	static int16_t cmd = 0;
+	static int cmd = 0;  // размер элемента очереди - sizeof(int): int16_t затирал бы соседние данные
 	for(;;) {
 		Watchdog_Beat(WDT_StepperEEV);   // отметка живости для наблюдателя
 		// Полный цикл движения шаговика с разгребанием очереди команд,

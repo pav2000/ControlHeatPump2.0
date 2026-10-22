@@ -268,7 +268,7 @@ void Journal::_post(char *line, const char *body)
 void Journal::FlushAll(void)
 {
 	if(xTaskGetSchedulerState() != taskSCHEDULER_RUNNING) return;
-	uint8_t chunk[JOURNAL_DRAIN_CHUNK + 1];
+	uint8_t chunk[JOURNAL_DRAIN_CHUNK + 2];  // +NUL и +байт HEAD, который _write дописывает за данными
 	// Предел на случай, если кто-то пишет быстрее, чем мы выгружаем
 	for(uint16_t guard = 0; guard < JOURNAL_RING_SIZE / JOURNAL_DRAIN_CHUNK + 4; guard++) {
 		uint16_t n = JournalRing_Get(&ring, chunk, JOURNAL_DRAIN_CHUNK);
@@ -310,7 +310,7 @@ void Journal::Drain(void)
 	// Несколько страниц за вызов: одна страница в секунду - слишком медленно,
 	// при всплеске записей кольцо переполнится. Между записями мьютекс шины
 	// отпускается, поэтому задачи с высоким приоритетом не ждут всю пачку.
-	uint8_t chunk[JOURNAL_DRAIN_CHUNK + 1];
+	uint8_t chunk[JOURNAL_DRAIN_CHUNK + 2];  // +NUL и +байт HEAD, который _write дописывает за данными
 	for(uint8_t k = 0; k < JOURNAL_DRAIN_CHUNKS; k++) {
 		uint16_t n = JournalRing_Get(&ring, chunk, JOURNAL_DRAIN_CHUNK);
 		if(!n) break;

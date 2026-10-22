@@ -32,18 +32,24 @@
 urlupdate = 2000;
 
 // Плашки схемы: id, подпись, цвет. Положение (в пикселях картинки 930x400) задаёт раскладка:
-// картинка plan1.png.
+// картинка plan<SCHEME>.png.
 var BADGES = {
 	tboiler: ['бойлер', 'red'], tevaing: ['из ГК', 'blue'], tevaoutg: ['в ГК', 'lblue'], tevain: ['', 'blue'], tevaout: ['', 'blue'],
 	tcompin: ['вход комп.', 'blue'], tcomp: ['нагнетание', 'red'], tconoutg: ['подача', 'orange'], tconing: ['обратка', 'amber'],
 	peva: ['', 'blue'], pcon: ['', 'red'], fc: ['', 'violet'], eev: ['', 'violet'], floweva: ['вход', 'blue'], flowcon: ['выход', 'amber'],
 	tconout: ['фреон', 'orange']
 };
+// Номер схемы вашего ТН (как HP_SCHEME в Config.h прошивки): 1 - два конденсатора, бойлер с насосом; 2 - один конденсатор, бойлер через трёхходовой клапан
+var SCHEME = 2;
 var LAYOUT = {
-	plain: {img: 'plan1.png', pos: {
+	1: {img: 'plan1.png', pos: {
 		tboiler: [819, 30], tevaing: [134, 184], tevaoutg: [134, 330], tevain: [251, 330], tevaout: [251, 184], peva: [297, 102],
 		tcompin: [441, 124], tcomp: [441, 150], pcon: [586, 102], fc: [509, 270], eev: [346, 358],
-		tconout: [583, 334], tconoutg: [718, 186], tconing: [702, 332], flowcon: [420, 344], floweva: [44, 330]}}
+		tconout: [583, 334], tconoutg: [718, 186], tconing: [702, 332], flowcon: [420, 344], floweva: [44, 330]}},
+	2: {img: 'plan2.png', pos: {
+		tboiler: [805, 30], tevaing: [134, 184], tevaoutg: [134, 330], tevain: [251, 330], tevaout: [251, 184], peva: [297, 102],
+		tcompin: [441, 124], tcomp: [441, 150], pcon: [592, 102], fc: [515, 270], eev: [346, 358],
+		tconout: [560, 334], tconoutg: [704, 186], tconing: [716, 332], flowcon: [408, 344], floweva: [44, 330]}}
 };
 // метки у теплообменников и компрессора выровнены по симметрии: у части координата x - центр метки, у части задана общая ширина
 var CENTER = {tboiler: 1, peva: 1, pcon: 1, fc: 1, eev: 1};
@@ -51,7 +57,7 @@ var FIXW = {tevaing: 72, tevaoutg: 72, tevaout: 72, tevain: 72, tconout: 72, tco
 var layout = null, vals = {}, lastData = Date.now();
 
 function drawScheme(kind) {
-	var L = LAYOUT[kind], h = '<img src="' + L.img + '" alt="Схема теплового насоса">';
+	var L = LAYOUT[kind] || LAYOUT[1], h = '<img src="' + L.img + '" alt="Схема теплового насоса">';
 	for(var k in L.pos) {
 		var b = BADGES[k];
 		h += '<span class="vb ' + b[1] + (CENTER[k] ? ' c' : '') + (FIXW[k] ? ' fx' : '') + '" id="b-' + k + '" style="left:' + L.pos[k][0] + 'px;top:' + L.pos[k][1] + 'px' + (FIXW[k] ? ';min-width:' + FIXW[k] + 'px' : '') + '">–</span>';
@@ -170,7 +176,7 @@ function ohRefresh() {
 }
 
 window.onload = function() {
-	drawScheme('plain');
+	drawScheme(SCHEME);
 	api.init(function(v) {
 		var caps = (v && v.caps) || {};
 		hidden('tcompin', !caps.tcompin, 'датчики фреона на входе испарителя и компрессора');

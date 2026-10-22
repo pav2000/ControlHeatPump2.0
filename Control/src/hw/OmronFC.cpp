@@ -112,12 +112,12 @@ int8_t devOmronMX2::initFC()
         case 0:
         case 2: break;                                                         // ОСТАНОВКА ничего не делаем
         case 3: stop_FC();                                                      // ВРАЩЕНИЕ Послать команду стоп и ждать остановки
-                while ((state!=2)||(state!=4)) { get_readState();journal.jprintf("Wait stop %s . . .\r\n",name); _delay(3000); } 
+                while ((state!=2)&&(state!=4)) { get_readState();journal.jprintf("Wait stop %s . . .\r\n",name); _delay(3000); } 
                 break;
         case 4:                                                                // ОСТАНОВКА С ВЫБЕГОМ  ждать остановки
                 break;
         case 5:stop_FC();                                                      // ТОЛЧКОВЫЙ ХОД Послать команду стоп и ждать остановки
-                while ((state!=2)||(state!=4)) { get_readState();journal.jprintf("Wait stop %s . . .\r\n",name); _delay(3000); } 
+                while ((state!=2)&&(state!=4)) { get_readState();journal.jprintf("Wait stop %s . . .\r\n",name); _delay(3000); } 
                 break;
         case 6:                                                                // ТОРМОЖЕНИЕ ПОСТОЯННЫМ ТОКОМ
         case 7: err=ERR_MODBUS_STATE;set_Error(err,name);  break;             // ВЫПОЛНЕНИЕ ПОВТОРНОЙ ПОПЫТКИ Подъем ошибки на верх и останов ТН
@@ -654,7 +654,7 @@ boolean devOmronMX2::reset_errorFC()
 #ifndef FC_ANALOG_CONTROL    // НЕ АНАЛОГОВОЕ УПРАВЛЕНИЕ
   write_0x06_16(MX2_INIT_DEF, 0x01);       // задать режим инициализации - стирание ошибок
   _delay(FC_DELAY_READ);
-  if((read_0x03_16(MX2_INIT_DEF)==0x01)&&(err=OK))   // подать команду на инициализацию, если записано стирание только ошибок
+  if((read_0x03_16(MX2_INIT_DEF)==0x01)&&(err==OK))   // подать команду на инициализацию, если записано стирание только ошибок
     {
     write_0x06_16(MX2_INIT_RUN, 0x01);       
     journal.jprintf("Reset error %s\r\n",name);
