@@ -39,7 +39,10 @@ var SHELL_MAP = [
 var SHELL_USER_PAGES = {index: 1, plan: 1, about: 1};
 // Страницы, у которых есть справка <имя>-help.html
 var SHELL_HELP = {heating: 1, gvs: 1, profiles: 1, scheduler: 1, config: 1, lan: 1, mqtt: 1, notice: 1,
-	time: 1, system: 1, files: 1, log: 1, test: 1, debug: 1, 'eev-set': 1};
+	time: 1, system: 1, files: 1, log: 1, test: 1, debug: 1, 'eev-set': 1,
+	index: 1, plan: 'index-help', charts: 1, 'charts-set': 'charts-help', stats: 'charts-help', history: 'charts-help',
+	sensorst: 'sensors-help', sensorsp: 'sensors-help', setsensors: 'sensors-help', eev: 1, invertor: 1, 'invertor-set': 'invertor-help',
+	relay: 1, modbus: 1, freertos: 1};
 var SHELL_ICONS = {
 	home: 'M3 11l9-8 9 8M5 10v10h14V10M10 20v-6h4v6',
 	thermo: 'M10 14V5a2 2 0 0 1 4 0v9a4 4 0 1 1-4 0z',
@@ -218,7 +221,7 @@ function shTabs(cur) {
 	if(cur.s.gear && shAllowed(cur.s.gear[0]))
 		h += '<a class="tab gear' + (cur.t ? '' : ' on') + '" href="' + cur.s.gear[0] + '.html">' + shIcon('gear') + cur.s.gear[1] + '</a>';
 	var help = SHELL_HELP[shPage];
-	if(help) h += '<a class="tab gear" href="' + (help === 1 ? shPage + '-help' : help) + '.html">' + shIcon('gear') + 'Справка</a>';
+	if(help && !shellUser) h += '<a class="tab gear" href="' + (help === 1 ? shPage + '-help' : help) + '.html">' + shIcon('gear') + 'Справка</a>';
 	return h + '</nav>';
 }
 
