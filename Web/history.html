@@ -106,7 +106,7 @@ function loadData() {
 		}
 		var j = jobs[k++];
 		put('state', 'Загрузка… (' + k + ' из ' + jobs.length + ')');
-		gFetch((j.legacy ? 'hist__' : 'hist2__') + j.a + '-' + j.b + (step ? '_s' + step : ''), function(t) { lines(t, j.legacy); next(); },
+		gFetch((j.legacy ? 'hist__' : 'hist2__') + j.a + '-' + j.b + (step ? '_s' + step : ''), function(t) { if(seq == loadSeq) lines(t, j.legacy); next(); },
 			function(c) { if(c != 404) net++; next(); });
 	})();
 }

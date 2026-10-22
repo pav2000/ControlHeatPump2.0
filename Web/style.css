@@ -117,7 +117,7 @@ body.index .chip.on,body.charts .chip.on,body.history .chip.on,body.stats .chip.
 body.index .chip.bad,body.charts .chip.bad,body.history .chip.bad,body.stats .chip.bad{color:var(--bad)}
 body.index .chip i{background:#c9cfdd}body.index .chip.on i{background:var(--c)}
 .tag{font-size:11px;font-weight:800;padding:3px 8px;border-radius:99px;background:var(--acc2);color:var(--acc)}
-.tag.w{background:var(--card)1e8;color:var(--heat)}.tag.b{background:var(--tb);color:var(--cold)}.tag.ok{background:var(--tok);color:var(--ok)}.tag.bad{background:var(--tbad);color:var(--bad)}
+.tag.w{background:var(--tw);color:var(--heat)}.tag.b{background:var(--tb);color:var(--cold)}.tag.ok{background:var(--tok);color:var(--ok)}.tag.bad{background:var(--tbad);color:var(--bad)}
 .ev{display:flex;gap:12px;padding:7px 0;border-bottom:1px solid var(--line);font-size:13px}.ev:last-child{border:0}.ev time{color:var(--mute);width:44px;font-variant-numeric:tabular-nums}
 .field{display:flex;align-items:center;gap:12px;padding:var(--fy) 0;border-bottom:1px solid var(--line)}
 .field:last-child{border:0}
@@ -135,7 +135,7 @@ body.index .chip i{background:#c9cfdd}body.index .chip.on i{background:var(--c)}
 /* поля ввода */
 .inp,.card input[type=number],.card input[type=text],.card input[type=password],.card select{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:7px 12px;font:inherit;font-weight:700;color:var(--ink);min-width:96px;max-width:none}
 .card select{background:var(--card);cursor:pointer}
-.inp.chg,.card input.chg{border-color:var(--heat);background:var(--card)7f1}
+.inp.chg,.card input.chg{border-color:var(--heat);background:var(--warnbg)}
 .card input:disabled,.card select:disabled{opacity:.55;cursor:not-allowed}
 .card input:invalid{border-color:var(--bad);background:var(--tbad)}
 .inp u{text-decoration:none;color:var(--mute);font-weight:600}
@@ -158,7 +158,7 @@ input.sw.sm{width:38px;height:22px}input.sw.sm::after{width:16px;height:16px}inp
 .inp .eye{border:0;background:transparent;cursor:pointer;color:var(--mute);padding:0 0 0 6px;font-size:14px}
 .card .inp.wide input{width:210px;text-align:left}
 .inp:focus-within{border-color:var(--acc)}
-.inp.chg,.card input.chg{border-color:var(--heat);background:var(--card)7f1}
+.inp.chg,.card input.chg{border-color:var(--heat);background:var(--warnbg)}
 .inp.err,.inp:has(input:invalid){border-color:var(--bad);background:var(--tbad)}
 .inp:has(:disabled){opacity:.5}
 .card .inp input:invalid{background:transparent}
@@ -186,7 +186,7 @@ input.sw.err{box-shadow:0 0 0 3px rgba(214,69,69,.4)}
 .cal.bin i.clc:not(:empty){background:var(--acc)}
 .cal i.clc.sel{outline:2px solid var(--ink);outline-offset:-2px}
 .cal i.clc.pr{background:var(--acc)}.cal i.clc.p1{background:#0f8b8d}.cal i.clc.p2{background:#8a6fd1}.cal i.clc.p3{background:#e0a21b}.cal i.clc.p4{background:#2f7fd1}.cal i.clc.p5{background:#d6598a}.cal i.clc.p6{background:#5c9f3a}.cal i.clc.p7{background:#c0643a}.cal i.clc.p8{background:#6b7785}.cal i.clc.p9{background:#2a9d8f}
-.cal i.clc.dl{background:var(--card)1e8;color:var(--heat)!important;box-shadow:inset 0 0 0 1px var(--warnbd)}
+.cal i.clc.dl{background:var(--tw);color:var(--heat)!important;box-shadow:inset 0 0 0 1px var(--warnbd)}
 .cal i.clc.off{background:repeating-linear-gradient(45deg,var(--line),var(--line) 4px,var(--bg) 4px,var(--bg) 8px);color:var(--mute)!important}
 /* таблицы */
 table.t{width:100%;border-collapse:collapse;font-size:13px;margin:0}
@@ -275,7 +275,7 @@ label.tg.chg span{box-shadow:0 0 0 2px var(--heat)}
 label.tg input:disabled + span{opacity:.5}
 .tbar{display:flex;align-items:center;gap:10px;margin:0 0 12px;flex-wrap:wrap}
 .tbar .grow{flex:1}
-.warnbox{background:var(--card)7f1;border:1px solid var(--warnbd);color:var(--warnfg);border-radius:12px;padding:8px 12px;font-size:12.5px;font-weight:600}
+.warnbox{background:var(--warnbg);border:1px solid var(--warnbd);color:var(--warnfg);border-radius:12px;padding:8px 12px;font-size:12.5px;font-weight:600}
 .dns{border:1px solid var(--line);background:var(--card);border-radius:99px;padding:2px 10px;font:inherit;font-size:11.5px;font-weight:800;color:var(--acc);cursor:pointer;margin-left:6px}
 .dns:disabled{opacity:.5;cursor:default}
 .dnsr{display:block;margin-top:3px;font-weight:800}.dnsr:empty{display:none}

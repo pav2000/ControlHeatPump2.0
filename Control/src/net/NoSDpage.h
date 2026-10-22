@@ -1,18 +1,11 @@
 /*
- * Copyright (c) 2016-2026 by Pavel Panfilov <firstlast2007@gmail.com>  telegram @pav20000
- * "Народный контроллер 2.0" для тепловых насосов.
- * Данное программное обеспечение предназначено для управления
- * различными типами тепловых насосов для отопления и ГВС.
+ * Copyright (c) 2016-2026 by Pavel Panfilov <firstlast2007@gmail.com> skype pav2000pav
+ * "Народный контроллер" для тепловых насосов.
  *
  * This file is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public
  * License as published by the Free Software Foundation; either
  * version 3.0 of the License, or (at your option) any later version.
- *
- * This file is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
- * GNU General Public License for more details.
  */
 // ---------------------------------------------------------------------------
 // Встроенная (аварийная) веб-морда: лежит во flash прошивки и отдаётся, когда
@@ -78,34 +71,37 @@ const char index_noSD[] =
 "и авторизации нет) и необязательных\n// shLinkState(ok), shLogin(). Значения в страницу вставлять через textContent / value.\n// -------------------------------------------------------------------------"
 "--------------------\nvar API_PROTO = 1;                   // версия протокола, с которой работает эта морда\nvar api = {\n\ttimeout: 3500,                     // не короче серверного ожидания мьютекса (3"
 "000 мс), иначе повторы на занятый контроллер\n\tver: null,                         // ответ /api/ver после api.init\n\tmeta: {},                          // группа -> описание полей\n\tpollers: [], pollTime"
-"r: null, pollBusy: 0, pollAgain: 0\n};\n\n// Один запрос. cb(json, err): err = {code, net}, json - разобранное тело. Ошибки по ключам внутри json.e.\napi.call = function(verb, query, cb, tmo) {\n\tvar r = n"
-"ew XMLHttpRequest(), auth = (typeof NeedLogin != 'undefined' && NeedLogin == 2) ? '&&' + LPString : '';\n\tr.open('GET', (typeof urlcontrol == 'string' ? urlcontrol : '') + '/api/' + verb + (query ? '?'"
-" + query : '') + auth, true);\n\tr.timeout = tmo || api.timeout;\n\tr.onload = function() {\n\t\tvar j = null;\n\t\tif(window.shLinkState) shLinkState(true);\n\t\tif(r.status == 401) { if(window.shLogin) shLogin()"
-"; cb(null, {code: 401}); return; }\n\t\ttry { j = JSON.parse(r.responseText); } catch(e) {}\n\t\tif(r.status != 200 || j === null) cb(null, {code: r.status});\n\t\telse cb(j, null);\n\t};\n\tr.onerror = r.ontimeou"
-"t = function() { if(window.shLinkState) shLinkState(false); cb(null, {code: 0, net: true}); };\n\tr.send(null);\n};\n\n// Значение в строку запроса: булево - 1/0, пустое - пустая строка\napi.enc = function("
-"v) { return encodeURIComponent(v === true ? 1 : v === false ? 0 : v == null ? '' : v); };\n\n// Чтение: o.k - массив ключей, o.g - группа (необязательно), o.a - атрибуты группы устройств.\n// Длинный спи"
-"сок режется на запросы по 40 ключей / 1200 знаков. cb(d, e, err).\napi.get = function(o, cb) {\n\tvar parts = [], cur = [], len = 0, D = {}, E = {}, fail = null, left;\n\t(o.k || []).forEach(function(k) {\n"
-"\t\tif(cur.length && (cur.length >= 40 || len + k.length > 1200)) { parts.push(cur); cur = []; len = 0; }\n\t\tcur.push(k); len += k.length + 1;\n\t});\n\tif(cur.length) parts.push(cur);\n\tif(o.g && !parts.leng"
-"th) parts.push([]);\n\tif(!(left = parts.length)) { cb(D, E, null); return; }\n\tparts.forEach(function(ks, i) {\n\t\tvar q = (ks.length ? 'k=' + ks.join(',') : '') + (o.g && i == 0 ? (ks.length ? '&' : '') "
-"+ 'g=' + o.g + (o.a ? '&a=' + o.a : '') : '');\n\t\tapi.call('get', q, function(j, err) {\n\t\t\tif(err) fail = err;\n\t\t\telse { var x; for(x in j.d) D[x] = j.d[x]; for(x in j.e) E[x] = j.e[x]; }\n\t\t\tif(--left "
-"== 0) cb(D, E, fail);\n\t\t});\n\t});\n};\n\n// Запись: pairs - {ключ: значение}, olds - {ключ: ожидаемое прежнее значение} (E3: при расхождении ключ даст conflict).\n// Пачки по 20 пар / 1200 знаков уходят по"
-" очереди. cb(d, e, err): d - значения, прочитанные ПОСЛЕ записи.\napi.set = function(pairs, cb, olds) {\n\tvar groups = [], cur = [], len = 0, D = {}, E = {}, fail = null;\n\tObject.keys(pairs).forEach(fun"
-"ction(k) {\n\t\tvar s = k + '=' + api.enc(pairs[k]) + (olds && olds[k] !== undefined ? '&if.' + k + '=' + api.enc(olds[k]) : '');\n\t\tif(cur.length && (cur.length >= 20 || len + s.length > 1200)) { groups."
-"push(cur); cur = []; len = 0; }\n\t\tcur.push(s); len += s.length + 1;\n\t});\n\tif(cur.length) groups.push(cur);\n\t(function next() {\n\t\tvar g = groups.shift();\n\t\tif(!g) { cb(D, E, fail); return; }\n\t\tapi.call"
-"('set', g.join('&'), function(j, err) {\n\t\t\tif(err) { fail = err; Object.keys(pairs).forEach(function(k) { if(!(k in D) && !(k in E)) E[k] = 'net'; }); groups = []; }\n\t\t\telse { var x; for(x in j.d) D[x"
-"] = j.d[x]; for(x in j.e) E[x] = j.e[x]; }\n\t\t\tnext();\n\t\t});\n\t})();\n};\n\n// Действие: cb(результат, код ошибки или '', err)\napi['do'] = function(action, cb, p, tmo) {\t\t// tmo - свой тайм-аут для долгих "
-"действий (скан шины OneWire до 9 с)\n\tapi.call('do', 'a=' + action + (p !== undefined ? '&p=' + api.enc(p) : ''), function(j, err) {\n\t\tif(err) { cb(null, 'net', err); return; }\n\t\tcb(j.d[action], j.e[ac"
-"tion] || '', null);\n\t}, tmo);\n};\n\n// Описание полей группы: api.meta[g] = {sch, m: {ключ: {t, dec, min, max, o, na, w}}, devs}\napi.metaOf = function(g, cb) {\n\tif(api.meta[g]) { cb(api.meta[g]); return"
-"; }\n\tvar ck = null;\n\ttry { if(api.ver) ck = sessionStorage.getItem('am.' + g + '.' + api.ver.sch); } catch(e) {}\n\tif(ck) { try { api.meta[g] = JSON.parse(ck); cb(api.meta[g]); return; } catch(e) {} }\n"
-"\tapi.call('meta', 'g=' + g, function(j, err) {\n\t\tif(j) {\n\t\t\tapi.meta[g] = j;\n\t\t\ttry { if(api.ver) sessionStorage.setItem('am.' + g + '.' + api.ver.sch, JSON.stringify(j)); } catch(e) {}\n\t\t}\n\t\tcb(j);\n\t"
-"});\n};\n\n// Проверка версии протокола и состава сборки. cb(ver). При несовпадении версии - сообщение вместо тихих сбоев.\napi.init = function(cb) {\n\tif(api.ver) { cb(api.ver); return; }\n\tapi.call('ver',"
-" '', function(j, err) {\n\t\tif(!j) { cb(null); return; }\n\t\tapi.ver = j;\n\t\tif(j.proto != API_PROTO) {\n\t\t\tvar m = 'Версия протокола контроллера (' + j.proto + ') не совпадает с версией морды (' + API_PROT"
-"O + '): ' +\n\t\t\t\t(j.proto > API_PROTO ? 'обновите файлы веб-морды.' : 'обновите прошивку контроллера.');\n\t\t\tif(window.stToast) stToast(m, true); else alert(m);\n\t\t}\n\t\tcb(j);\n\t});\n};\n\n// Опрос: единый та"
-"ймер на страницу. spec.k - ключи, cb(d, e) получает значения своих ключей.\n// Один запрос за тик (ключи всех подписчиков), скрытая вкладка не опрашивает и обновляется сразу при возвращении.\napi.poll ="
-" function(spec, cb) {\n\tapi.pollers.push({k: spec.k || [], cb: cb});\n\tif(api.pollBusy) api.pollAgain = 1; else api.pollTick();\n};\napi.pollTick = function() {\n\tclearTimeout(api.pollTimer);\n\tapi.pollTime"
-"r = setTimeout(api.pollTick, urlupdate);\n\tif(document.hidden || api.pollBusy || !api.pollers.length) return;\n\tvar seen = {}, keys = [];\n\tapi.pollers.forEach(function(p) { p.k.forEach(function(k) { if("
-"!seen[k]) { seen[k] = 1; keys.push(k); } }); });\n\tapi.pollBusy = 1;\n\tapi.get({k: keys}, function(D, E, err) {\n\t\tapi.pollBusy = 0;\n\t\tif(!err) api.pollers.forEach(function(p) {\n\t\t\tvar d = {}, e = {};\n\t\t"
-"\tp.k.forEach(function(k) { if(k in D) d[k] = D[k]; if(k in E) e[k] = E[k]; });\n\t\t\tp.cb(d, e);\n\t\t});\n\t\tif(api.pollAgain) { api.pollAgain = 0; api.pollTick(); }\n\t});\n};\ndocument.addEventListener('visibi"
+"r: null, pollBusy: 0, pollAgain: 0,\n\tmetaWait: {}, verWait: null          // запросы meta и ver в пути: очереди ожидающих\n};\n\n// Один запрос. cb(json, err): err = {code, net}, json - разобранное тело."
+" Ошибки по ключам внутри json.e.\napi.call = function(verb, query, cb, tmo) {\n\tvar r = new XMLHttpRequest(), auth = (typeof NeedLogin != 'undefined' && NeedLogin == 2) ? '&&' + LPString : '';\n\tr.open('"
+"GET', (typeof urlcontrol == 'string' ? urlcontrol : '') + '/api/' + verb + (query ? '?' + query : '') + auth, true);\n\tr.timeout = tmo || api.timeout;\n\tr.onload = function() {\n\t\tvar j = null;\n\t\tif(wind"
+"ow.shLinkState) shLinkState(true);\n\t\tif(r.status == 401) { if(window.shLogin) shLogin(); cb(null, {code: 401}); return; }\n\t\ttry { j = JSON.parse(r.responseText); } catch(e) {}\n\t\tif(r.status != 200 || "
+"j === null) cb(null, {code: r.status});\n\t\telse cb(j, null);\n\t};\n\tr.onerror = r.ontimeout = function() { if(window.shLinkState) shLinkState(false); cb(null, {code: 0, net: true}); };\n\tr.send(null);\n};\n"
+"\n// Значение в строку запроса: булево - 1/0, пустое - пустая строка\napi.enc = function(v) { return encodeURIComponent(v === true ? 1 : v === false ? 0 : v == null ? '' : v); };\n\n// Чтение: o.k - масси"
+"в ключей, o.g - группа (необязательно), o.a - атрибуты группы устройств.\n// Длинный список режется на запросы по 40 ключей / 1200 знаков. cb(d, e, err).\napi.get = function(o, cb) {\n\tvar parts = [], cu"
+"r = [], len = 0, D = {}, E = {}, fail = null, left;\n\t(o.k || []).forEach(function(k) {\n\t\tif(cur.length && (cur.length >= 40 || len + k.length > 1200)) { parts.push(cur); cur = []; len = 0; }\n\t\tcur.pus"
+"h(k); len += k.length + 1;\n\t});\n\tif(cur.length) parts.push(cur);\n\tif(o.g && !parts.length) parts.push([]);\n\tif(!(left = parts.length)) { cb(D, E, null); return; }\n\tparts.forEach(function(ks, i) {\n\t\tva"
+"r q = (ks.length ? 'k=' + ks.join(',') : '') + (o.g && i == 0 ? (ks.length ? '&' : '') + 'g=' + o.g + (o.a ? '&a=' + o.a : '') : '');\n\t\tapi.call('get', q, function(j, err) {\n\t\t\tif(err) fail = err;\n\t\t\t"
+"else { var x; for(x in j.d) D[x] = j.d[x]; for(x in j.e) E[x] = j.e[x]; }\n\t\t\tif(--left == 0) cb(D, E, fail);\n\t\t});\n\t});\n};\n\n// Запись: pairs - {ключ: значение}, olds - {ключ: ожидаемое прежнее значени"
+"е} (E3: при расхождении ключ даст conflict).\n// Пачки по 20 пар / 1200 знаков уходят по очереди. cb(d, e, err): d - значения, прочитанные ПОСЛЕ записи.\napi.set = function(pairs, cb, olds) {\n\tvar group"
+"s = [], cur = [], len = 0, D = {}, E = {}, fail = null;\n\tObject.keys(pairs).forEach(function(k) {\n\t\tvar s = k + '=' + api.enc(pairs[k]) + (olds && olds[k] !== undefined ? '&if.' + k + '=' + api.enc(ol"
+"ds[k]) : '');\n\t\tif(cur.length && (cur.length >= 20 || len + s.length > 1200)) { groups.push(cur); cur = []; len = 0; }\n\t\tcur.push(s); len += s.length + 1;\n\t});\n\tif(cur.length) groups.push(cur);\n\t(func"
+"tion next() {\n\t\tvar g = groups.shift();\n\t\tif(!g) { cb(D, E, fail); return; }\n\t\tapi.call('set', g.join('&'), function(j, err) {\n\t\t\tif(err) { fail = err; Object.keys(pairs).forEach(function(k) { if(!(k "
+"in D) && !(k in E)) E[k] = 'net'; }); groups = []; }\n\t\t\telse { var x; for(x in j.d) D[x] = j.d[x]; for(x in j.e) E[x] = j.e[x]; }\n\t\t\tnext();\n\t\t});\n\t})();\n};\n\n// Действие: cb(результат, код ошибки или "
+"'', err)\napi['do'] = function(action, cb, p, tmo) {\t\t// tmo - свой тайм-аут для долгих действий (скан шины OneWire до 9 с)\n\tapi.call('do', 'a=' + action + (p !== undefined ? '&p=' + api.enc(p) : ''), "
+"function(j, err) {\n\t\tif(err) { cb(null, 'net', err); return; }\n\t\tcb(j.d[action], j.e[action] || '', null);\n\t}, tmo);\n};\n\n// Описание полей группы: api.meta[g] = {sch, m: {ключ: {t, dec, min, max, o, n"
+"a, w}}, devs}\napi.metaOf = function(g, cb) {\n\tif(api.meta[g]) { cb(api.meta[g]); return; }\n\tvar ck = null;\n\ttry { if(api.ver) ck = sessionStorage.getItem('am.' + g + '.' + api.ver.sch); } catch(e) {}\n"
+"\tif(ck) { try { api.meta[g] = JSON.parse(ck); cb(api.meta[g]); return; } catch(e) {} }\n\tvar w = api.metaWait[g];\t\t// запрос уже в пути - не повторяем, ждём его ответа\n\tif(w) { w.push(cb); return; }\n\tw"
+" = api.metaWait[g] = [cb];\n\tapi.call('meta', 'g=' + g, function(j, err) {\n\t\tdelete api.metaWait[g];\n\t\tif(j) {\n\t\t\tapi.meta[g] = j;\n\t\t\ttry { if(api.ver) sessionStorage.setItem('am.' + g + '.' + api.ver."
+"sch, JSON.stringify(j)); } catch(e) {}\n\t\t}\n\t\tw.forEach(function(f) { f(j); });\n\t});\n};\n\n// Проверка версии протокола и состава сборки. cb(ver). При несовпадении версии - сообщение вместо тихих сбоев.\n"
+"api.init = function(cb) {\n\tif(api.ver) { cb(api.ver); return; }\n\tif(api.verWait) { api.verWait.push(cb); return; }\t\t// запрос в пути: шапка, страница и stLoadK зовут init почти одновременно\n\tvar w = a"
+"pi.verWait = [cb];\n\tapi.call('ver', '', function(j, err) {\n\t\tapi.verWait = null;\n\t\tif(j) {\n\t\t\tapi.ver = j;\n\t\t\tif(j.proto != API_PROTO) {\n\t\t\t\tvar m = 'Версия протокола контроллера (' + j.proto + ') не "
+"совпадает с версией морды (' + API_PROTO + '): ' +\n\t\t\t\t\t(j.proto > API_PROTO ? 'обновите файлы веб-морды.' : 'обновите прошивку контроллера.');\n\t\t\t\tif(window.stToast) stToast(m, true); else alert(m);\n"
+"\t\t\t}\n\t\t}\n\t\tw.forEach(function(f) { f(j || null); });\n\t});\n};\n\n// Опрос: единый таймер на страницу. spec.k - ключи, cb(d, e) получает значения своих ключей.\n// Один запрос за тик (ключи всех подписчико"
+"в), скрытая вкладка не опрашивает и обновляется сразу при возвращении.\napi.poll = function(spec, cb) {\n\tapi.pollers.push({k: spec.k || [], cb: cb});\n\tif(api.pollBusy) api.pollAgain = 1; else api.pollT"
+"ick();\n};\napi.pollTick = function() {\n\tclearTimeout(api.pollTimer);\n\tapi.pollTimer = setTimeout(api.pollTick, urlupdate);\n\tif(document.hidden || api.pollBusy || !api.pollers.length) return;\n\tvar seen "
+"= {}, keys = [];\n\tapi.pollers.forEach(function(p) { p.k.forEach(function(k) { if(!seen[k]) { seen[k] = 1; keys.push(k); } }); });\n\tapi.pollBusy = 1;\n\tapi.get({k: keys}, function(D, E, err) {\n\t\tapi.pol"
+"lBusy = 0;\n\t\tif(!err) api.pollers.forEach(function(p) {\n\t\t\tvar d = {}, e = {};\n\t\t\tp.k.forEach(function(k) { if(k in D) d[k] = D[k]; if(k in E) e[k] = E[k]; });\n\t\t\ttry { p.cb(d, e); } catch(x) { if(win"
+"dow.console) console.error(x); }\t\t// сбой одной страницы не должен обрывать шапку и остальных\n\t\t});\n\t\tif(api.pollAgain) { api.pollAgain = 0; api.pollTick(); }\n\t});\n};\ndocument.addEventListener('visibi"
 "litychange', function() { if(!document.hidden && api.pollers.length) api.pollTick(); });\n/*END API-CORE*/\n</script>\n<script>\nvar E=function(i){return document.getElementById(i)},T=60,CH=[0,0],TS=[];\nv"
 "ar ERR={conflict:\"значение изменилось\",range:\"вне допустимых границ\",bad_value:\"неверное значение\",forbidden:\"нет прав\",\nbusy:\"недоступно: ТН работает\",na:\"недоступно в этой сборке\",unknown:\"неизвестн"
 "ый параметр\",too_big:\"слишком длинное значение\",\nfail:\"контроллер не смог выполнить\",net:\"нет связи\"};\nvar FMT={\"state.work\":function(v){return v?\"включён\":\"остановлен\"}};\n\n// Сообщения - только текст"

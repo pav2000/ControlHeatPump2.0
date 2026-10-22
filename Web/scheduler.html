@@ -108,9 +108,9 @@ function calEncode() {
 	for(var j = 0; j < colls.length; j++) {
 		var prof = colls[j].innerHTML;
 		if(prof == "") prof = 0;
-		else if(prof[0] == '+') prof = Number(prof.substring(1)) * 10;
+		else if(prof[0] == '+') prof = Math.min(126, Math.round(Number(prof.substring(1)) * 10));		// +0.1...+12.6; без округления -0.3*10 даёт 252.99..
 		else if(prof == '-') prof = 127;
-		else if(prof[0] == '-') prof = 256 + Number(prof) * 10;
+		else if(prof[0] == '-') prof = 256 - Math.min(100, Math.round(-Number(prof) * 10));		// -0.1...-10.0 (коды 0x9C...0xFF)
 		else prof = Number(prof) + 0x80;
 		if(prof != lprof) {
 			elval += (((j / 24 | 0) << 5) | (j % 24)) + ";" + prof + ";";
@@ -153,10 +153,10 @@ function pick(i) {
 	showNow();
 }
 function makeActive() {
-	setKeys({'sched.active': S.cur}, function() { S.active = S.cur; renderChips(); $('b-active').hidden = true; loadActive(); });
+	setKeys({'sched.active': S.cur}, function() { S.active = S.cur; renderChips(); $('b-active').hidden = true; loadActive(true); });
 }
-function loadActive() {
-	if(S.cur == S.active && !S.dirty) return;
+function loadActive(force) {
+	if(!force && S.cur == S.active && !S.dirty) return;
 	api.get({k: ['cal.' + S.active + '.data']}, function(D) { S.act = schDecode(D['cal.' + S.active + '.data'] || ''); showNow(); });
 }
 function setName(v) {
@@ -209,7 +209,7 @@ function renderBrush() {
 	var h = '<span class="cap">Кисть</span>';
 	var chip = function(key, click, inner) { return '<span class="chip" data-b="' + key + '" onclick="' + click + '">' + inner + '</span>'; };
 	h += chip('off', "setBrush('off')", '<i style="background:var(--line);border:1px solid var(--swoff)"></i>ТН выключен');
-	h += chip('delta', "setBrush('delta')", '<i style="background:var(--tw);border:1px solid var(--warnbd)"></i>± температура <input id="delta" type="number" step="0.5" value="0.5" onclick="event.stopPropagation()" oninput="setBrush(\'delta\')">');
+	h += chip('delta', "setBrush('delta')", '<i style="background:var(--tw);border:1px solid var(--warnbd)"></i>± температура <input id="delta" type="number" step="0.5" min="-10" max="12.5" value="0.5" onclick="event.stopPropagation()" oninput="setBrush(\'delta\')">');
 	h += chip('keep', "setBrush('keep')", '<i style="background:repeating-linear-gradient(45deg,#e6eaef,#e6eaef 3px,#fff 3px,#fff 6px)"></i>не менять');
 	S.profs.forEach(function(p) { h += chip('prof:' + p.n, "setBrush('prof'," + p.n + ")", '<i style="background:' + COLORS[(p.n % 10 || 9) - 1] + '"></i>' + p.n + '. ' + p.name.replace(/</g, '&lt;')); });
 	$('brush').innerHTML = h;

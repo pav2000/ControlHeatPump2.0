@@ -20,7 +20,8 @@ var api = {
 	timeout: 3500,                     // не короче серверного ожидания мьютекса (3000 мс), иначе повторы на занятый контроллер
 	ver: null,                         // ответ /api/ver после api.init
 	meta: {},                          // группа -> описание полей
-	pollers: [], pollTimer: null, pollBusy: 0, pollAgain: 0
+	pollers: [], pollTimer: null, pollBusy: 0, pollAgain: 0,
+	metaWait: {}, verWait: null          // запросы meta и ver в пути: очереди ожидающих
 };
 
 // Один запрос. cb(json, err): err = {code, net}, json - разобранное тело. Ошибки по ключам внутри json.e.
@@ -99,27 +100,35 @@ api.metaOf = function(g, cb) {
 	var ck = null;
 	try { if(api.ver) ck = sessionStorage.getItem('am.' + g + '.' + api.ver.sch); } catch(e) {}
 	if(ck) { try { api.meta[g] = JSON.parse(ck); cb(api.meta[g]); return; } catch(e) {} }
+	var w = api.metaWait[g];		// запрос уже в пути - не повторяем, ждём его ответа
+	if(w) { w.push(cb); return; }
+	w = api.metaWait[g] = [cb];
 	api.call('meta', 'g=' + g, function(j, err) {
+		delete api.metaWait[g];
 		if(j) {
 			api.meta[g] = j;
 			try { if(api.ver) sessionStorage.setItem('am.' + g + '.' + api.ver.sch, JSON.stringify(j)); } catch(e) {}
 		}
-		cb(j);
+		w.forEach(function(f) { f(j); });
 	});
 };
 
 // Проверка версии протокола и состава сборки. cb(ver). При несовпадении версии - сообщение вместо тихих сбоев.
 api.init = function(cb) {
 	if(api.ver) { cb(api.ver); return; }
+	if(api.verWait) { api.verWait.push(cb); return; }		// запрос в пути: шапка, страница и stLoadK зовут init почти одновременно
+	var w = api.verWait = [cb];
 	api.call('ver', '', function(j, err) {
-		if(!j) { cb(null); return; }
-		api.ver = j;
-		if(j.proto != API_PROTO) {
-			var m = 'Версия протокола контроллера (' + j.proto + ') не совпадает с версией морды (' + API_PROTO + '): ' +
-				(j.proto > API_PROTO ? 'обновите файлы веб-морды.' : 'обновите прошивку контроллера.');
-			if(window.stToast) stToast(m, true); else alert(m);
+		api.verWait = null;
+		if(j) {
+			api.ver = j;
+			if(j.proto != API_PROTO) {
+				var m = 'Версия протокола контроллера (' + j.proto + ') не совпадает с версией морды (' + API_PROTO + '): ' +
+					(j.proto > API_PROTO ? 'обновите файлы веб-морды.' : 'обновите прошивку контроллера.');
+				if(window.stToast) stToast(m, true); else alert(m);
+			}
 		}
-		cb(j);
+		w.forEach(function(f) { f(j || null); });
 	});
 };
 
@@ -141,7 +150,7 @@ api.pollTick = function() {
 		if(!err) api.pollers.forEach(function(p) {
 			var d = {}, e = {};
 			p.k.forEach(function(k) { if(k in D) d[k] = D[k]; if(k in E) e[k] = E[k]; });
-			p.cb(d, e);
+			try { p.cb(d, e); } catch(x) { if(window.console) console.error(x); }		// сбой одной страницы не должен обрывать шапку и остальных
 		});
 		if(api.pollAgain) { api.pollAgain = 0; api.pollTick(); }
 	});

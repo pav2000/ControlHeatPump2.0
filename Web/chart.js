@@ -382,27 +382,32 @@ SvgChart.prototype.csv = function(delim) {
 
 // ---- получение данных графиков с контроллера ----
 
-// Ответ get_listChart ("имя:выбран;имя:выбран;...") -> массив имён, номер = индекс (0 = "---")
-function chartNames(list) {
-	var a = list.split(';'), out = [];
-	for(var i = 0; i < a.length; i++) if(a[i] !== '') out.push(a[i].substr(0, a[i].lastIndexOf(':')));
-	return out;
-}
 // Номер графика по имени (регулярное выражение); 0 - нет такого в этой конфигурации
 function chartFind(names, re) {
 	for(var i = 1; i < names.length; i++) if(re.test(names[i])) return i;
 	return 0;
 }
-// Загрузить ряд: cb(массив чисел или null, тип объекта STATS_OBJ_*). n - номер с 1 по списку из chartNames/chartNamesApi
+// Загрузить ряд: cb(массив чисел или null, тип объекта STATS_OBJ_*). n - номер с 1 по списку из chartNamesApi
 // (нулевой пункт «---» - заглушка) или имя (EEV, OH, OH2, TT); запрос /api/chart?id=<номер с 0 | имя>.
 // Запросы идут по одному (очередь): на контроллере ответ с графиком - самый длинный.
 var chartQueue = [], chartBusy = false;
 // Ответ ключа chart.list (массив названий) -> массив имён в прежнем виде: номер = индекс, нулевой пункт «---»
 function chartNamesApi(arr) { return ['---'].concat(arr || []); }
+// Повторный запрос того же ряда не копится: ожидающая запись заменяется (очередь не длиннее числа рядов, даже если
+// контроллер отвечает дольше периода обновления). Скрытая вкладка не нагружает контроллер: запросы откладываются до показа.
 function chartLoad(n, cb) {
-	chartQueue.push([n, cb]);
-	if(!chartBusy) chartNext();
+	var list = document.hidden ? chartDefer : chartQueue, i;
+	for(i = 0; i < list.length; i++) if(list[i][0] === n) { list[i][1] = cb; break; }
+	if(i == list.length) list.push([n, cb]);
+	if(list === chartQueue && !chartBusy) chartNext();
 }
+var chartDefer = [];
+document.addEventListener('visibilitychange', function() {
+	if(document.hidden) return;
+	var d = chartDefer;
+	chartDefer = [];
+	d.forEach(function(q) { chartLoad(q[0], q[1]); });
+});
 function chartNext() {
 	var q = chartQueue.shift();
 	if(!q) { chartBusy = false; return; }

@@ -60,17 +60,29 @@ function stSetK(el, key, val) {
 	} else el.value = val === null || val === undefined ? '' : stShow(typeof val == 'boolean' ? (val ? 1 : 0) : val, el);		// флаг в числовом поле - 0/1, как в прежних полях
 	stBase(el);
 }
-function stLoadK(done) {
-	var els = [].slice.call(document.querySelectorAll('[data-k],[data-kr]')).filter(function(e) { return !e.hasAttribute('data-nol'); }), keys = [], gs = {};
+function stLoadK(done, root) {		// root - загрузить только поля внутри элемента (таблица, подгруженная позже), остальные правки не затираются
+	var els = [].slice.call((root || document).querySelectorAll('[data-k],[data-kr]')).filter(function(e) { return !e.hasAttribute('data-nol'); }), keys = [], gs = {};
 	els.forEach(function(e) { var k = e.getAttribute('data-k') || e.getAttribute('data-kr'); keys.push(k); gs[k.split('.')[0]] = 1; });
 	var names = Object.keys(gs), left = names.length;
+	var tries = 0, D0 = {}, E0 = {};
 	var go = function() {
 		api.get({k: keys}, function(D, E, err) {
-			if(!err) els.forEach(function(e) {
+			var x;
+			for(x in D0) if(!(x in D)) D[x] = D0[x];		// ответы повторных попыток складываем с прежними: done получает всё разом
+			for(x in E0) if(!(x in E)) E[x] = E0[x];
+			D0 = D; E0 = E;
+			els.forEach(function(e) {		// принимаем и частичный ответ: упавшая пачка не должна лишать значений остальные
 				var k = e.getAttribute('data-k') || e.getAttribute('data-kr'), row = e.closest('.field');
 				if(E[k] == 'na' || E[k] == 'unknown') { if(row) row.style.display = 'none'; return; }		// параметра нет в этой сборке
 				if(k in D) stSetK(e, k, D[k]);
 			});
+			if(err && ++tries < 5) {		// пустые поля без «Применить» хуже задержки: повторяем, пока связь не вернётся
+				stToast('Не удалось загрузить значения (нет связи), повтор…', true);
+				keys = keys.filter(function(k) { return !(k in D) && !(k in E); });
+				els = els.filter(function(e) { var k = e.getAttribute('data-k') || e.getAttribute('data-kr'); return !(k in D) && !(k in E); });
+				setTimeout(go, 3000);
+				return;
+			}
 			setTimeout(function() { stRefresh(); if(window.stChanged) stChanged(); if(done) done(D, E, err); }, 0);
 		});
 	};
@@ -128,12 +140,12 @@ function stMark(el) {
 function stBase(el) { el.dataset.o = stState(el); el.classList.remove('err'); stMark(el); }
 // Изменённые поля. По умолчанию только доступные: серое (disabled) поле не уходит на контроллер и не считается правкой к применению;
 // all=true - и серые тоже (для «Отмены» и предупреждения о несохранённых правках: пользователь их менял, они вернутся при включении поля).
-function stDirtyList(all) { return [].slice.call(document.querySelectorAll('[data-k]')).filter(function(e) { return (all || !e.disabled) && e.dataset.o !== undefined && stState(e) !== e.dataset.o; }); }
+function stDirtyList(all) { return [].slice.call(document.querySelectorAll('[data-k]')).filter(function(e) { return (all || !e.disabled) && !e.hasAttribute('data-act') && e.dataset.o !== undefined && stState(e) !== e.dataset.o; }); }
 
 document.addEventListener('input', function(e) { stEdited(e.target); });
 document.addEventListener('change', function(e) { stEdited(e.target); });
 function stEdited(el) {
-	if(!el.dataset || el.dataset.k === undefined) return;
+	if(!el.dataset || el.dataset.k === undefined || el.hasAttribute('data-act')) return;
 	if(el.hasAttribute('data-now') && (el.type == 'checkbox' || el.tagName == 'SELECT')) { stApply(null, [el]); return; }
 	stMark(el);
 	stRefresh();
@@ -211,10 +223,18 @@ function stDns(key) {
 	stDnsBusy[key] = 1;
 	btn.disabled = true;
 	stDnsShow(key, 'busy', '<i class="spin"></i>Запрос к DNS…');
-	var pr = {}; pr[d.key] = el.value;
+	var pr = {}; pr[d.key] = el.tagName == 'SELECT' ? el.selectedIndex : el.value;
 	api.set(pr, function(D, E) {
 		if(E[d.key]) { end('bad', '✕ контроллер не принял команду (' + (ST_ERR[E[d.key]] || E[d.key]) + ')'); return; }
-		var tick = function() { api.get({k: [d.get]}, function(D2) { if(!watch(D2[d.get])) setTimeout(tick, 1500); }); };
+		var miss = 0, tick = function() {
+			api.get({k: [d.get]}, function(D2) {
+				if(D2[d.get] === undefined) {		// нет ответа (обрыв связи) - не считать значением
+					if(++miss > 7) end('bad', '✕ нет связи с контроллером'); else setTimeout(tick, 1500);
+					return;
+				}
+				if(!watch(D2[d.get])) setTimeout(tick, 1500);
+			});
+		};
 		setTimeout(tick, 1500);
 	});
 }
@@ -292,7 +312,7 @@ function stCancel() {
 	stDirtyList(true).forEach(function(el) {
 		var o = el.dataset.o;
 		if(el.type == 'checkbox') el.checked = o == '1';
-		else if(el.tagName == 'SELECT') el.selectedIndex = Number(o);
+		else if(el.tagName == 'SELECT') { if(el.dataset.sv !== undefined) el.value = o; else el.selectedIndex = Number(o); }
 		else el.value = o;
 		el.classList.remove('err');
 		stMark(el);

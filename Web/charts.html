@@ -96,7 +96,7 @@ function winChanged(w, isAuto) {
 }
 function setRange(m) {
 	range = m;
-	chart.win = null;
+	if(chart) chart.win = null;
 	redraw();
 }
 function resetZoom() { if(chart) chart.setWindow(null); }

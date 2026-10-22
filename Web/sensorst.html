@@ -78,7 +78,7 @@ window.onload = function() {
 					'<td>' + stCell(k('use'), {k: 'sw'}) + '</td><td>' + stCell(k('rule'), {k: 'sw'}) + '</td>' +
 					'<td>' + stCell(k('link'), {k: 'sel', sv: 1, opts: opts}) + '</td></tr>';
 			}).join('');
-			stLoadK();
+			stLoadK(null, $('rrows'));
 			api.poll({k: stDevKeys('ipsens', ips, ['temp', 'age', 'ip', 'rssi', 'vcc', 'count'])}, ipPoll);
 		});
 	});

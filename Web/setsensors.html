@@ -42,7 +42,11 @@ function setPoll(d) {
 		var T = m[1], t = T.toLowerCase(), v = d[key];
 		if(m[2] == 'raw') put('v-' + t, num(v, 2) + '°');
 		else if(m[2] == 'ecode') put('code-' + t, v == 0 ? '<span class="okc">OK</span>' : '<span class="errc">E' + v + '</span>');
-		else { addr[T] = /^[0-9A-Fa-f]{16}$/.test(v || '') ? v.toUpperCase() : ''; put('addr-' + t, addr[T] || '–'); showFound(); fillSelects(); }
+		else {
+			var na = /^[0-9A-Fa-f]{16}$/.test(v || '') ? v.toUpperCase() : '';
+			if(na === addr[T]) continue;		// адрес не изменился - списки не трогаем: опрос каждые 2 с сбрасывал выбор пользователя
+			addr[T] = na; put('addr-' + t, na || '–'); showFound(); fillSelects();
+		}
 	}
 }
 
@@ -59,7 +63,7 @@ function scan() {
 		found = e ? [] : (v || '').split(';').filter(Boolean).map(function(s) { var f = s.split(':'); return {n: f[0], type: f[1], temp: f[2], addr: (f[3] || '').toUpperCase()}; });
 		if(!found.length) put('scan-note', 'Датчики не найдены (' + (e ? ST_ERR[e] || e : v || 'нет ответа') + ').');
 		showFound();
-		fillSelects();
+		fillSelects(true);
 	}, undefined, 20000);
 }
 function boundTo(a) { return sensors.filter(function(T) { return addr[T] && addr[T] == a; }); }
@@ -72,11 +76,12 @@ function showFound() {
 	}).join(''));
 }
 // списки привязки: «---» - не менять, «сбросить», затем найденные датчики; выбран тот, чей адрес сейчас привязан
-function fillSelects() {
+function fillSelects(force) {
 	if(!found.length) return;
 	sensors.forEach(function(T) {
 		var s = $('sel-' + T.toLowerCase());
 		if(!s) return;
+		if(!force && s.dataset.o !== undefined && stState(s) !== s.dataset.o) return;		// несохранённый выбор пользователя
 		var h = '<option value="">---</option><option value="0">сбросить</option>';
 		found.forEach(function(f) { h += '<option value="' + f.n + '">' + f.n + ' · ' + f.addr.substr(0, 8) + '…</option>'; });
 		s.innerHTML = h;

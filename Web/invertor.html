@@ -22,7 +22,6 @@ urlupdate = 2000;
 var $ = function(id) { return document.getElementById(id); };
 function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
 function num(v, d) { var f = parseFloat(v); return isNaN(f) ? '–' : f.toFixed(d); }
-var name = '';
 
 function fcPoll(d) {
 	for(var k in d) {
@@ -41,7 +40,7 @@ function fcPoll(d) {
 			var rows = (v || '').split(';').filter(function(s) { return s !== ''; });
 			put('regs', rows.map(function(r) {
 				var f = r.split('|');
-				return f.length < 3 ? '' : f[0] === '' ? '<tr><td colspan="3" style="color:var(--mute)">' + f[1] + '</td></tr>' : '<tr><td class="c">' + f[0] + '</td><td>' + f[1] + '</td><td class="v">' + f[2] + '</td></tr>';
+				return f.length < 3 ? '' : f[0] === '' ? '<tr><td colspan="3" style="color:var(--mute)">' + stEsc(f[1]) + '</td></tr>' : '<tr><td class="c">' + stEsc(f[0]) + '</td><td>' + stEsc(f[1]) + '</td><td class="v">' + stEsc(f[2]) + '</td></tr>';
 			}).join(''));
 			break;
 		}
@@ -67,7 +66,15 @@ window.onload = function() {
 		var v = D['fc.name'];
 		if(v !== undefined) shSubNote('<b>' + stEsc(v) + '</b>частотный преобразователь компрессора · Modbus <a href="' + encodeURI(v) + '.pdf" target="_blank">Справка ' + stEsc(v) + ' (PDF) ↗</a>');
 	});
-	api.poll({k: ['fc.note', 'fc.block', 'fc.on_off', 'fc.cfc', 'fc.ccurrent', 'fc.mb_err', 'fc.info']}, fcPoll);
+	api.poll({k: ['fc.note', 'fc.block', 'fc.on_off', 'fc.cfc', 'fc.ccurrent', 'fc.mb_err']}, fcPoll);
+	// fc.info - ~17 чтений Modbus (секунды): отдельным запросом и реже, иначе шапка ждёт его в общем опросе и появляется «Нет связи»
+	var infoBusy = false, infoTick = function() {
+		if(document.hidden || infoBusy) return;
+		infoBusy = true;
+		api.call('get', 'k=fc.info', function(j, err) { infoBusy = false; if(j && j.d && 'fc.info' in j.d) fcPoll(j.d); }, 12000);
+	};
+	infoTick();
+	setInterval(infoTick, 10000);
 };
 </script>
 </head>

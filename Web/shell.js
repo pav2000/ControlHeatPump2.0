@@ -113,10 +113,6 @@ function shIcon(name) {
 	return '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="' + SHELL_ICONS[name] + '"/></svg>';
 }
 function shAllowed(page) { return !shellUser || SHELL_USER_PAGES[page]; }
-function shLink(page, text, cls) {
-	if(!shAllowed(page)) return '';
-	return '<a class="' + cls + '" href="' + page + '.html">' + text + '</a>';
-}
 
 // Текущая страница по имени файла: справки (<имя>-help, eev-sethelp) относятся к своей странице
 var shPage = (function() {
@@ -239,7 +235,8 @@ function shSub(cur) {
 
 // Строка пояснения справа в карточке переключателя подстраниц (название устройства и т.п.)
 function shSubNote(html) {
-	var s = document.querySelector('.subnav');
+	var s = document.querySelector('.subnav'), old = s && s.querySelector('.subnote');
+	if(old) s.removeChild(old);		// заметку обновляют повторно (после «Применить»), дубли не копим
 	if(s) s.insertAdjacentHTML('beforeend', '<span class="subnote">' + html + '</span>');
 }
 
@@ -422,9 +419,11 @@ function shApiValues(d) {
 	if('state.last_cmd' in d) shellState.since = (d['state.last_cmd'] || '').replace(/(\d+)d/, '$1 д ').replace(/(\d+)h/, '$1 ч ').replace(/(\d+)m/, '$1 мин').replace(/(\d+)s/, '$1 с').replace(/^-$/, '');
 	var dt = (d['state.date'] || '').match(/^(\d+)\.(\d+)\.(\d+)$/);
 	if(dt && (el = document.getElementById('sh-date'))) el.innerHTML = SHELL_DAYS[new Date(dt[3], dt[2] - 1, dt[1]).getDay()] + ', ' + Number(dt[1]) + ' ' + SHELL_MONTHS[dt[2] - 1] + ' · ' + (d['state.time'] || '');
-	if('state.uptime' in d) {		// аптайм: «3 5:07m» (дни час:мин), «5:07m», «7m», пусто - меньше минуты
-		var up = /^\s*(?:(\d+) )?(?:(\d+):)?(?:(\d+)m)?/.exec(d['state.uptime'] || ''), pad = function(n) { return ('0' + n).slice(-2); };
-		var ud = Number(up[1] || 0), uh = Number(up[2] || 0), um = Number(up[3] || 0);
+	if('state.uptime' in d) {		// аптайм: «3 5:07m» (дни час:мин), «5:07m», «7m» или «1d 05h 07m » при SENSOR_IP
+		var us = d['state.uptime'] || '', up, pad = function(n) { return ('0' + n).slice(-2); };
+		if(us.indexOf(':') < 0) up = [0, /(\d+)d/.exec(us), /(\d+)h/.exec(us), /(\d+)m/.exec(us)];		// формат удалённых датчиков (SENSOR_IP): «1d 05h 07m »
+		else { up = /^\s*(?:(\d+) )?(?:(\d+):)?(?:(\d+)m)?/.exec(us); up = [0, up[1] && [0, up[1]], up[2] && [0, up[2]], up[3] && [0, up[3]]]; }		// компактный: «3 5:07m»
+		var ud = Number(up[1] ? up[1][1] : 0), uh = Number(up[2] ? up[2][1] : 0), um = Number(up[3] ? up[3][1] : 0);
 		var ut = ud ? ud + 'd' + pad(uh) + 'h' : uh + 'h' + pad(um) + 'm', ue = document.querySelectorAll('#sh-up,.sh-up');
 		for(k = 0; k < ue.length; k++) ue[k].textContent = 'up ' + ut;
 	}
@@ -432,8 +431,9 @@ function shApiValues(d) {
 	if('sched.active_name' in d && (el = document.getElementById('sh-san'))) el.textContent = d['sched.active_name'] ? ' · ' + d['sched.active_name'] : '';
 	if('profile.list' in d && (el = document.getElementById('get_listprof'))) {
 		var list = d['profile.list'], cur = d['profile.cur'];
-		el.innerHTML = list.map(function(p) { return '<option value="' + p.i + '">' + (p.i + 1) + '. ' + shEsc(p.n) + '</option>'; }).join('');
-		for(k = 0; k < list.length; k++) if(list[k].i === cur) el.selectedIndex = k;
+		var html = list.map(function(p) { return '<option value="' + p.i + '">' + (p.i + 1) + '. ' + shEsc(p.n) + '</option>'; }).join('');
+		if(el.dataset.h !== html) { el.innerHTML = html; el.dataset.h = html; }		// список не трогаем, пока он не изменился: открытый выпадающий список закрывался на каждом опросе
+		if(document.activeElement !== el) for(k = 0; k < list.length; k++) if(list[k].i === cur) el.selectedIndex = k;
 	}
 	shUpdate();
 }

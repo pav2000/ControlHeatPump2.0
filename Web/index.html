@@ -108,7 +108,7 @@ window.onPageValue = function(n, v) {
 	switch(n) {
 	case 'get_Temp(TIN)':   put('v-tin', num(v, 1)); break;
 	case 'get_Temp(TOUT)':  put('v-tout', num(v, 1)); break;
-	case 'get_TrgT(1)':     put('v-trg', num(v, 1)); homeTrg = parseFloat(v); if(chData.at) chartDraw(); break;
+	case 'get_TrgT(1)':     put('v-trg', num(v, 1)); var nt = parseFloat(v); if(nt !== homeTrg && chData.at) { homeTrg = nt; chartDraw(); } else homeTrg = nt; break;		// перерисовка только при смене цели: иначе график и его подсказка сбрасываются каждый опрос
 	case 'get_Temp(TBOILER)': boilerT = parseFloat(v); drawRing(); break;
 	case 'get_Boiler(TRG)': boilerTrg = parseFloat(v); put('v-btrg', isNaN(boilerTrg) ? '–' : Math.round(boilerTrg)); drawRing(); break;
 	case 'get_pFC(cFC)':    put('t-fc', num(v, 0)); fcEvent(parseFloat(v)); break;

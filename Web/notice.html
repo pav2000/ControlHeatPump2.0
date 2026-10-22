@@ -67,7 +67,7 @@ function poll(kind, v, n) {
 	if(v == 'wait response' && n < 25) {
 		out.innerHTML = '⌛ ожидание ответа сервера… (результат появится здесь, проверка каждые 3 с)';
 		clearTimeout(polls[kind]);
-		polls[kind] = setTimeout(function() { api.get({k: ['message.scan_' + kind.toLowerCase()]}, function(D) { poll(kind, D['message.scan_' + kind.toLowerCase()] || '', n + 1); }); }, 3000);
+		polls[kind] = setTimeout(function() { api.get({k: ['message.scan_' + kind.toLowerCase()]}, function(D) { var r = D['message.scan_' + kind.toLowerCase()]; poll(kind, r === undefined ? 'wait response' : r, n + 1); }); }, 3000);
 		return;
 	}
 	var bad = v == 'wait response' || /^(E\d+|error|fail|ошиб)|не отправлено/i.test(v);
