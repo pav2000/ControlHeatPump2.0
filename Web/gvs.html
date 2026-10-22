@@ -15,8 +15,6 @@
 .calsw label{display:flex;gap:8px;align-items:center}
 </style>
 <script>
-var $ = function(id) { return document.getElementById(id); };
-function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
 window.calendar_act_chr = "&#9899";		// символ во включённых ячейках календаря
 
 function f(n, o) { o.key = 'boiler.' + n.toLowerCase(); return o; }
@@ -136,6 +134,7 @@ function calMark(d) {
 	var b = $('cal-save');
 	b.className = 'btn2' + (d ? ' p' : '');
 	b.innerHTML = d ? 'Запомнить расписание ●' : 'Запомнить расписание';
+	stRefresh();
 }
 function calFill(fn) {
 	var c = document.querySelectorAll('#calendar .clc');
@@ -157,15 +156,17 @@ function calFromStr(s) {
 	for(var i = 0; i < c.length; i++) c[i].innerHTML = s.charAt((i / 24 | 0) * 25 + i % 24) == '1' ? window.calendar_act_chr : '';
 	calMark(false);
 }
-function calSave() {
-	api.set({'boiler.scheduler': calToStr()}, function(D, E) {
-		if(E['boiler.scheduler']) { stToast('Расписание не принято (' + (ST_ERR[E['boiler.scheduler']] || E['boiler.scheduler']) + ').', true); return; }
+function calSave(next) {		// next - продолжение после успешной передачи (панель «Применить» дальше отправляет остальные поля)
+	api.set({'boiler.scheduler': calToStr()}, function(D, E, err) {
+		if(err || E['boiler.scheduler']) { stFail('Расписание не принято', err ? 'net' : E['boiler.scheduler']); return; }
 		calMark(false);
 		stToast('Расписание нагрева передано на ТН. Записать в EEPROM — чтобы сохранить после перезагрузки.');
 		stUnsaved(true);
 		stRefresh();
+		if(next) next();
 	});
 }
+function calReload() { api.get({k: ['boiler.scheduler']}, function(D) { if(D['boiler.scheduler']) calFromStr(D['boiler.scheduler']); stRefresh(); }); }
 
 window.onload = function() {
 	$('g1').innerHTML = cardBoiler() + cardNight() + cardHeater();
@@ -173,9 +174,10 @@ window.onload = function() {
 	var cs = $('cal');
 	cs.classList.add('bin');
 	stCalendar(cs, {paint: function(c, erase) { c.innerHTML = erase ? '' : window.calendar_act_chr; }, changed: function() { calMark(true); }});
-	stPanel();
+	// календарь входит в правки панели: предупреждение при уходе со страницы, «Применить» и «Записать в EEPROM» его учитывают
+	stPanel({extraDirty: function() { return calDirty ? 1 : 0; }, onApply: function(then) { calSave(function() { stApply(then); }); }, onCancel: calReload});
 	stLoadK();
-	api.get({k: ['boiler.scheduler']}, function(D) { if(D['boiler.scheduler']) calFromStr(D['boiler.scheduler']); });
+	calReload();
 	api.get({k: ['relay.RBOILER.present']}, function(D) { hasTen = D['relay.RBOILER.present'] === true; refreshAll(); });
 	api.poll({k: ['temp.TBOILER.value', 'ohp.bp']}, boilerPoll);
 };

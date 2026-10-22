@@ -27,8 +27,6 @@
 // Тест и ручное управление. Режим тестирования (ключ test.mode): NORMAL, SAFE_TEST, TEST, HARD_TEST. Органы управления ниже
 // (реле, ЭРВ, инвертор) заблокированы, пока ТН работает; «Снять блокировку» открывает их осознанно.
 urlupdate = 2000;
-var $ = function(id) { return document.getElementById(id); };
-function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
 var MODES = [
 	['NORMAL', 'обычный режим, в котором эксплуатируется ТН'],
 	['SAFE_TEST', 'датчики из поля «Тест», устройства эмулируются. Безопасный'],
@@ -47,9 +45,9 @@ function setMode(i) {
 	if(i == cur) return;
 	if(i > 1 && !confirm('Режим ' + MODES[i][0] + (i == 3 ? ' небезопасен: компрессор может быть повреждён.' : ': исполнительные устройства будут работать.') + ' Включить?')) return;
 	api.set({'test.mode': i}, function(D, E, err) {
-		if(err || E['test.mode']) { stToast('Режим не принят (' + (err ? 'нет связи' : ST_ERR[E['test.mode']] || E['test.mode']) + ').', true); return; }
+		if(err || E['test.mode']) { stFail('Режим не принят', err ? 'net' : E['test.mode']); return; }
 		cur = i; drawModes();
-		api.get({k: ['test.remark']}, function(D2) { put('remark', stEsc(D2['test.remark'] || '').replace(/</g, '&lt;')); });
+		api.get({k: ['test.remark']}, function(D2) { put('remark', stEsc(D2['test.remark'] || '')); });
 	});
 }
 function lock() {
@@ -61,10 +59,10 @@ var relays = [];
 function testPoll(d) {
 	if('state.work' in d) { working = d['state.work']; drawModes(); lock(); }
 	if('test.mode' in d) { cur = d['test.mode']; drawModes(); }
-	if('test.remark' in d) put('remark', stEsc(d['test.remark']).replace(/</g, '&lt;'));
-	if('state.error' in d) { var v = d['state.error']; put('err', v == 'OK' ? '<b class="okc">OK</b>' : '<b class="errc">' + stEsc(v).replace(/</g, '&lt;') + '</b>'); }
+	if('test.remark' in d) put('remark', stEsc(d['test.remark']));
+	if('state.error' in d) { var v = d['state.error']; put('err', v == 'OK' ? '<b class="okc">OK</b>' : '<b class="errc">' + stEsc(v) + '</b>'); }
 	if('eev.pospp' in d) put('eev-pos', d['eev.pospp']);
-	if('fc.cfc' in d) put('fc-cur', Number(d['fc.cfc']).toFixed(1));
+	if('fc.cfc' in d) put('fc-cur', num(d['fc.cfc'], 1));
 	if('fc.info1' in d) put('fc-pw', d['fc.info1']);
 	relays.forEach(function(R) {
 		var key = 'relay.' + R + '.on', el = $(stKid(key));
@@ -76,7 +74,7 @@ function relayRow(R) {
 	return '<tr><td class="n">' + R + '<span class="d">' + stCell(k('note'), {k: 'ro', init: ''}) + '</span></td><td><span class="code">D' + stCell(k('pin'), {k: 'ro'}) + '</span></td>' +
 		'<td>' + stCell(k('on'), {k: 'sw', now: 1, nol: 1}) + '</td></tr>';
 }
-function apiErr(D, E, err, k) { return err ? 'нет связи' : ST_ERR[E[k]] || E[k]; }
+function apiErr(D, E, err, k) { return err ? 'нет связи' : stErrText(E[k]); }
 function eevSet(key, id) {
 	var v = $(id).value;
 	if(v === '') return;
@@ -86,7 +84,7 @@ function eevSet(key, id) {
 }
 function eevZero() {
 	if(!confirm('Установить ЭРВ в 0? Шаговый двигатель пройдёт до упора.')) return;
-	api['do']('eev.zero', function(v, e) { stToast(e ? 'ЭРВ: ' + (ST_ERR[e] || e) : 'ЭРВ: ' + (v === 0 ? 'выполнено' : 'код ' + v), !!e); }, undefined, 30000);
+	api['do']('eev.zero', function(v, e) { stToast(e ? 'ЭРВ: ' + (stErrText(e)) : 'ЭРВ: ' + (v === 0 ? 'выполнено' : 'код ' + v), !!e); }, undefined, 30000);
 }
 function fcOnOff(on) {
 	api.set({'fc.on_off': on ? 1 : 0}, function(D, E, err) { if(err || E['fc.on_off']) stToast('Инвертор не принял команду (' + apiErr(D, E, err, 'fc.on_off') + ').', true); });
@@ -98,7 +96,7 @@ function fcSet() {
 }
 function fcReset() {
 	if(!confirm('Сбросить инвертор?')) return;
-	api['do']('reset.fc', function(v, e) { stToast('Сброс инвертора: ' + (e ? ST_ERR[e] || e : 'выполнен'), !!e); });
+	api['do']('reset.fc', function(v, e) { stToast('Сброс инвертора: ' + (e ? stErrText(e) : 'выполнен'), !!e); });
 }
 
 window.onload = function() {

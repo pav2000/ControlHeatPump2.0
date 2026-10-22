@@ -13,7 +13,6 @@
 // Онлайн-графики: кольцевая память контроллера, до 400 точек на ряд, шаг - ohp.time_chart.
 // Номер ряда - позиция в chart.list (в списке names нулевой пункт «---»). Дорожка ряда определяется типом объекта
 // из поля obj ответа /api/chart (STATS_OBJ_* в RingChart.h).
-var $ = function(id) { return document.getElementById(id); };
 var LANES = [
 	['temp', 'Температуры', '°C', 190], ['calc', 'Расчётные', '°C', 90], ['press', 'Давление', 'бар', 90], ['flow', 'Поток', 'м³/ч', 80],
 	['eev', 'ЭРВ', 'шаг', 80], ['volt', 'Напряжение', 'В', 80], ['power', 'Мощность', 'кВт', 80], ['cur', 'Ток', 'А', 70],
@@ -48,7 +47,6 @@ function init() {
 	});
 }
 function showMemory() { var s = step * 400, h = Math.floor(s / 3600), m = Math.round(s % 3600 / 60); put('mem-note', '400 точек = ' + (h ? h + ' ч ' : '') + m + ' мин. Смена интервала очищает графики.'); }
-function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
 
 function toggle(k, on) {
 	if(k === null) { gSave('charts.sel', sel); redraw(); return; }
@@ -102,7 +100,7 @@ function setRange(m) {
 function resetZoom() { if(chart) chart.setWindow(null); }
 function clearCharts() {
 	if(!confirm('Очистить графики в памяти контроллера?')) return;
-	api['do']('chart.clear', function(v, e) { if(e) stToast('Не выполнено (' + (ST_ERR[e] || e) + ').', true); else { data = {}; refresh(); } });
+	api['do']('chart.clear', function(v, e) { if(e) stFail('Не выполнено', e); else { data = {}; refresh(); } });
 }
 function autoToggle(on) {
 	clearInterval(auto);
@@ -111,13 +109,13 @@ function autoToggle(on) {
 function setStep(v) {
 	if(!confirm('Смена интервала очистит графики контроллера. Продолжить?')) { $('get_ohp-time_chart').value = step; return; }
 	api.set({'ohp.time_chart': v}, function(D, E, err) {
-		if(err || E['ohp.time_chart']) { stToast('Контроллер не принял значение (' + (err ? 'нет связи' : ST_ERR[E['ohp.time_chart']] || E['ohp.time_chart']) + ').', true); $('get_ohp-time_chart').value = step; return; }
+		if(err || E['ohp.time_chart']) { stFail('Контроллер не принял значение', err ? 'net' : E['ohp.time_chart']); $('get_ohp-time_chart').value = step; return; }
 		step = parseInt(D['ohp.time_chart']) || Number(v); showMemory(); stUnsaved(true); stRefresh(); data = {}; refresh();
 	});
 }
 function setCwco(on) {
 	api.set({'ohp.cwco': on ? 1 : 0}, function(D, E, err) {
-		if(err || E['ohp.cwco']) stToast('Контроллер не принял значение (' + (err ? 'нет связи' : ST_ERR[E['ohp.cwco']] || E['ohp.cwco']) + ').', true);
+		if(err || E['ohp.cwco']) stFail('Контроллер не принял значение', err ? 'net' : E['ohp.cwco']);
 		else { stUnsaved(true); stRefresh(); }
 	});
 }

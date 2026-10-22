@@ -17,8 +17,6 @@
 <script>
 // Флаги отладки: /api/meta?g=dbg даёт список флагов, ключи dbg.<ИМЯ>.group / .note («описание [ключевые слова]») / .on. Переключатель действует сразу
 // (dbg.<ИМЯ>.on), в EEPROM флаги пишутся нижней панелью. Забытый включённый флаг заполняет журнал: «Сбросить по умолчанию».
-var $ = function(id) { return document.getElementById(id); };
-function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
 
 function render(list, info, on) {
 	var groups = [], by = {};
@@ -49,13 +47,13 @@ function setFlag(n, el) {
 	var k = 'dbg.' + n + '.on', p = {};
 	p[k] = el.checked ? 1 : 0;
 	api.set(p, function(D, E, err) {
-		if(err || E[k]) { stToast('Не удалось изменить флаг ' + n + ' (' + (err ? 'нет связи' : ST_ERR[E[k]] || E[k]) + ').', true); load(); }
+		if(err || E[k]) { stToast('Не удалось изменить флаг ' + n + ' (' + (err ? 'нет связи' : stErrText(E[k])) + ').', true); load(); }
 		else { stUnsaved(true); stRefresh(); }
 	});
 }
 function resetFlags() {
 	if(!confirm('Сбросить все флаги отладки в значения по умолчанию?')) return;
-	api['do']('dbg.default', function(v, e) { if(e) stToast('Не выполнено (' + (ST_ERR[e] || e) + ').', true); else { load(); stToast('Флаги возвращены к рабочему набору.'); } });
+	api['do']('dbg.default', function(v, e) { if(e) stFail('Не выполнено', e); else { load(); stToast('Флаги возвращены к рабочему набору.'); } });
 }
 window.onload = function() {
 	stPanel({apply: false, note: 'Переключатель действует сразу; в EEPROM флаги записываются этой кнопкой.'});

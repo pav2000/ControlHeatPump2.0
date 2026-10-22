@@ -11,8 +11,6 @@
 // Сеть: адресация, безопасность (пароли скрыты, показ по значку), сетевой чип Wiznet W5xxx, состояние сокетов.
 // Адреса и MAC проверяются до отправки (поле краснеет, «Применить» не отправит). Сами настройки вступают в силу после
 // «Применить настройки сети» (set_updateNet - повторная инициализация сетевого чипа).
-var $ = function(id) { return document.getElementById(id); };
-function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
 function f(n, o) { o.key = 'net.' + n.toLowerCase(); return o; }
 var IP = '^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$', MAC = '^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$';
 
@@ -30,7 +28,7 @@ window.stAfterApply = dhcp;
 function applyNet() {
 	if(!confirm('Применить сетевые настройки? Сетевой чип будет инициализирован заново; при неверных настройках связь с контроллером пропадёт (аварийный вход — safeNetwork: сброс контроллера при нажатой кнопке «On/Off»).')) return;
 	api['do']('net.apply', function(v, e) {
-		if(e && e != 'net') stToast('Не применено (' + (ST_ERR[e] || e) + ').', true);		// обрыв связи при смене адреса - ожидаемо
+		if(e && e != 'net') stFail('Не применено', e);		// обрыв связи при смене адреса - ожидаемо
 		else stToast('Сеть переинициализирована' + '. Если страница не отвечает — подключитесь по новому адресу.');
 	});
 }
@@ -45,8 +43,8 @@ function ru(id) {
 function sockets(d) {
 	if('sys.socket_res' in d) put('sock-res', 'сброшено зависших: ' + d['sys.socket_res']);
 	if('sys.sockets' in d) put('socks', d['sys.sockets'].map(function(s) {
-		var st = stEsc(s.c + ' ' + s.s) + (s.h ? '<span class="hint" style="margin-left:6px">' + s.h + '</span>' : ''), cls = s.s == 'ESTABLISHED' ? 'ok' : s.s == 'LISTEN' ? 'b' : '';
-		return '<tr><td class="n">' + s.n + '</td><td><span class="tag ' + cls + '" style="' + (cls ? '' : 'background:var(--bg);color:var(--mute)') + '">' + st + '</span></td><td class="mono">' + stEsc(s.m) + '</td><td class="mono">' + s.ip + '</td><td>' + s.p + '</td></tr>';
+		var st = stEsc(s.c + ' ' + s.s) + (s.h ? '<span class="hint" style="margin-left:6px">' + esc(s.h) + '</span>' : ''), cls = s.s == 'ESTABLISHED' ? 'ok' : s.s == 'LISTEN' ? 'b' : '';
+		return '<tr><td class="n">' + esc(s.n) + '</td><td><span class="tag ' + cls + '" style="' + (cls ? '' : 'background:var(--bg);color:var(--mute)') + '">' + st + '</span></td><td class="mono">' + stEsc(s.m) + '</td><td class="mono">' + esc(s.ip) + '</td><td>' + esc(s.p) + '</td></tr>';
 	}).join(''));
 }
 

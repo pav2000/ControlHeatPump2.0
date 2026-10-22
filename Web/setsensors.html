@@ -12,9 +12,6 @@
 // (0 - сбросить привязку). Сканировать можно только при выключенном ТН, до 9 секунд.
 // Столбец «Шина» убран: шина всегда одна (решение владельца).
 urlupdate = 2000;
-var $ = function(id) { return document.getElementById(id); };
-function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
-function num(v, d) { var f = parseFloat(v); return isNaN(f) ? '–' : f.toFixed(d); }
 
 var sensors = [], addr = {}, found = [], working = true, scanning = false;
 
@@ -41,7 +38,7 @@ function setPoll(d) {
 		if(!m) continue;
 		var T = m[1], t = T.toLowerCase(), v = d[key];
 		if(m[2] == 'raw') put('v-' + t, num(v, 2) + '°');
-		else if(m[2] == 'ecode') put('code-' + t, v == 0 ? '<span class="okc">OK</span>' : '<span class="errc">E' + v + '</span>');
+		else if(m[2] == 'ecode') put('code-' + t, stCode(v));
 		else {
 			var na = /^[0-9A-Fa-f]{16}$/.test(v || '') ? v.toUpperCase() : '';
 			if(na === addr[T]) continue;		// адрес не изменился - списки не трогаем: опрос каждые 2 с сбрасывал выбор пользователя
@@ -61,7 +58,7 @@ function scan() {
 		$('scan').disabled = working;
 		put('scan-note', 'Сканирование занимает до 9 секунд.');
 		found = e ? [] : (v || '').split(';').filter(Boolean).map(function(s) { var f = s.split(':'); return {n: f[0], type: f[1], temp: f[2], addr: (f[3] || '').toUpperCase()}; });
-		if(!found.length) put('scan-note', 'Датчики не найдены (' + (e ? ST_ERR[e] || e : v || 'нет ответа') + ').');
+		if(!found.length) put('scan-note', 'Датчики не найдены (' + (e ? stErrText(e) : v || 'нет ответа') + ').');
 		showFound();
 		fillSelects(true);
 	}, undefined, 20000);
@@ -71,7 +68,7 @@ function showFound() {
 	if(!found.length) { put('found', '<tr><td colspan="5" style="color:var(--mute)">Сканирование ещё не выполнялось</td></tr>'); return; }
 	put('found', found.map(function(f) {
 		var b = boundTo(f.addr);
-		return '<tr><td class="n">' + f.n + '</td><td>' + f.type + '</td><td class="num"><b class="big">' + num(f.temp, 2) + '°</b></td><td><span class="code">' + f.addr + '</span></td><td>' +
+		return '<tr><td class="n">' + esc(f.n) + '</td><td>' + esc(f.type) + '</td><td class="num"><b class="big">' + num(f.temp, 2) + '°</b></td><td><span class="code">' + esc(f.addr) + '</span></td><td>' +
 			(b.length ? b.map(function(T) { return '<span class="tag">' + T + '</span>'; }).join(' ') : '<span class="tag" style="background:var(--bg);color:var(--mute)">свободен</span>') + '</td></tr>';
 	}).join(''));
 }
@@ -83,7 +80,7 @@ function fillSelects(force) {
 		if(!s) return;
 		if(!force && s.dataset.o !== undefined && stState(s) !== s.dataset.o) return;		// несохранённый выбор пользователя
 		var h = '<option value="">---</option><option value="0">сбросить</option>';
-		found.forEach(function(f) { h += '<option value="' + f.n + '">' + f.n + ' · ' + f.addr.substr(0, 8) + '…</option>'; });
+		found.forEach(function(f) { h += '<option value="' + esc(f.n) + '">' + esc(f.n) + ' · ' + esc(f.addr.substr(0, 8)) + '…</option>'; });
 		s.innerHTML = h;
 		s.disabled = false;
 		var cur = found.findIndex(function(f) { return addr[T] && f.addr == addr[T]; });

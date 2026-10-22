@@ -11,7 +11,6 @@
 <script>
 // Статистика по дням: stats_head.csv (шапка), stats_ГГГГ.dat (строки «ГГГГММДД;значения...»), список лет - sys.list_stats.
 // Значения в файле дробные, как есть. Моточасы приходят в минутах - показываем в часах.
-var $ = function(id) { return document.getElementById(id); };
 // дорожки: ключ, заголовок, единица, высота, столбцы
 var LANES = [['T', 'Температуры', '°C', 190], ['E', 'Энергия за сутки', 'кВт·ч', 130, true], ['W', 'Мощность', 'кВт', 90], ['C', 'Полный COP', '', 90], ['V', 'Напряжение', 'В', 80], ['M', 'Моточасы', 'ч', 110, true]];
 var UNIT = {T: '°C', W: 'кВт', C: 'COP', V: 'В', M: 'ч'};
@@ -41,7 +40,6 @@ function parse(text) {
 		}
 	});
 }
-function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
 
 function draw() {
 	var lanes = [];

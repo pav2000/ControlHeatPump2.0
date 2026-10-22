@@ -291,7 +291,7 @@ function shLogin() {
 }
 function shLoginDo(f) {
 	sessionStorage.setItem('NeedLogin', 2);
-	sessionStorage.setItem('LPString', '!Z' + window.btoa(f.l.value + ':' + f.p.value));
+	sessionStorage.setItem('LPString', '!Z' + window.btoa(unescape(encodeURIComponent(f.l.value + ':' + f.p.value))));
 	location.href = shellUser ? 'lan.html' : 'index.html';
 	return false;
 }
@@ -334,9 +334,9 @@ function shUpdate() {
 	if(!st) return;
 	var err = /^Error/.test(shellState.status);
 	if(shLink.off) { st.innerHTML = 'Нет связи'; dot.className = 'dot bad'; tm.innerHTML = ''; return; }
-	st.innerHTML = err ? shellState.status : shellState.work == null ? '…' : shellState.work ? 'Работает · ' + shellState.mode.toLowerCase() : 'Остановлен';
+	st.innerHTML = err ? esc(shellState.status) : shellState.work == null ? '…' : shellState.work ? 'Работает · ' + esc(shellState.mode.toLowerCase()) : 'Остановлен';
 	dot.className = 'dot' + (err ? ' bad' : shellState.work ? '' : ' off');
-	tm.innerHTML = shellState.work ? shellState.since : '';
+	tm.textContent = shellState.work ? shellState.since || '' : '';
 }
 // ---- подписи для скринридера: переключателям, полям и значкам «i» без текстовой подписи; обновляются при перерисовке страницы ----
 function shLabelOf(e) {
@@ -407,7 +407,7 @@ function shApi() {
 	api.poll({k: ['state.work', 'state.mode', 'state.time', 'state.date', 'state.uptime', 'state.last_cmd', 'state.status',
 		'sched.on', 'sched.active_name', 'profile.list', 'profile.cur']}, shApiValues);
 }
-function shEsc(s) { return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }     // свой: settings.js есть не на каждой странице
+function shEsc(s) { return esc(s); }
 function shApiValues(d) {
 	var el, k;
 	if('state.work' in d) {

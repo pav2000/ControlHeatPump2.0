@@ -15,7 +15,6 @@
 // без него, подставляется раскладка hist2_head.csv. Старые файлы hist_ГГГГ.dat (метка до минуты, 16 столбцов) читаются по LEGACY.
 // Значения в файле целые: мощность W - в ваттах (кВт = /1000), COP - /100, режим ТН - как есть, остальное - десятые доли,
 // а у столбцов с цифрой 2 после буквы оси - сотые.
-var $ = function(id) { return document.getElementById(id); };
 // оси: [тип, заголовок дорожки, единица, высота, ступенчатый]
 var AXES = {T: ['Температуры', '°C', 190], P: ['Давление', 'бар', 90], F: ['Поток', 'м³/ч', 80], S: ['ЭРВ', 'шаг', 80], W: ['Потребление и мощность', 'кВт', 90],
 	H: ['Частота компрессора', 'Гц', 80, true], C: ['Полный COP', '', 80], V: ['Напряжение', 'В', 80], R: ['Проценты', '%', 80], D: ['Состояние и режим ТН', '', 70, true]};
@@ -111,7 +110,6 @@ function loadData() {
 	})();
 }
 function clearData() { loadSeq++; xs = []; ys = cols.map(function() { return []; }); loadedStep = 0; draw(); put('state', ''); }
-function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
 
 function draw() {
 	var lanes = [];
@@ -152,7 +150,7 @@ function setHist(on, key) {           // key: ohp.hist - запись истор
 	key = key || 'ohp.hist';
 	var q = {}; q[key] = on ? 1 : 0;
 	api.set(q, function(D, E, err) {
-		if(err || E[key]) stToast('Контроллер не принял значение (' + (err ? 'нет связи' : ST_ERR[E[key]] || E[key]) + ').', true);
+		if(err || E[key]) stFail('Контроллер не принял значение', err ? 'net' : E[key]);
 		else { stUnsaved(true); stRefresh(); }
 	});
 }

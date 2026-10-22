@@ -8,7 +8,7 @@
 
 // ---------- поля ----------
 function stKid(key) { return 'k-' + key.replace(/\./g, '-').toLowerCase(); }     // id поля: heat.temp1 -> k-heat-temp1
-function stEsc(s) { return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
+function stEsc(s) { return esc(s); }
 
 // text: pw - пароль (скрыт точками, показ по значку), pattern - проверка формата до отправки, mono - моноширинный шрифт
 // f: {key: ключ API, t: подпись, h: пояснение под подписью, u: единица, k: 'num'|'sel'|'sw'|'ro'|'text',
@@ -152,6 +152,18 @@ function stEdited(el) {
 	if(window.stChanged) stChanged(el);
 }
 
+// ---------- поля с ограничением в байтах ----------
+// Прошивка считает длину строки в байтах UTF-8 (кириллица - 2 байта), а maxlength - в символах: имя из русских букв
+// длиннее половины лимита получало бы отказ range. Поле с data-bytes="N" обрезается по байтам при вводе.
+function stBytes(s) { return unescape(encodeURIComponent(s)).length; }
+document.addEventListener('input', function(e) {
+	var el = e.target, n = el.dataset && el.dataset.bytes ? +el.dataset.bytes : 0, v;
+	if(!n || stBytes(el.value) <= n) return;
+	v = el.value;
+	while(v && stBytes(v) > n) v = v.slice(0, -1);
+	el.value = v;
+});
+
 // ---------- панель внизу страницы ----------
 var stBar = null, stOpt = {};
 function stPanel(opt) {
@@ -243,6 +255,9 @@ function stDns(key) {
 var ST_ERR = {conflict: 'значение изменилось на контроллере, обновите страницу', range: 'вне допустимых границ', bad_value: 'неверное значение',
 	forbidden: 'нет прав', busy: 'недоступно: ТН работает', na: 'недоступно в этой сборке', unknown: 'неизвестный параметр', too_big: 'слишком длинное значение',
 	fail: 'контроллер не смог выполнить', net: 'нет связи'};
+function stErrText(e) { return ST_ERR[e] || e; }
+// Сообщение об отказе: «<что не удалось> (<причина>).»; code - код из E[ключ] или 'net'
+function stFail(what, code) { stToast(what + ' (' + stErrText(code) + ').', true); }
 // Записать поля пакетом; к каждому ключу прикладывается прежнее значение (if.), чтобы не затереть чужую правку.
 // cb({ok: число принятых, errs: тексты ошибок})
 function stSendK(els, cb) {

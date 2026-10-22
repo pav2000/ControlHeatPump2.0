@@ -318,7 +318,7 @@ SvgChart.prototype.hover = function(p) {
 			var v = s._y[i], yy = b[1] - (b[1] - b[0]) * (v - b[2]) / (b[3] - b[2]);
 			if(tt === null) { tt = s._x[i]; x = this.x0 + (this.x1 - this.x0) * (tt - this.t0) / (this.t1 - this.t0); }
 			if(s.type != 'bar') d += '<circle cx="' + x.toFixed(1) + '" cy="' + yy.toFixed(1) + '" r="3.5" fill="' + s.color + '" stroke="#fff" stroke-width="1.5"/>';
-			rows += '<div><i style="background:' + s.color + '"></i>' + s.name + '<b>' + (s.fmt ? v.toFixed(s.fmt) : Math.round(v * 100) / 100) + (lane.unit ? ' ' + lane.unit : '') + '</b></div>';
+			rows += '<div><i style="background:' + s.color + '"></i>' + esc(s.name) + '<b>' + (s.fmt ? v.toFixed(s.fmt) : Math.round(v * 100) / 100) + (lane.unit ? ' ' + lane.unit : '') + '</b></div>';
 		}, this);
 	}, this);
 	if(tt === null) { cur.style.display = 'none'; dots.innerHTML = ''; tip.style.display = 'none'; return; }

@@ -35,7 +35,6 @@
 <script>
 // Параметры отопления и охлаждения одного вида: P = 'Heat' | 'Cool'. Разметка собирается из описания полей,
 // ключи API (heat.temp1), id элементов k-heat-temp1; значения и варианты списков приходят из /api/get и /api/meta.
-var $ = function(id) { return document.getElementById(id); };
 function kk(P, n) { return P.toLowerCase() + '.' + n.toLowerCase(); }     // ключ API: ('Heat','TEMP1') -> heat.temp1
 function pid(P) { return P.toLowerCase(); }
 
@@ -150,7 +149,6 @@ function pidSummary(P) {
 	var q = pid(P), v = function(n) { var e = $('k-' + q + '-' + n); return e && e.value !== '' ? e.value : '–'; };
 	put('pids-' + q, 'подача ' + v('temp_pid') + '° · Kp ' + v('hp_pro') + ' · Ki ' + v('hp_in') + ' · Kd ' + v('hp_dif'));
 }
-function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
 function pidToggle(q, a) {
 	var b = $('pidf-' + q);
 	b.hidden = !b.hidden;
@@ -159,7 +157,7 @@ function pidToggle(q, a) {
 
 // ---- графики и состояние погодозависимости ----
 var tout = NaN, feedNow = NaN;
-function num(n) { var e = $('k-heat-' + n); return e ? parseFloat(e.value) : NaN; }
+function fv(n) { var e = $('k-heat-' + n); return e ? parseFloat(e.value) : NaN; }
 function fmt(x, d) { return isNaN(x) ? '–' : x.toFixed(d == null ? 1 : d).replace('.', ','); }
 function sgn(x) { return (x > 0 ? '+' : x < 0 ? '−' : '') + fmt(Math.abs(x)); }
 // рисует кривую f(t), t = -25...25; ref - горизонтальная линия {v, text}
@@ -197,8 +195,8 @@ function weather() {
 	if(!$('wa')) return;
 	// --- поправка цели: цель помещения от улицы ---
 	var rule = $('k-heat-rule'), tg = $('k-heat-target'), ri = rule ? rule.selectedIndex : 1;
-	var t1 = (tg && tg.selectedIndex != 0 && ri != 2) ? num('temp2') : num('temp1');
-	var kb = num('kwb'), kt = num('kwt'), kr = num('kwr');
+	var t1 = (tg && tg.selectedIndex != 0 && ri != 2) ? fv('temp2') : fv('temp1');
+	var kb = fv('kwb'), kt = fv('kwt'), kr = fv('kwr');
 	var fa = function(t) { return t1 + Math.max(-kr, Math.min(kr, (kb - t) * kt)); };
 	if([t1, kb, kt, kr].every(function(x) { return !isNaN(x); })) {
 		drawCurve('wg', fa);
@@ -209,7 +207,7 @@ function weather() {
 		else wstate('a', 'off', 'Выключена: коэффициент К равен 0. <b>Чтобы включить</b>, задайте К больше 0, например 0,100, и нажмите «Применить».', 'Сейчас поправка <b>0,0°</b> → цель = уставка <b>' + fmt(t1) + '°</b>');
 	}
 	// --- кривая подачи ПИД ---
-	var w = $('k-heat-w'), tp = num('temp_pid'), kw = num('kw'), lim = num('temp_in');
+	var w = $('k-heat-w'), tp = fv('temp_pid'), kw = fv('kw'), lim = fv('temp_in');
 	if($('wc') && w && !isNaN(tp) && !isNaN(kw)) {
 		var cap = isNaN(lim) ? 50 : lim - 0.5;
 		var fc = function(t) { var v = tp + kw * (0 - t); v = Math.min(v, cap); v = Math.max(v, 7); return Math.min(v, 50); };
@@ -252,7 +250,7 @@ function heatPoll(d) {
 // Переключатель «Отопление» (сборка только на отопление): режим дома 1 / 0
 function modeSw(sw) {
 	api.set({'state.mode_house': sw.checked ? 1 : 0}, function(D, E) {
-		if(E['state.mode_house']) { sw.checked = !sw.checked; stToast('Режим не изменён (' + (ST_ERR[E['state.mode_house']] || E['state.mode_house']) + ').', true); return; }
+		if(E['state.mode_house']) { sw.checked = !sw.checked; stToast('Режим не изменён (' + (stErrText(E['state.mode_house'])) + ').', true); return; }
 		stSetK($('k-state-mode_house'), 'state.mode_house', D['state.mode_house']);
 		api.pollTick();
 	});

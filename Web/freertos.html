@@ -24,9 +24,6 @@ td.nm small{display:block;color:var(--mute);font-weight:500;font-size:11.5px;fon
 // Задачи FreeRTOS одной таблицей: sys.tasks (опрос раз в секунду) и запас наблюдателя sys.wdt (читается при открытии и
 // после «Обнулить замеры»: максимум молчания меняется редко и смотрят его осознанно). Сортировка - по клику на заголовок.
 urlupdate = 1000;
-var $ = function(id) { return document.getElementById(id); };
-function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
-function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
 
 var tasks = [], wdt = {}, sortCol = 0, sortDir = 1;
 try { var sv = JSON.parse(sessionStorage.getItem('rtosSort') || 'null'); if(sv) { sortCol = sv[0]; sortDir = sv[1]; } } catch(e) {}
@@ -66,12 +63,12 @@ function draw() {
 	}).join(''));
 }
 function resetTime() {
-	if(confirm('Обнулить статистику времени выполнения задач?')) api['do']('tasks.reset', function(v, e) { if(e) stToast('Не выполнено (' + (ST_ERR[e] || e) + ').', true); });
+	if(confirm('Обнулить статистику времени выполнения задач?')) api['do']('tasks.reset', function(v, e) { if(e) stFail('Не выполнено', e); });
 }
 function resetWdt() {
 	if(!confirm('Обнулить накопленные замеры наблюдателя? Отсчёт начнётся заново и ни на что, кроме этих чисел, не влияет.')) return;
 	api['do']('wdt.reset', function(v, e) {
-		if(e) { stToast('Не выполнено (' + (ST_ERR[e] || e) + ').', true); return; }
+		if(e) { stFail('Не выполнено', e); return; }
 		api.get({k: ['sys.wdt']}, function(D) { parseWdt(D['sys.wdt'] || ''); stToast('Замеры наблюдателя обнулены.'); });   // читает уже обнулённые замеры
 	});
 }

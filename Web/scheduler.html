@@ -24,8 +24,6 @@
 .asel input{width:76px}
 </style>
 <script>
-var $ = function(id) { return document.getElementById(id); };
-function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
 function pad(n) { return (n < 10 ? '0' : '') + n; }
 
 // Состояние страницы: 5 календарей, активный на контроллере (active), редактируемый (cur), кисть
@@ -36,7 +34,7 @@ var S = {names: [], active: 0, cur: 0, on: false, profs: [], brush: {t: 'prof', 
 function setKeys(pairs, ok) {
 	api.set(pairs, function(D, E, err) {
 		var bad = Object.keys(E);
-		if(err || bad.length) stToast('Контроллер не принял значение (' + (err ? 'нет связи' : ST_ERR[E[bad[0]]] || E[bad[0]]) + ').', true);
+		if(err || bad.length) stToast('Контроллер не принял значение (' + (err ? 'нет связи' : stErrText(E[bad[0]])) + ').', true);
 		else { stUnsaved(true); stRefresh(); if(ok) ok(D); }
 	});
 }
@@ -67,7 +65,7 @@ function describe(v) {
 	if(v == '-') return 'без изменений профиля';
 	if(/^[+-]/.test(v)) return v + '° к цели';
 	var p = S.profs.filter(function(x) { return x.n == v; })[0];
-	return 'профиль ' + v + (p ? ' («' + p.name + '»)' : '');
+	return 'профиль ' + v + (p ? ' («' + esc(p.name) + '»)' : '');
 }
 
 // ---- календарь ----
@@ -96,7 +94,7 @@ function loadCal(i) {
 		$('asm').value = D[k('asm')]; $('asw').value = D[k('asw')];
 	});
 	$('sch-name').value = S.names[i] || '';
-	put('cal-title', 'Календарь «' + (i + 1) + '. ' + (S.names[i] || '') + '»');
+	put('cal-title', 'Календарь «' + (i + 1) + '. ' + esc(S.names[i] || '') + '»');
 	put('sch-nm-title', i == S.active ? '' : '');
 	$('b-active').hidden = i == S.active;
 }
@@ -178,7 +176,7 @@ function setOn(sw) {
 function showNow() {
 	var n = S.names[S.active];
 	if(n === undefined) return;
-	var h = '<p>Активное расписание: <b>' + (S.active + 1) + '. ' + n + '</b></p><p>По расписанию: <b>' + (S.on ? 'включено' : 'выключено') + '</b>' + (S.curProf ? ' (работает профиль «' + S.curProf + '»)' : '') + '</p>';
+	var h = '<p>Активное расписание: <b>' + (S.active + 1) + '. ' + esc(n) + '</b></p><p>По расписанию: <b>' + (S.on ? 'включено' : 'выключено') + '</b>' + (S.curProf ? ' (работает профиль «' + esc(S.curProf) + '»)' : '') + '</p>';
 	var nx = '—';
 	if(S.act && S.now && S.on) {
 		var i0 = S.now.dow * 24 + S.now.h, cur = S.act[i0];
@@ -256,7 +254,7 @@ window.onload = function() {
 	<section class="card c8">
 		<h3>Расписания <span class="r row" style="gap:10px;color:var(--mute)">Работа по расписанию<input type="checkbox" class="sw sm" id="get_schdlr-on" onchange="setOn(this)"></span></h3>
 		<div class="chips" id="sch-chips" style="margin-bottom:14px"></div>
-		<div class="field"><div class="l">Имя расписания<small>до 30 символов</small></div><label class="inp wide"><input id="sch-name" type="text" maxlength="30" onchange="setName(this.value)"></label></div>
+		<div class="field"><div class="l">Имя расписания<small>до 31 байта: около 15 русских букв</small></div><label class="inp wide"><input id="sch-name" type="text" data-bytes="31" onchange="setName(this.value)"></label></div>
 		<div class="field"><div class="l">Автовыбор расписания<small>0 — нет. Расписание включается само в выбранный месяц и декаду</small></div>
 			<span class="row asel" style="gap:8px">месяц <label class="inp"><input id="asm" type="number" min="0" max="12" onchange="setAuto()"></label> декада <label class="inp"><input id="asw" type="number" min="0" max="3" onchange="setAuto()"></label></span></div>
 	</section>
@@ -270,9 +268,9 @@ window.onload = function() {
 		<div class="brush" id="brush"></div>
 		<div id="cal"></div>
 		<div class="tools"><span class="grow"><b style="color:var(--ink)">Левая кнопка</b> — установить, <b style="color:var(--ink)">Shift</b> или правая — стереть. На телефоне — касанием. Чтобы текущий профиль не менялся — «не менять» или ± с нулём.</span>
-			<button class="btn2" onclick="if(confirm('Считать расписание из EEPROM? Несохранённые правки будут потеряны.')) api['do']('schedule.load', function(v, e) { if(e) stToast('Не удалось считать расписание (' + (ST_ERR[e] || e) + ').', true); else location.reload(); })">Считать из EEPROM</button>
-			<button class="btn2" onclick="api['do']('save.schedule', function(v, e) { if(e) stToast('Не удалось записать расписание (' + (ST_ERR[e] || e) + ').', true); else stToast('Расписание записано в EEPROM.'); })">Записать только расписание</button>
-			<button class="btn2 bad" onclick="if(confirm('Очистить все календари?')) api['do']('schedule.clear', function(v, e) { if(e) stToast('Не выполнено (' + (ST_ERR[e] || e) + ').', true); else location.reload(); })">Очистить все календари…</button></div>
+			<button class="btn2" onclick="if(confirm('Считать расписание из EEPROM? Несохранённые правки будут потеряны.')) api['do']('schedule.load', function(v, e) { if(e) stFail('Не удалось считать расписание', e); else location.reload(); })">Считать из EEPROM</button>
+			<button class="btn2" onclick="api['do']('save.schedule', function(v, e) { if(e) stFail('Не удалось записать расписание', e); else stToast('Расписание записано в EEPROM.'); })">Записать только расписание</button>
+			<button class="btn2 bad" onclick="if(confirm('Очистить все календари?')) api['do']('schedule.clear', function(v, e) { if(e) stFail('Не выполнено', e); else location.reload(); })">Очистить все календари…</button></div>
 	</section>
 </div>
 </div>

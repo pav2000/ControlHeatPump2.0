@@ -37,8 +37,6 @@
 <script>
 // Файлы и обновление: скачивание данных контроллера, восстановление настроек из бинарного файла, запись файлов веб-интерфейса
 // (в SPI Flash или на SD-карту), подготовка к обновлению прошивки. Запись идёт асинхронными POST (post() ниже).
-var $ = function(id) { return document.getElementById(id); };
-function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
 function href(name) { return urlcontrol + '/' + name; }
 
 var setupFile = null, webFiles = [];
@@ -150,7 +148,7 @@ function sendWeb(dest) {
 function setSource(spi, a) {
 	if(!confirm('Переключить источник веб-страниц на ' + (spi ? 'SPI Flash' : 'SD-карту') + '? Если там нет файлов, интерфейс перестанет открываться (вернуть можно запросом /api/set?ohp.wspif=' + (spi ? 0 : 1) + ').')) return;
 	api.set({'ohp.wspif': spi ? 1 : 0}, function(D, E, err) {
-		if(err || E['ohp.wspif']) { stToast('Контроллер не принял значение (' + (err ? 'нет связи' : ST_ERR[E['ohp.wspif']] || E['ohp.wspif']) + ').', true); return; }
+		if(err || E['ohp.wspif']) { stFail('Контроллер не принял значение', err ? 'net' : E['ohp.wspif']); return; }
 		showSource(D['ohp.wspif'] === true);
 		stUnsaved(true); stRefresh();
 		stToast('Источник веб-страниц изменён до перезагрузки. Записать в EEPROM — чтобы сохранить.');
@@ -163,11 +161,11 @@ function showSource(spi) {
 
 // ---- обновление ----
 function saveStats() {
-	api['do']('save.stats', function(v, e) { stToast(!e ? 'Статистика, история и счётчики записаны.' : 'Не удалось сохранить статистику (' + (ST_ERR[e] || e) + ').', !!e); }, undefined, 30000);
+	api['do']('save.stats', function(v, e) { stToast(!e ? 'Статистика, история и счётчики записаны.' : 'Не удалось сохранить статистику (' + (stErrText(e)) + ').', !!e); }, undefined, 30000);
 }
 function prepUpdate() {
 	if(!confirm('Подготовить контроллер к обновлению? Будут записаны статистика, история и счётчики, ЭРВ перейдёт в максимальное положение. Только при остановленном компрессоре.')) return;
-	api['do']('save.prepare_update', function(v, e) { stToast(!e ? 'Контроллер подготовлен к обновлению.' : e == 'busy' ? 'Подготовка не выполнена: компрессор работает. Остановите ТН.' : 'Подготовка не выполнена (' + (ST_ERR[e] || e) + ').', !!e); }, undefined, 30000);
+	api['do']('save.prepare_update', function(v, e) { stToast(!e ? 'Контроллер подготовлен к обновлению.' : e == 'busy' ? 'Подготовка не выполнена: компрессор работает. Остановите ТН.' : 'Подготовка не выполнена (' + (stErrText(e)) + ').', !!e); }, undefined, 30000);
 }
 
 window.onload = function() {

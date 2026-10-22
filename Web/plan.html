@@ -30,9 +30,6 @@
 </style>
 <script>
 urlupdate = 2000;
-var $ = function(id) { return document.getElementById(id); };
-function num(v, d) { var f = parseFloat(v); return isNaN(f) ? '–' : f.toFixed(d); }
-function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
 
 // Плашки схемы: id, подпись, цвет. Положение (в пикселях картинки 930x400) задаёт раскладка:
 // картинка plan1.png.
@@ -113,13 +110,13 @@ function onKey(n, v) {
 	case 'eev.trg':  put('e-trg', num(v, 1)); ohBase.t = parseFloat(v); break;
 	case 'state.overcool': put('s-oc', num(v, 1) + '°'); break;
 	case 'temp.TCONOUT.value': put('s-tco', num(v, 1) + '°'); badge('tconout', withSub(num(v, 1) + '°', BADGES.tconout[0])); break;
-	case 'eev.error': put('e-err', v == 0 ? '<span class="tag ok">ошибок нет</span>' : '<span class="tag bad">ошибка ' + v + '</span>'); break;
+	case 'eev.error': put('e-err', v === null || v === undefined ? '–' : v == 0 ? '<span class="tag ok">ошибок нет</span>' : '<span class="tag bad">ошибка ' + esc(v) + '</span>'); break;
 	case 'eev.rule': ruleV = v; rule(); break;
 	case 'relay.RPUMPI.on':  chip('k-pi', 'Насос ГК', v === true); break;
 	case 'relay.RPUMPO.on':  chip('k-po', 'Насос СО', v === true); break;
 	case 'relay.RBOILER.on': chip('k-rb', 'Реле бойлера', v === true, v === true ? ' ϟ' : ''); break;
 	case 'ohp.bp':   chip('k-bp', 'Генератор', v === true, '', v === true ? 'да' : 'нет'); break;
-	case 'state.mode': put('s-mode', v); break;
+	case 'state.mode': put('s-mode', esc(v)); break;
 	case 'temp.TOUT.value': put('s-tout', num(v, 1)); break;
 	case 'temp.TIN.value':  put('s-tin', num(v, 1)); break;
 	case 'state.trg_home': put('s-trg', num(v, 1)); break;

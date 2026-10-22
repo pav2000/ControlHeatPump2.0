@@ -30,7 +30,6 @@ tr.pemp td{color:var(--mute)}
 @media(max-width:900px){table.t{display:block;overflow-x:auto}}
 </style>
 <script>
-var $ = function(id) { return document.getElementById(id); };
 
 // Таблица слотов приходит одним ключом profile.table (массив объектов, номер слота с 0). Имя, описание и «в меню» пишутся
 // ключами slot.<номер с 0>.name / .note / .enable; действия - profile.load / .copy / .erase (p = номер слота, для копии «из:в»).
@@ -59,7 +58,7 @@ function profRender(rows) {
 	profList.forEach(function(o) {
 		html += '<tr class="' + (o.cur ? 'pcur' : (o.used ? '' : 'pemp')) + '"><td><span class="num">' + o.n + '</span></td>';
 		if(o.used) {
-			html += '<td><input class="pin" maxlength="24" value="' + stEsc(o.name) + '" onchange="profSet(' + o.n + ',\'NAME\',this.value)" title="Имя профиля"></td>' +
+			html += '<td><input class="pin" data-bytes="24" value="' + stEsc(o.name) + '" onchange="profSet(' + o.n + ',\'NAME\',this.value)" title="Имя профиля"></td>' +
 				'<td><input class="pin note" maxlength="40" value="' + stEsc(o.note) + '" onchange="profSet(' + o.n + ',\'NOTE\',this.value)" placeholder="описание" title="Описание"></td>' +
 				'<td><div class="tags"><span class="tag w">' + profModeName(o.mode) + '</span>' + (o.cur ? '<span class="tag cur">ТЕКУЩИЙ</span>' : '') + (o.sch ? '<span class="tag w">в расписании</span>' : '') + '</div></td>' +
 				'<td>' + stEsc(o.date) + '</td>' +
@@ -87,14 +86,15 @@ function profSet(n, field, val) {
 	var k = 'slot.' + (n - 1) + '.' + ST_FLD[field], p = {};
 	p[k] = val;
 	api.set(p, function(D, E, err) {
-		if(err || E[k]) stToast("Не удалось изменить профиль " + n + " (" + (err ? 'нет связи' : ST_ERR[E[k]] || E[k]) + ")", true);
+		if(err || E[k]) stToast("Не удалось изменить профиль " + n + " (" + (err ? 'нет связи' : stErrText(E[k])) + ")", true);
 		else { stUnsaved(true); stRefresh(); }
 		profRefresh();
 	});
 }
 function profCopyTo(src, dst) {
+	if(src < 0) { stToast('Нет текущего профиля, копировать нечего.', true); return; }
 	api['do']('profile.copy', function(v, e) {
-		if(e) stToast(e == 'conflict' ? "В текущий профиль копировать нельзя" : "Не удалось скопировать профиль (" + (ST_ERR[e] || e) + ")", true);
+		if(e) stToast(e == 'conflict' ? "В текущий профиль копировать нельзя" : "Не удалось скопировать профиль (" + (stErrText(e)) + ")", true);
 		else { stUnsaved(true); stRefresh(); }
 		profRefresh();
 	}, (src - 1) + ':' + (dst - 1));
@@ -111,7 +111,7 @@ function profErase(n) {
 	var t = profFind(n);
 	if(!confirm("Стереть профиль " + (t ? profTitle(t) : n) + "?")) return;
 	api['do']('profile.erase', function(v, e) {
-		if(e) stToast(e == 'conflict' ? "Этот профиль стереть нельзя: он текущий или используется в расписании" : "Не удалось стереть профиль (" + (ST_ERR[e] || e) + ")", true);
+		if(e) stToast(e == 'conflict' ? "Этот профиль стереть нельзя: он текущий или используется в расписании" : "Не удалось стереть профиль (" + (stErrText(e)) + ")", true);
 		else { stUnsaved(true); stRefresh(); }
 		profRefresh();
 	}, n - 1);
@@ -120,7 +120,7 @@ function profLoad(n) {
 	var t = profFind(n);
 	if(!confirm("Загрузить профиль " + (t ? profTitle(t) : n) + "? Несохранённые правки текущего профиля будут потеряны.")) return;
 	api['do']('profile.load', function(v, e) {
-		if(e) stToast("Не удалось загрузить профиль (" + (ST_ERR[e] || e) + ")", true);
+		if(e) stToast("Не удалось загрузить профиль (" + (stErrText(e)) + ")", true);
 		else location.reload();
 	}, n - 1);
 }

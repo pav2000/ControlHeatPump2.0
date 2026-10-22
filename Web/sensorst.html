@@ -13,9 +13,6 @@
 // Флаг flag6 («тёплый пол», реле RPUMPFL) убран из прошивки при чистке (cd50217) и здесь не показывается.
 // Столбец «Шина» убран: шина всегда одна (решение владельца).
 urlupdate = 2000;
-var $ = function(id) { return document.getElementById(id); };
-function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
-function num(v, d) { return v === null || v === undefined || isNaN(parseFloat(v)) ? '–' : parseFloat(v).toFixed(d); }
 
 function row(T) {
 	var t = T.toLowerCase(), k = function(a) { return 'temp.' + T + '.' + a; };
@@ -38,7 +35,7 @@ function tempPoll(d) {
 		var T = m[1], t = T.toLowerCase(), v = d[key];
 		if(m[2] == 'raw') put('v-' + t, hasBus[t] === false ? '—' : num(v, 2) + '°');
 		else if(m[2] == 'esum') put('es-' + t, v);
-		else if(m[2] == 'ecode') put('code-' + t, hasBus[t] === false ? 'не подключён' : (v == 0 ? '<span class="okc">OK</span>' : '<span class="errc">E' + v + '</span>'));
+		else if(m[2] == 'ecode') put('code-' + t, hasBus[t] === false ? 'не подключён' : (stCode(v)));
 		else {		// null - датчик не привязан к адресу
 			hasBus[t] = v !== null;
 			var r = $('r-' + t);
@@ -58,7 +55,7 @@ function ipPoll(d) {
 }
 
 function resetErrors() {
-	if(confirm('Сбросить счётчики и коды ошибок датчиков температуры?')) api['do']('reset.terr', function(v, e) { if(e) stToast('Не выполнено (' + (ST_ERR[e] || e) + ').', true); else stToast('Счётчики и коды ошибок сброшены.'); });
+	if(confirm('Сбросить счётчики и коды ошибок датчиков температуры?')) api['do']('reset.terr', function(v, e) { if(e) stFail('Не выполнено', e); else stToast('Счётчики и коды ошибок сброшены.'); });
 }
 
 window.onload = function() {

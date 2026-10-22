@@ -26,8 +26,6 @@
 // опрос блокирует переключатели. Блок «Корректировка электрической мощности» убран:
 // прошивка больше не поддерживает эту функцию (CORRECT_POWER220 удалён в cd50217, get_tblPwrC отвечает E01).
 urlupdate = 2000;
-var $ = function(id) { return document.getElementById(id); };
-function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
 
 function row(R) {
 	var r = R.toLowerCase(), k = function(a) { return 'relay.' + R + '.' + a; };

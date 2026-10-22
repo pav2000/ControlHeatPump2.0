@@ -16,8 +16,6 @@ body.ts .ls0{display:none}body.ts .ls1{display:inline}
 <script>
 // MQTT-клиент (свой брокер или ThingSpeak) и «Народный мониторинг». В режиме ThingSpeak дополнительные наборы данных недоступны,
 // а подписи полей меняются (Channel ID, Write API Key, имя устройства) - переключаем классом body.ts.
-var $ = function(id) { return document.getElementById(id); };
-function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
 function f(n, o) { o.key = 'mqtt.' + n.toLowerCase(); return o; }
 function two(a, b) { return '<span class="ls0">' + a + '</span><span class="ls1">' + b + '</span>'; }
 
@@ -43,7 +41,7 @@ function mqttPoll(d) {
 function testNarmon() {
 	if(!confirm('Отправить показания на «Народный мониторинг» сейчас? Если с прошлой отправки не прошло 5 минут, сервер ответит ошибкой INTERVAL; за систематические злоупотребления прибор блокируется.')) return;
 	api['do']('test.narodmon', function(v, e) {
-		if(e) stToast('Не отправлено (' + (e == 'na' ? 'передача на «Народный мониторинг» выключена' : ST_ERR[e] || e) + ').', true);
+		if(e) stToast('Не отправлено (' + (e == 'na' ? 'передача на «Народный мониторинг» выключена' : stErrText(e)) + ').', true);
 		else stToast('Отправка поставлена в очередь: ' + v + '. Пакет и ответ сервера — в журнале.');
 	});
 }

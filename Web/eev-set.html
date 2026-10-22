@@ -19,14 +19,12 @@
 // Настройки ЭРВ: формула перегрева, диапазон и скорость, пуск и останов компрессора, прямой алгоритм, корректировка перегрева.
 // Ключи eev.* из /api/meta; единицы положений (шаги или проценты хода) - по ver.caps.eev_units.
 // «ПИД пропорционально измерению» (eev.pom) и поля, которых нет в прошивке (T2C, BF, BS, SP_2: прежние ответы E10 прятали их), со страницы убраны.
-var $ = function(id) { return document.getElementById(id); };
-function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
 function f(n, o) { o.key = 'eev.' + n.toLowerCase(); return o; }
 
 function notes() {
 	api.get({k: ['eev.pins', 'eev.remark']}, function(D) {
-		if(D['eev.pins'] !== undefined) shSubNote('Выводы шагового двигателя: <b style="font-size:13px">' + stEsc(D['eev.pins']).replace(/</g, '&lt;') + '</b> (только чтение)');
-		if(D['eev.remark'] !== undefined) put('rem', 'Описание формулы: ' + stEsc(D['eev.remark']).replace(/</g, '&lt;'));
+		if(D['eev.pins'] !== undefined) shSubNote('Выводы шагового двигателя: <b style="font-size:13px">' + stEsc(D['eev.pins']) + '</b> (только чтение)');
+		if(D['eev.remark'] !== undefined) put('rem', 'Описание формулы: ' + stEsc(D['eev.remark']));
 	});
 }
 // «Прямой алгоритм» - плитки прямого управления доступны только при включённом режиме

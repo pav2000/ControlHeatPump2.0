@@ -18,15 +18,13 @@
 </style>
 <script>
 // О контроллере: версия прошивки и веб-страниц, дата сборки и конфигурация (ver.config, ver.config_note, ver.fw, ver.build). Доступно роли user.
-var $ = function(id) { return document.getElementById(id); };
 var MON = {Jan: '01', Feb: '02', Mar: '03', Apr: '04', May: '05', Jun: '06', Jul: '07', Aug: '08', Sep: '09', Oct: '10', Nov: '11', Dec: '12'};
-function put(id, h) { var e = $(id); if(e) e.innerHTML = h; }
 window.onload = function() {
 	put('web', VER_WEB);
 	api.get({k: ['ver.fw', 'ver.config', 'ver.config_note', 'ver.build']}, function(D) {
-		if('ver.config' in D) put('cfg', D['ver.config']);
-		if('ver.config_note' in D) put('cfgnote', D['ver.config_note']);
-		if('ver.fw' in D) put('fw', D['ver.fw']);
+		if('ver.config' in D) put('cfg', esc(D['ver.config']));
+		if('ver.config_note' in D) put('cfgnote', esc(D['ver.config_note']));
+		if('ver.fw' in D) put('fw', esc(D['ver.fw']));
 		var m = /^(\w{3})\s+(\d+)\s+(\d{4})\s+(\d+:\d+)/.exec(D['ver.build'] || '');
 		if(m) put('build', ('0' + m[2]).slice(-2) + '.' + MON[m[1]] + '.' + m[3] + ' ' + m[4]);
 	});

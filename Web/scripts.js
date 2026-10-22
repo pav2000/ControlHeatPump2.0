@@ -161,3 +161,11 @@ document.addEventListener('visibilitychange', function() { if(!document.hidden &
 // Вход администратора: shell.js кладёт пару логин:пароль в sessionStorage, api.call и выгрузки файлов дописывают её к адресу
 var NeedLogin = sessionStorage.getItem("NeedLogin");
 var LPString = sessionStorage.getItem("LPString");
+
+// ---- общие помощники страниц (раньше копировались в каждую страницу) ----
+function $(id) { return document.getElementById(id); }
+function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
+function num(v, d) { var f = parseFloat(v); return isNaN(f) ? '–' : f.toFixed(d); }          // null, undefined и текст дают «–»
+function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }     // для текста и для значений атрибутов
+// Код ошибки датчика/ЭРВ: 0 - «OK», пусто - «–», иначе «E<код>»
+function stCode(v) { return v === null || v === undefined || v === '' ? '–' : v == 0 ? '<span class="okc">OK</span>' : '<span class="errc">E' + esc(v) + '</span>'; }

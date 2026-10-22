@@ -22,8 +22,6 @@
 // Состояние контроллера: ключ sys.info («подпись|значение;...», разделы - строки <b>…</b>) плюс время работы, последний сброс,
 // причина сброса, температура платы и память. Опрос раз в 4 с. Сброс контроллера, сети и сезонных счётчиков - внизу.
 urlupdate = 4000;
-var $ = function(id) { return document.getElementById(id); };
-function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
 function tip(n, t) { return '<span class="hint" tabindex="0" data-tip="' + stEsc(t) + '">' + n + '</span>'; }
 var TIPS = {
 	2: 'Состояние FreeRTOS при старте: старший байт — номер задачи (см. «Диагностика → Задачи RTOS»), младший байт — код ошибки (1 — configASSERT fails, 2 — malloc fails, 3 — stack overflow, 4 — hard fault, 5 — bus fault, 6 — usage fault, 7 — crash data).',
@@ -50,7 +48,7 @@ function render(v) {
 	var sec = parse(v), by = {}, status = '';
 	sec.forEach(function(s) { by[s.t] = s.rows; });
 	var h = kv('Время с последней перезагрузки', fixed.uptime || '–') + kv('Последний сброс', fixed.start || '–') + kv('Причина последнего сброса', fixed.cause || '–') +
-		kv('Температура платы (DS3231)', fixed.temp ? fixed.temp + '°' : '–') + kv('Свободная память', fixed.ram || '–');
+		kv('Температура платы (DS3231)', fixed.temp && fixed.temp != '–' ? fixed.temp + '°' : '–') + kv('Свободная память', fixed.ram || '–');
 	sec[0].rows.forEach(function(r) {
 		if(/Строка статуса/.test(r[0])) { status = r; return; }
 		h += kv(r[0], r[1], /SUPC|0x/.test(r[0] + r[1]));
@@ -71,7 +69,7 @@ function sysPoll(d) {
 	if('state.uptime' in d) fixed.uptime = d['state.uptime'].replace(/(\d+)d/, '$1 д ').replace(/(\d+)h/, '$1 ч ').replace(/(\d+)m/, '$1 мин').trim();
 	if('state.start_dt' in d) fixed.start = d['state.start_dt'];
 	if('state.reset_cause' in d) fixed.cause = d['state.reset_cause'];
-	if('state.temp_rtc' in d) fixed.temp = Number(d['state.temp_rtc']).toFixed(2);
+	if('state.temp_rtc' in d) fixed.temp = num(d['state.temp_rtc'], 2);
 	if('sys.free_ram' in d) fixed.ram = d['sys.free_ram'] + ' b';
 	if('sys.info' in d) render(d['sys.info']);
 }
@@ -79,16 +77,16 @@ function sysPoll(d) {
 // ---- сброс и обслуживание ----
 function resetDue() {
 	if(!confirm('Перезагрузить контроллер? Тепловой насос будет штатно остановлен, счётчики и статистика сохранены.')) return;
-	api['do']('reset.controller', function(v, e) { if(e) stToast('Не выполнено (' + (ST_ERR[e] || e) + ').', true); else stToast('Команда сброса контроллера отправлена.'); });
+	api['do']('reset.controller', function(v, e) { if(e) stFail('Не выполнено', e); else stToast('Команда сброса контроллера отправлена.'); });
 }
 function resetNet() {
 	if(!confirm('Сбросить сеть? Сетевой чип будет инициализирован заново, связь с контроллером на время пропадёт.')) return;
-	api['do']('net.apply', function(v, e) { if(e) stToast('Не выполнено (' + (ST_ERR[e] || e) + ').', true); else stToast('Команда сброса сети отправлена.'); });
+	api['do']('net.apply', function(v, e) { if(e) stFail('Не выполнено', e); else stToast('Команда сброса сети отправлена.'); });
 }
 function resetCnt() {
 	if($('reset_code').value != 'RESET') return;
 	if(!confirm('Сбросить сезонные счётчики? Часы работы и энергия за сезон обнулятся.')) return;
-	api['do']('reset.counters', function(v, e) { if(e) stToast('Не выполнено (' + (ST_ERR[e] || e) + ').', true); else location.reload(); });
+	api['do']('reset.counters', function(v, e) { if(e) stFail('Не выполнено', e); else location.reload(); });
 }
 window.onload = function() {
 	$('reset_code').addEventListener('input', function() { $('cnt-btn').disabled = this.value != 'RESET'; });

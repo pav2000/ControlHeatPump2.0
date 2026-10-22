@@ -24,10 +24,7 @@
 // Датчики кроме температурных: частотные (расход), аналоговые (давление), сухие контакты, электросчётчик SDM.
 // Составы устройств - из /api/meta (flow, press, input: devs); значения опрашиваются раз в 4 с, настройки правятся пакетом.
 urlupdate = 4000;
-var $ = function(id) { return document.getElementById(id); };
-function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
-function num(v, d) { var f = parseFloat(v); return v === null || v === undefined || isNaN(f) ? '–' : f.toFixed(d); }
-function code(v) { return v == 0 ? '<span class="okc">OK</span>' : '<span class="errc">E' + v + '</span>'; }
+function code(v) { return stCode(v); }
 
 function flowRow(N) {
 	var n = N.toLowerCase(), k = function(x) { return 'flow.' + N + '.' + x; };
@@ -106,7 +103,7 @@ function calc() {
 	var a1 = +$('a1').value, a2 = +$('a2').value, p1 = +$('p1').value, p2 = +$('p2').value;
 	if(a1 == a2) { put('k1', '–'); put('k2', '–'); calcRes = null; return; }
 	var k2 = (p2 - p1) * 100 / (a2 - a1), k1 = p1 * 100 - k2 * a1;
-	calcRes = {zero: Math.abs(Math.round(k1)), k: Math.abs(k2).toFixed(3)};
+	calcRes = {zero: Math.round(-k1), k: Math.abs(k2).toFixed(3)};
 	put('k1', calcRes.zero); put('k2', calcRes.k);
 }
 function calcApply() {
@@ -119,7 +116,7 @@ function calcApply() {
 		var bad = Object.keys(E);
 		Object.keys(D).forEach(function(k) { var el = $(stKid(k)); if(el && !E[k]) stSetK(el, k, D[k]); });
 		if(err) stToast('Нет связи с контроллером.', true);
-		else if(bad.length) stToast('Датчик не принял значение (' + (ST_ERR[E[bad[0]]] || E[bad[0]]) + ').', true);
+		else if(bad.length) stToast('Датчик не принял значение (' + (stErrText(E[bad[0]])) + ').', true);
 		else { stUnsaved(true); stRefresh(); stToast('Коэффициенты записаны датчику ' + P + '.'); }
 	});
 }
@@ -127,7 +124,7 @@ function calcApply() {
 // ---- счётчик SDM: действия отвечают текстом - показываем его ----
 function sdmAction(act, ask) {
 	if(!confirm(ask)) return;
-	api['do'](act, function(v, e) { stToast('Счётчик: ' + (e ? ST_ERR[e] || e : v || 'команда отправлена') + '.', !!e); }, undefined, 15000);
+	api['do'](act, function(v, e) { stToast('Счётчик: ' + (e ? stErrText(e) : v || 'команда отправлена') + '.', !!e); }, undefined, 15000);
 }
 
 window.onload = function() {
@@ -135,13 +132,13 @@ window.onload = function() {
 	var p = {}, got = 0;
 	var done = function() {
 		if(++got < 3) return;
-		$('sdm-card').hidden = !api.ver.caps.sdm;
+		$('sdm-card').hidden = !(api.ver && api.ver.caps && api.ver.caps.sdm);
 		stLoadK();
 		var keys = [];
 		['value', 'freq', 'ecode'].forEach(function(a) { keys = keys.concat(stDevKeys('flow', p.flow, [a])); });
 		['value', 'temp', 'adc', 'ecode'].forEach(function(a) { keys = keys.concat(stDevKeys('press', p.press, [a])); });
 		['value', 'ecode'].forEach(function(a) { keys = keys.concat(stDevKeys('input', p.input, [a])); });
-		if(api.ver.caps.sdm) ['volt', 'current', 'acpower', 'pf', 'freq', 'acenergy', 'err', 'link'].forEach(function(k) { keys.push('sdm.' + k); });
+		if(api.ver && api.ver.caps && api.ver.caps.sdm) ['volt', 'current', 'acpower', 'pf', 'freq', 'acenergy', 'err', 'link'].forEach(function(k) { keys.push('sdm.' + k); });
 		api.poll({k: keys}, spPoll);
 	};
 	stDevices('flow', function(list) { p.flow = list; $('flow').innerHTML = list.map(flowRow).join(''); $('flow-card').hidden = !list.length; done(); });

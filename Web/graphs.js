@@ -21,7 +21,7 @@ function gSide(el, groups, sel, onToggle) {
 		var on = g.items.filter(function(i) { return sel[i.k]; }).length;
 		h += '<div class="gg' + (on || gi == 0 || !g.t ? ' open' : '') + '">' + (g.t ? '<div class="gh" onclick="this.parentNode.classList.toggle(\'open\')">' + g.t + ' · ' + g.items.length + '<i></i></div>' : '') + '<div class="gb">';
 		g.items.forEach(function(i) {
-			h += '<div class="cb' + (sel[i.k] ? ' on' : '') + '" data-k="' + i.k + '" style="--c:' + i.color + '"><i></i><span>' + i.name + (i.sub ? '<small>' + i.sub + '</small>' : '') + '</span>' +
+			h += '<div class="cb' + (sel[i.k] ? ' on' : '') + '" data-k="' + i.k + '" style="--c:' + i.color + '"><i></i><span>' + esc(i.name) + (i.sub ? '<small>' + esc(i.sub) + '</small>' : '') + '</span>' +
 				(i.unit ? '<em>' + i.unit + '</em>' : '') + '<b id="gv-' + i.k + '"></b></div>';
 		});
 		h += '</div></div>';

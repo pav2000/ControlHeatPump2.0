@@ -14,8 +14,6 @@
 </style>
 <script>
 // Дата и время: часы контроллера (state.time, state.date), установка вручную, NTP-сервер и синхронизации.
-var $ = function(id) { return document.getElementById(id); };
-function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
 function f(n, o) { o.key = 'time.' + n.toLowerCase(); return o; }
 var DAYS = ['воскресенье', 'понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота'];
 
@@ -48,7 +46,7 @@ function updateNtp() {
 	e.className = 'tag';
 	e.innerHTML = '⌛ запрос времени у сервера…';
 	api['do']('ntp.update', function(v, err) {
-		if(err) { ntpWait = false; e.className = 'tag bad'; e.innerHTML = '✕ контроллер не принял команду (' + (ST_ERR[err] || err) + ')'; return; }
+		if(err) { ntpWait = false; e.className = 'tag bad'; e.innerHTML = '✕ контроллер не принял команду (' + (stErrText(err)) + ')'; return; }
 		(function poll() {
 			refreshTime();
 			if(++n < 20 && ntpWait) setTimeout(poll, 1500);

@@ -10,15 +10,13 @@
 <script>
 // Настройки инвертора Omron MX2: частоты, защиты, шаги ПИД. Поля охлаждения (class cool) прячутся в сборке «только
 // отопление» (ver.caps.cool), аналоговое управление - если прошивка его не поддерживает (ver.caps.fc_analog).
-var $ = function(id) { return document.getElementById(id); };
-function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
 function f(n, o) { o.key = 'fc.' + n.toLowerCase(); if(o.step == 0.1 && o.dec == null) o.dec = 2; return o; }		// частоты и температуры контроллер отдаёт с сотыми: так их и показываем
 
 function programFc() {
 	if(!confirm('Записать в инвертор параметры для работы с контроллером? Только при выключенном ТН; операция занимает около 10 секунд. После неё нужна автонастройка (H001 = 1).')) return;
 	stToast('Ожидайте 10 сек…');
 	api['do']('fc.program', function(v, e) {
-		if(e) stToast('Программирование инвертора: ' + (e == 'busy' ? 'тепловой насос должен быть выключен' : e == 'na' ? 'инвертор отсутствует' : ST_ERR[e] || e), true);
+		if(e) stToast('Программирование инвертора: ' + (e == 'busy' ? 'тепловой насос должен быть выключен' : e == 'na' ? 'инвертор отсутствует' : stErrText(e)), true);
 		else stToast('Программирование инвертора: команда отправлена, подробности в журнале.');
 	}, undefined, 15000);
 }
@@ -71,7 +69,7 @@ window.onload = function() {
 			var n = D['fc.name'], what = [];
 			if(!caps.cool) what.push('охлаждение');
 			if(!caps.fc_analog) what.push('аналоговое управление');
-			if(n !== undefined) shSubNote('<b>' + stEsc(n) + '</b>' + (what.length ? what.join(' и ') + (what.length > 1 ? ' не используются в этой сборке и скрыты' : ' не используется в этой сборке и скрыто') : 'частотный преобразователь компрессора'));
+			if(n !== undefined) shSubNote('<b>' + stEsc(n) + '</b> ' + (what.length ? what.join(' и ') + (what.length > 1 ? ' не используются в этой сборке и скрыты' : ' не используется в этой сборке и скрыто') : 'частотный преобразователь компрессора'));
 		});
 	});
 };

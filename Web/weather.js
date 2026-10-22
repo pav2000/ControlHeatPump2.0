@@ -18,7 +18,7 @@ var WX_REFRESH = 2 * 3600 * 1000;			// не чаще, чем раз в 2 час�
 function wxSave() {
 	try { localStorage.setItem('wx', JSON.stringify({on: WX.on, name: WX.name, lat: WX.lat, lon: WX.lon, days: WX.days})); } catch(e) {}
 }
-function wxEsc(s) { return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
+function wxEsc(s) { return esc(s); }
 function wxHasPlace() { return isFinite(WX.lat) && isFinite(WX.lon); }
 function wxGet(url, ok, fail) {
 	var x = new XMLHttpRequest();
@@ -107,16 +107,18 @@ function wxRender(el) {
 
 // ---- график температур: максимум (днём) и минимум (ночью) по дням; на телефоне скрыт (CSS). Рисуется в реальных пикселях ширины блока,
 // чтобы шрифт не растягивался вместе с окном ----
-var wxLast = null;
+var wxLast = null, wxTimer = null;
 function wxDraw(el, d) {
 	wxLast = [el, d];
 	var c = el.querySelector('.wxchart');
-	if(c && c.clientWidth > 0) c.innerHTML = wxChart(d, c.clientWidth);
+	if(!c) return;
+	c.innerHTML = '';		// ширину меряем у пустого блока: svg фиксированной ширины иначе не давал колонке ни сузиться, ни расшириться
+	if(c.clientWidth > 0) c.innerHTML = wxChart(d, c.clientWidth);
 }
 window.addEventListener('resize', function() {
 	if(!wxLast) return;
-	clearTimeout(wxLast.t);
-	wxLast.t = setTimeout(function() { if(wxLast[0].clientWidth) wxDraw(wxLast[0], wxLast[1]); }, 150);
+	clearTimeout(wxTimer);
+	wxTimer = setTimeout(function() { if(wxLast[0].clientWidth) wxDraw(wxLast[0], wxLast[1]); }, 150);
 });
 function wxChart(d, W) {
 	var n = d.time.length, H = 92, pl = 4, pr = 4, top = 20, bot = 58;

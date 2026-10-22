@@ -21,8 +21,6 @@ table.t td .inp input{width:82px}
 // Modbus RTU: чтение (W, L, F; адреса с 4...) и запись (H, I, C; адреса с 3...) регистров устройств на шине RS485.
 // Действия modbus.read (p = устройство:тип:адрес) и modbus.write (p = устройство:тип:адрес=значение); ответ {v: число} или {err: код Modbus}. Строки с адресом 0
 // автообновление не опрашивает (как раньше), их читает кнопка «›».
-var $ = function(id) { return document.getElementById(id); };
-function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
 var rows = [], seq = 0, auto = null;
 var WRITE = {h: 1, i: 1, c: 1};
 
@@ -44,8 +42,8 @@ function draw() {
 	put('rows', rows.map(function(r) {
 		var w = WRITE[r.type];
 		return '<tr><td class="m">' + r.dev + '</td><td><span class="tp' + (w ? ' wr' : '') + '">' + r.type.toUpperCase() + '</span></td>' +
-			'<td><div class="row" style="gap:8px"><label class="inp"><input value="' + r.addr + '" onchange="setAddr(' + r.id + ', this.value)"></label><button class="go" title="Прочитать регистр" onclick="readRow(' + r.id + ')">›</button></div></td>' +
-			'<td class="m" id="v-' + r.id + '">' + (w ? '<label class="inp"><input id="w-' + r.id + '" value="' + (r.wv !== undefined ? r.wv : r.val === '' ? '0' : r.val) + '" oninput="row(' + r.id + ').wv = this.value"></label>' : '<b>' + (r.val === '' ? '–' : r.val) + '</b>') + '</td>' +
+			'<td><div class="row" style="gap:8px"><label class="inp"><input value="' + esc(r.addr) + '" onchange="setAddr(' + r.id + ', this.value)"></label><button class="go" title="Прочитать регистр" onclick="readRow(' + r.id + ')">›</button></div></td>' +
+			'<td class="m" id="v-' + r.id + '">' + (w ? '<label class="inp"><input id="w-' + r.id + '" value="' + esc(r.wv !== undefined ? r.wv : r.val === '' ? '0' : r.val) + '" oninput="row(' + r.id + ').wv = this.value"></label>' : '<b>' + (r.val === '' ? '–' : r.val) + '</b>') + '</td>' +
 			'<td class="m" style="color:var(--mute)" id="x-' + r.id + '">' + (r.hex || '–') + '</td><td>' + (w ? '<button class="btn2 bad" style="padding:5px 10px" onclick="writeRow(' + r.id + ')">Записать…</button> ' : '') + '<span id="e-' + r.id + '">' + errHtml(r) + '</span></td></tr>';
 	}).join('') || '<tr><td colspan="6" style="color:var(--mute)">Добавьте строку кнопкой слева</td></tr>');
 }

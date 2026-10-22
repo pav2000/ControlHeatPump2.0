@@ -17,8 +17,6 @@
 <script>
 // Уведомления: что сообщать, почта (SMTP без SSL/TLS), SMS. Тест отправки ставится в очередь, результат контроллер отдаёт
 // через message.scan_mail / message.scan_sms - опрашиваем каждые 3 секунды и показываем на странице.
-var $ = function(id) { return document.getElementById(id); };
-function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
 function f(n, o) { o.key = 'message.' + n.toLowerCase(); return o; }
 
 // порог температуры доступен, только если включено «Достижение граничной температуры»
@@ -58,7 +56,7 @@ function testMsg(kind) {
 	var out = $('t-' + kind);
 	out.className = 'res'; out.dataset.done = 1; out.innerHTML = '⌛ отправка поставлена в очередь…';
 	api['do']('test.' + kind.toLowerCase(), function(v, e) {
-		if(e) { out.className = 'res bad'; out.innerHTML = '✗ не отправлено (' + (ST_ERR[e] || e) + ')'; return; }
+		if(e) { out.className = 'res bad'; out.innerHTML = '✗ не отправлено (' + (stErrText(e)) + ')'; return; }
 		poll(kind, 'wait response', 0);
 	});
 }

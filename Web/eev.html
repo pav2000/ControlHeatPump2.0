@@ -24,9 +24,6 @@
 // ряды графиков пока по прежнему протоколу (chart.js), остальное - /api; текущие значения опрашиваются раз в 2 с; параметры ПИД правятся пакетом. Положение вручную - действием, с подтверждением.
 // Это график ПЕРЕГРЕВА по меткам памяти контроллера (шаг - TIME_CHART), поэтому время считается от последней точки.
 urlupdate = 2000;
-var $ = function(id) { return document.getElementById(id); };
-function put(id, html) { var e = $(id); if(e) e.innerHTML = html; }
-function num(v, d) { var f = parseFloat(v); return isNaN(f) ? '–' : f.toFixed(d); }
 
 var unit = 'шаги', dir = false, step = 30, range = 180, chart = null, data = {}, on = {oh: 1, trg: 1, pos: 1, tt: 0}, auto = null, cur = {};
 var SER = {oh: ['Перегрев', '#f2762e', 'K'], trg: ['Цель', '#8a6fd1', 'K'], pos: ['Положение', '#2f7fd1', ''], tt: ['Нагнетание − конденсация', '#d64545', 'K']};
@@ -78,14 +75,14 @@ function eevPoll(d) {
 		case 'state.tcomp_tcon': put('t-tt', num(v, 1)); cur.tt = v; legend(); break;
 		case 'eev.ctdelta': put('t-dl', v === null ? '–' : (v > 0 ? '+' : '') + num(v, 1)); break;
 		case 'eev.trg': cur.trg = v; legend(); break;
-		case 'eev.error': put('t-er', v == 0 ? '<span class="okc">OK</span>' : '<span class="errc">E' + v + '</span>'); put('eev-st', v == 0 ? '<span class="tag ok">ошибок нет</span>' : '<span class="tag bad">ошибка ' + v + '</span>'); break;
+		case 'eev.error': put('t-er', stCode(v)); put('eev-st', v == 0 ? '<span class="tag ok">ошибок нет</span>' : '<span class="tag bad">ошибка ' + v + '</span>'); break;
 		}
 	}
 }
 function legend() {
 	var h = '';
 	for(var k in SER) {
-		var val = cur[k], t = isNaN(val) || val === undefined ? '' : ' ' + (k == 'pos' ? val : val.toFixed(1)) + (SER[k][2] ? ' ' + SER[k][2] : '');
+		var val = cur[k], t = val === null || val === undefined || isNaN(val) ? '' : ' ' + (k == 'pos' ? val : val.toFixed(1)) + (SER[k][2] ? ' ' + SER[k][2] : '');
 		h += '<span class="chip' + (on[k] ? ' on' : ' off') + '" onclick="toggle(\'' + k + '\')"><i style="background:' + SER[k][1] + '"></i>' + SER[k][0] + t + '</span>';
 	}
 	put('legend', h);
@@ -133,7 +130,7 @@ function manual() {
 		allowMove = true;
 	}
 	api.set({'eev.manual': v}, function(D, E, err) {
-		if(err || E['eev.manual']) stToast('ЭРВ не принял положение (' + (err ? 'нет связи' : ST_ERR[E['eev.manual']] || E['eev.manual']) + ').', true);
+		if(err || E['eev.manual']) stFail('ЭРВ не принял положение', err ? 'net' : E['eev.manual']);
 		else { stToast('Положение ЭРВ задано вручную: ' + D['eev.manual'] + '.'); stBase($('k-eev-manual')); }
 		api.get({k: ['eev.rule']}, function(D2) { if('eev.rule' in D2) stSetK($('k-eev-rule'), 'eev.rule', D2['eev.rule']); });
 	});

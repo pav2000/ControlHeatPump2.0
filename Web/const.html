@@ -10,8 +10,6 @@
 <script>
 // Константы сборки: то, что зашито в прошивку (ключи sys.const и sys.const1, строки «имя|описание|значение;...»). Только чтение.
 // Первая строка - версия веб-страниц, её добавляет сама страница.
-var $ = function(id) { return document.getElementById(id); };
-function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
 function rows(v) {
 	return v.split(';').filter(function(s) { return s.trim() !== ''; }).map(function(s) {
 		var a = s.split('|');
