@@ -71,7 +71,7 @@ window.onload = function() {
 	<section class="card c6"><h3>Резервное питание · генератор</h3><div id="c4"></div><div class="fnote">Ручной флаг сбрасывается при сбросе контроллера; чтобы сохранить его, нажмите «Записать в EEPROM». На генераторе электрокотёл отопления и ТЭН бойлера отключены всегда.</div></section>
 	<section class="card c6"><h3>Сброс настроек контроллера</h3>
 		<div class="warnbox">Вернёт заводские настройки. Работает только при остановленном ТН: при работающем кнопка недоступна (раньше команда молча игнорировалась).</div>
-		<div class="row" style="gap:12px;margin:14px 0 8px;flex-wrap:wrap"><span style="color:var(--mute)">Введите RESET</span><label class="inp"><input id="rs-code" size="7" autocomplete="off" style="width:90px;text-align:left"></label><button class="btn2 bad" id="rs-btn" onclick="resetSettings()" disabled>Сбросить настройки…</button></div>
+		<div class="row" style="gap:12px;margin:14px 0 8px;flex-wrap:wrap"><span style="color:var(--mute)">Введите RESET</span><label class="inp"><input id="rs-code" type="text" size="7" autocomplete="off" style="width:90px;text-align:left"></label><button class="btn2 bad" id="rs-btn" onclick="resetSettings()" disabled>Сбросить настройки…</button></div>
 		<div class="fnote" id="rs-note"></div>
 	</section>
 </div>

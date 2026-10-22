@@ -1,4 +1,5 @@
-<html>
+<!DOCTYPE html>
+<html lang="ru">
 <head> 
 	<title>Настройки help. Народный контроллер ТН</title>
 	<meta charset="utf-8" />
@@ -10,10 +11,41 @@
 <div id="menu" class="menu"><script src="menu.js"></script></div>
 <div class="content">
 <h1>Описание параметров и настроек теплового насоса
-	<input style="float:none" type="submit" value="На страницу 'Настройки'" onclick="location.href='config.html'"></h1>
-	<br/>
-<!-- Код картинки внутри файла кодировка: http://translit-online.ru/image-base64-converter.html  форматирование строки (длина 1000):https://texttools.ru/add-line-breaks -->
-<img align="left" src="data:image/jpg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/4QICRXhpZgAASUkqAAgAAAAJAA8BAgAHAAAAegAAABABAgAJAAAAggAAABIBAwABAAAAAQAAABoBBQABAAAAjAAAABsBBQABAAAAlAAAACgBAwABAAAAAgAAADEBAgAQAAAAnAAAAGmHBAABAAAArAAAACWIBAABAAAAXgEAAAAAAABYaWFvbWkAAFJlZG1pIDRYAABIAAAAAQAAAEgAAAABAAAAU2hvdHdlbGwgMC4yMi4wAA0AmoIFAAEAAABOAQAAJ4gDAAEAAACuAAAAAJAHAAQAAAAwMjEwB5IDAAEAAAABAAAACJIDAAEAAAAAAAAACZIDAAEAAAAQAAAACpIFAAEAAABWAQAAAKAHAAQAAAAwMTAwAaADAAEAAAD//wAAAqAJAAEAAACNAQAAA6AJAAEAAADAAAAAA6QDAAEAAAAAAAAABqQDAAEAAAAAAAAAAAAAAAEAAAAeAAAAnAEAAGQAAAAHAAEAAgABAAAATgAAAAIABQADAAAAuAEAAAMAAgABAAAARQAAAAQABQADAAAA0AEAAAUAAQABAAAAAAAAAAYABQABAAAA6AEAAB0AAgAKAAAA8AEAAAAAAAA5AAAAAQAAAAIAAAABAAAAlqQAAOgDAAAlAAAAAQAAACMAAAABAAAAcJcAAOgDAACZAAAAAQAAADIwMjA6MDI6MDP/4Q4xaHR0cDovL25zLmFkb2JlLmNvbS94YXAvMS4wLwA8P3hwYWNrZXQgYmVnaW49Iu+7vyIgaWQ9Ilc1TTBNcENlaGlIenJlU3pOVGN6a2M5ZCI/PiA8eDp4bXBtZXRhIHhtbG5zOng9ImFkb2JlOm5zOm1ldGEvIiB4OnhtcHRrPSJYTVAgQ29yZSA0LjQuMC1FeGl2MiI+IDxyZGY6UkRGIHhtbG5zOnJkZj0iaHR0cDovL3d3dy53My5v
+	<input type="submit" value="На страницу 'Настройки'" onclick="location.href='config.html'"></h1>
+<p>Страница «Система → Пуск и защиты»: задержки и повторы пуска, защитные времена компрессора и насосов, переход между ГВС и отоплением, работа от генератора, сброс настроек.
+Значения применяются кнопкой «Применить» внизу страницы, чтобы они пережили перезагрузку контроллера, нажмите «Записать в EEPROM».</p>
+
+<h3>Запуск и повторы</h3>
+<b>Повторные попытки пуска при ошибке</b> (0…255) - Сколько раз ТН будет пытаться перезапуститься при ошибке или сбросе. Обычно устанавливается значение 1-5,
+если 0, то НК не будет пытаться перезапуститься. В файле Config.h директивой #define NOT_RESTART_ON_CRITICAL_ERRORS можно перечислить критические ошибки, при которых ТН остановится и рестарта не будет.<br/>
+<b>Задержка пуска после внезапного сброса</b> (0…6000 с) - Нужна, чтобы ТН после сброса (например, отключили электричество) пришёл в «равновесное» состояние,
+выровнял давления и плавно стартовал. Обычное значение 5-15 минут.<br/>
+<b>Задержка перед повтором при ошибке</b> (0…6000 с) - Учитывает индивидуальные особенности ТН: время всех процессов, которые должны завершиться к моменту
+повторного пуска, например достижение крайних положений трёхходового клапана ГВС. Обычное значение 5-15 минут.<br/>
+<b>Сохранять состояние ТН в EEPROM</b> - Сохраняет во флеш-памяти положение тумблера включения ТН (сверху страницы). При сбросе контроллера состояние восстанавливается.
+Если опция выключена, ТН работал и отключили электричество, то после включения питания ТН останется выключенным. Обычно опцию надо включить для отказоустойчивости.
+
+<h3>Компрессор и насосы</h3>
+<b>Минимальный простой компрессора</b> (0…200 мин) - Время между остановкой и следующим пуском. За него выравниваются высокое и низкое давления (разгруженный пуск),
+это же снижает число пусков и бережёт ресурс компрессора. Обмотки статора, особенно у не инверторного компрессора, при пуске сильно нагреваются высокими токами. Обычно 2-10 минут.<br/>
+<b>Минимальное время работы компрессора</b> - Нужно, чтобы гарантированно охладить двигатель парами фреона. Чем мощнее компрессор, тем выше пусковой ток и тем больше нужное время.
+Также снижает число пусков. Обычно 5-15 минут. Особенно важно для старт-стопного ТН, чтобы он не «стартопил».<br/>
+<b>Компрессор после включения насосов</b> (0…900 с) - Задержка пуска компрессора после включения насосов: нужен проток в испарителе и конденсаторе (инерционность системы),
+датчики протока и температуры должны успеть выдать верные данные. Иначе после пуска возможен останов по минимальному протоку и неточная регулировка ЭРВ в режиме «Стартовая позиция по температуре подачи».<br/>
+<b>Реверсивный клапан → компрессор</b> (0…600 с) - Задержка между переключением реверсивного клапана и включением компрессора, за это время должны выровняться давления.
+Нужна, чтобы при переключениях отопление - разморозка и отопление - охлаждение избежать гидравлического удара во фреоновом контуре.<br/>
+<b>Выключение насоса отопления после компрессора</b> (0…900 с) - Инверторные компрессоры после команды «стоп» останавливаются не мгновенно.
+В зависимости от времени выбега привода задаётся задержка плюс 15...30 с.
+
+<h3>ГВС &rArr; отопление</h3>
+<b>Пауза после переключения ГВС</b> (0…1200 с) - В это время контроллер ждёт, пока температура теплоносителя на выходе конденсатора после режима ГВС снизится
+(есть вероятность, что в режиме ГВС теплоноситель имеет температуру выше защит отопления). Подбирается экспериментально. Пример: время переключения клапана приоритета ГВС 5 с,
+плюс время, за которое насос прокачает конденсатор, плюс инерционность датчика TCONOUTG - сумма и будет паузой.<br/>
+<b>Блокировка защит при переходе с ГВС на отопление</b> (0…1200 с) - Время, на которое блокируются защиты отопления после переключения с ГВС,
+чтобы температуры успели выйти на приемлемый для отопления уровень. Иначе защиты будут срабатывать и возникнет ошибка.
+
+<h3>Резервное питание &middot; генератор</h3>
+<img align="left" src="data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/4QICRXhpZgAASUkqAAgAAAAJAA8BAgAHAAAAegAAABABAgAJAAAAggAAABIBAwABAAAAAQAAABoBBQABAAAAjAAAABsBBQABAAAAlAAAACgBAwABAAAAAgAAADEBAgAQAAAAnAAAAGmHBAABAAAArAAAACWIBAABAAAAXgEAAAAAAABYaWFvbWkAAFJlZG1pIDRYAABIAAAAAQAAAEgAAAABAAAAU2hvdHdlbGwgMC4yMi4wAA0AmoIFAAEAAABOAQAAJ4gDAAEAAACuAAAAAJAHAAQAAAAwMjEwB5IDAAEAAAABAAAACJIDAAEAAAAAAAAACZIDAAEAAAAQAAAACpIFAAEAAABWAQAAAKAHAAQAAAAwMTAwAaADAAEAAAD//wAAAqAJAAEAAACNAQAAA6AJAAEAAADAAAAAA6QDAAEAAAAAAAAABqQDAAEAAAAAAAAAAAAAAAEAAAAeAAAAnAEAAGQAAAAHAAEAAgABAAAATgAAAAIABQADAAAAuAEAAAMAAgABAAAARQAAAAQABQADAAAA0AEAAAUAAQABAAAAAAAAAAYABQABAAAA6AEAAB0AAgAKAAAA8AEAAAAAAAA5AAAAAQAAAAIAAAABAAAAlqQAAOgDAAAlAAAAAQAAACMAAAABAAAAcJcAAOgDAACZAAAAAQAAADIwMjA6MDI6MDP/4Q4xaHR0cDovL25zLmFkb2JlLmNvbS94YXAvMS4wLwA8P3hwYWNrZXQgYmVnaW49Iu+7vyIgaWQ9Ilc1TTBNcENlaGlIenJlU3pOVGN6a2M5ZCI/PiA8eDp4bXBtZXRhIHhtbG5zOng9ImFkb2JlOm5zOm1ldGEvIiB4OnhtcHRrPSJYTVAgQ29yZSA0LjQuMC1FeGl2MiI+IDxyZGY6UkRGIHhtbG5zOnJkZj0iaHR0cDovL3d3dy53My5v
 cmcvMTk5OS8wMi8yMi1yZGYtc3ludGF4LW5zIyI+IDxyZGY6RGVzY3JpcHRpb24gcmRmOmFib3V0PSIiIHhtbG5zOmV4aWY9Imh0dHA6Ly9ucy5hZG9iZS5jb20vZXhpZi8xLjAvIiB4bWxuczp0aWZmPSJodHRwOi8vbnMuYWRvYmUuY29tL3RpZmYvMS4wLyIgZXhpZjpJbWFnZVdpZHRoPSI0MTYwIiBleGlmOkltYWdlTGVuZ3RoPSIzMTIwIiBleGlmOk1ha2U9IlhpYW9taSIgZXhpZjpNb2RlbD0iUmVkbWkgNFgiIGV4aWY6T3JpZW50YXRpb249IlRvcC1sZWZ0IiBleGlmOlhSZXNvbHV0aW9uPSI3MiIgZXhpZjpZUmVzb2x1dGlvbj0iNzIiIGV4aWY6UmVzb2x1dGlvblVuaXQ9ItCU0Y7QudC8IiBleGlmOlNvZnR3YXJlPSJBIEJldHRlciBDYW1lcmEsINCh0YLQsNC90LTQsNGA0YLQvdGL0LkiIGV4aWY6RGF0ZVRpbWU9IjIwMjA6MDI6MDMgMTY6MjE6MzAiIGV4aWY6RXhwb3N1cmVUaW1lPSIxLzMwINGB0LXQui4iIGV4aWY6RXhpZlZlcnNpb249IkVYSUYg0LLQtdGA0YHQuNC4IDIuMSIgZXhpZjpNZXRlcmluZ01vZGU9ItCh0YDQtdC00L3QuNC5IiBleGlmOkxpZ2h0U291cmNlPSLQndC10LjQt9Cy0LXRgdGC0L3QviIgZXhpZjpGb2NhbExlbmd0aD0iNCwxIG1tIiBleGlmOkZsYXNoUGl4VmVyc2lvbj0iRmxhc2hQaXgg0LLQtdGA0YHQuNC4IDEuMCIgZXhpZjpDb2xvclNwYWNlPSLQktC90YPRgtGA0LXQvdC90Y/RjyDQvtGI0LjQsdC60LAgKNC90LXQuNC30LLQtdGB0YLQvdC+0LUg0LfQvdCw0YfQtdC90LjQtSA2NTUz
 NSkiIGV4aWY6V2hpdGVCYWxhbmNlPSLQkNCy0YLQvtC80LDRgi4g0LHQsNC70LDQvdGBINCx0LXQu9C+0LPQviIgZXhpZjpTY2VuZUNhcHR1cmVUeXBlPSJTdGFuZGFyZCIgZXhpZjpJbnRlcm9wZXJhYmlsaXR5SW5kZXg9Ik4iIGV4aWY6SW50ZXJvcGVyYWJpbGl0eVZlcnNpb249IjU3LCAgMiwgNDIsMTM0IiBleGlmOkdQU0xvbmdpdHVkZVJlZj0iRSIgZXhpZjpHUFNMb25naXR1ZGU9IjM3LCAzNSwgMzgsNzY4IiBleGlmOkdQU0FsdGl0dWRlUmVmPSLQo9GA0L7QstC10L3RjCDQvNC+0YDRjyIgZXhpZjpHUFNBbHRpdHVkZT0iMTUzIiBleGlmOkdQU0RhdGVTdGFtcD0iMjAyMDowMjowMyIgZXhpZjpQaXhlbFhEaW1lbnNpb249IjM5NyIgZXhpZjpQaXhlbFlEaW1lbnNpb249IjE5MiIgdGlmZjpJbWFnZVdpZHRoPSIzOTciIHRpZmY6SW1hZ2VIZWlnaHQ9IjE5MiIgdGlmZjpPcmllbnRhdGlvbj0iMSI+IDxleGlmOklTT1NwZWVkUmF0aW5ncz4gPHJkZjpTZXE+IDxyZGY6bGk+MTc0PC9yZGY6bGk+IDwvcmRmOlNlcT4gPC9leGlmOklTT1NwZWVkUmF0aW5ncz4gPGV4aWY6Rmxhc2ggcmRmOnBhcnNlVHlwZT0iUmVzb3VyY2UiLz4gPC9yZGY6RGVzY3JpcHRpb24+IDwvcmRmOlJERj4gPC94OnhtcG1ldGE+ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg
 ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg
@@ -42,101 +74,28 @@ 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">
+<b>Работа от генератора</b> - Ручной флаг работы от резервного источника питания. Ограничивает потребляемую мощность ТН, не включает электрокотёл, ТЭН бойлера и реле по суткам.
+Нагрев ГВС продолжается тепловым насосом. Нужно, когда генератор слабее максимального потребления ТН: чтобы он не отключался по перегрузке, мощность ТН ограничивают величиной меньше мощности генератора.
+Ручной флаг сбрасывается при сбросе контроллера; чтобы сохранить его, нажмите «Записать в EEPROM».
+Если на НК не заведён сигнал перехода на генератор (вход SGENERATOR), опцию нужно включать вручную. Флаг продублирован на стартовом экране дисплея Nextion (кнопка с изображением генератора, см. рисунок).<br/>
+<b>Определять автоматически</b> - Автоматическое ограничение мощности вместо ручного флага. Для этого на вход SGENERATOR должен быть подведён сигнал перехода на генератор, без него автоматика не работает.<br/>
+<b>Максимальная мощность ТН</b> (0…10000 Вт) - Предел потребляемой мощности при работе от резервного источника.
+<br clear="all"/>
 
-<b>Расположение файлов веб-сервера на SPI Flash</b> - в НК Web интерфейс управления ТН, можно расположить в двух местах:<br/>
-- на SD карте, там же хранится история работы ТН, которая пишется раз в минуту (чисто теоретически это менее надежное хранение);<br/>
-- в микросхеме flash SPI, если она установлена.<br/>
-Выбор данного чекбокса говорит, что НК пытаться загружать интерфейс с чипа памяти SPI, в противном случае будет производиться загрузка с SD карты.
-Надо понимать, что эта опция задает только приоритет загрузки, т.е. если на чипе памяти SPI файлы не найдены, будет произведена попытка загрузки с SD карты.</br>
-Загрузить файлы Web интрефейса можно на странице СЕРВИС->ФАЙЛЫ. На SD карту можно просто скопировать необходимы файлы через кард ридер, карта должна быть отформатирована в fat32 или fat16,
- желательно использовать карту маленького размера (1-4 Гб), и при форматировании указать максимальный размер кластера, для оптимизации скорости работы в НК.</br>
-<b>Сохранение состояния ТН в ЕЕПРОМ, для восстановления его после сброса</b> - Эта опция сохраняет чекбокс включения ТН (тумблер на панели управления сверху) во флеш памяти.
-При сбросе НК, это состояние будет восстановлено. Если этот чекбокс не выбран, ТН работает, и отключили электричество, то после его включения ТН останется в выключенном состоянии.
-Обычно эту опцию надо включить, для увеличения отказоустойчивости НК.<br/>
-<b>Число повторных попыток пуска при ошибке</b> - Сколько раз, ТН будет пытаться перезапустится, при ошибке или сбросе. Обычно устанавливется значение 1-5 раз,
-если 0 то НК не будет пытаться перезапуститься.<br/>
-В файле CONFIG.h #define NOT_RESTART_ON_CRITICAL_ERRORS в ней, можно перечислить критические ошибки, при их появлении ТН остановится и рестарта не будет.<br/>
-<b>Интервал накопления точек графиков в памяти</b> - Для оперативного контроля и настройки НК сохраняет данные о работе ТН в оперативной памяти и их можно посмотреть в виде графиков на странице ОТЛАДКА ТН -> ГРАФИКИ.
-Данная настройка устанавливает интервал времени между двумя соседними сохранениями (интервал между двумя точками графика). После сброса или пуска ТН графики стираются из оперативной памяти.<br/>
-<b>Графики в памяти пишутся только во время работы компрессора</b> - При включенной опции, графики в оперативной памяти пишутся только когда работет компрессор, что позволяет уместить больше информации, но теряют информацию в паузах
-и временная шкала на графике будет иметь разрывы.<br/>
-<b>Запись истории на SD карту</b> -данная опция включает запись истории (телеметрии ТН) с интервалом 1 минута на SD карту НК. При этом история пишется постоянно, файлы формируются по годам.
-Посмотреть историю в графическом виде можно на странице СТАТИСТИКА ->ДЕТАЛЬНО.<br/>
-<br/>
-<b>Настройки контура отопления</b> - блок настроек описывающих дополнительные настройки контура отопления<br/>
-<b>Использование дополнительного ТЭНа при нагреве отопления</b> - эта опция определяет использование дополнительного электро котла (стандартное имя RHEAT) в контуре отопления. Возможно три варианта выбора:</br>
-none - не использовать электро котел; <br/>
-reserve - резервирование отопления ТН, если температура в помещение опускается ниже <b>Температуры для управления дополнительным ТЭНом</b>, включается электро котел;<br/>
-bivalent - электро котел включается когда уличная температура опускается ниже <b>Температуры для управления дополнительным ТЭНом</b>. Эта опция сделана для воздушных ТН, при низких уличных температурах производится дополнительный нагрев электрокотлом.</br>
-<b>Температуры для управления дополнительным ТЭНом</b> - температура при котороий включается электро котел, имеет различный функционал в зависимости от режима работы (см предыдущий пункт)</br>
-<b>Работа насоса отопления, когда ТН в паузе</b> - при наличии теплоаккумулятора в системе отопления эта опция задает время работы насоса отопления в паузе (ТН не работает),
-при которой производится отбор тепла от теплоаккумулятора в дом. Если установлен 0 - насос СО не будет включатся.<br/>
-<b>Период останова насоса отопления в паузе</b> - при наличии теплоаккумулятора в системе отопления эта опция задает время паузы насоса отопления в паузе работы ТН
- Если установлен 0 - насос СО будет работать не прерывно. Задавая эти два времени можно настроить требуемый отбор тепла от теплоаккумялора в дом. </br>
-</br>
-<b>Солнечный Коллектор </b> - опции для настройки солнечного коллектора (СК), если он присутствует в системе и есть поддержка в прошивке НК (#define USE_SUN_COLLECTOR файл config.h).
-СК может использоваться двумя способами: 1. При работе на отопление добавлять тепло в гео контур; 2. Для регенерации (восстановления) геоконтура - 'закачка' тепла в гео контур для отогрева грунта вокруг него,
-что приведет к более эффективной работе ТН.</br>
-<b>Температура воздуха (TSUN) выше которой открывается СК</b> - температура при которой начинает работать СК.</br>
-<b>Температура воздуха (TSUN) ниже которой закрывается СК </b> - температура при которой отключается работа СК.</br>
-<b>Минимальное время работы, после которого будут проверятся температуры</b> - время контроля температуры СК для его гарантированного открытия (начала работы)</br>
-<b>Минимальное время паузы после останова СК</b> - минимальное время пауза, для ограничения частоты включения СК</br>
-<b>Использовать СК для регенерации геоконтура в простое</b> - включение опции регенерации гео контура (сброса тепла из СК в геоконтур).</br>
-<b>Температура воздуха (TSUN) начала регенерации геоконтура с помощью СК (+Δ)</b> - температура начала регенерации гео контура.</br>
-<b>Температура (TSUNOUTG) завершения регенерации геоконтура с помощью СК</b> - температура прекращения регенерации гео контура</br>
-<b>Разница (Δ) температур: TSUN и на выходе в геоконтур для включения СК</b> - дополнительное условие на включение регенерации гео контура.</br>
-<b>Разница (Δ) температур на выходе из СК и на выходе в геоконтур для выключения СК</b>- дополнительное условие на выключение регенерации гео контура.</br>
-</br>
-<b>Времена и задержки</b> - блок опция описывающая временные параметры.</br>
-<b>Минимальное время простоя компрессора перед включением</b> - Для обеспечения разгруженного пуска компрессора, после его остановки.
-Задается время, за которое выравниваются давления высокое с низким, также это минимизирует число пусков компрессора и сберегает его ресурс. Обычно устанавливается 2-10 минут.
-Обмотки статора компрессора, особенно не инверторного, при пуске значительно разогреваются высокими токами.</br>
-<b>Минимальное время работы компрессора</b> - необходимо, чтобы гарантированно охладить двигатель парами фреона. Чем мощнее компрессор, тем выше пусковой ток и больше время
-минимальной работы. Также это минимизирует число пусков компресора и сберагает его ресурс. Обычно устанавливается 5-15 минут. Очень актуально для старт-стопного ТН, что бы он не 'стартопил'.</br>
-<b>Задержка включения компрессора после включения насосов</b> - Необходима, для обеспечения необходимого протока в испарителе и конденсаторе ТН (инерционность системы) и
-обеспечения валидных данных с датчиков протока (проток, должен успеть считаться) и температуры. Иначе останов по минимальному протоку после пуска и не точная регулировка ЭТРВ
-в режиме Стартовая позиция ЭРВ определяется по температуре подачи.</br>
-<b>Задержка выключения насоса СО, после выключения компрессора</b> - Инверторные компрессора, после команды стоп не моментально, полностью останавливаются.
-В зависимости от настроек времени выбега привода, задается задержка + 15...30 сек. </br>
-<b>Задержка включения ТН после внезапного сброса контроллера</b> - данная задержка необходимо что бы ТН после сброса (например отключили электричество) пришел в 'равновесное' состояние,
-выравнил давления и плавно стартовал. Обычное значение 5-15 минут.</br>
-<b>Задержка перед повторным включением ТН при ошибке (попытке пуска)</b> - Учитывает, индивидуальные особенности ТН. Время всех процессов которые должны завершится на момент
-повторного пуска ТН. Как допустим достижение крайних положений 3х ходового клапана ГВС итд... Обычное значение 5-15 минут.</br>
-Чтобы при переключении режимов: отопление - разморозка, отопление - охлаждение и на оборот, избежать гидравлического удара в фреоновом контуре.</br>
-<b>Задержка между переключением реверсивного клапана и включением компрессора</b> - За это время, должны выровняться давления высокое с низким.
-Есть вероятность, что в режиме ГВС теплоноситель прокачиваемый в конденсаторе, имеет температуру выше защит температур СО.</br>
-<b>Пауза после переключения ГВС</b> -  В это время контроллер будет ожидать, падения температуры теплоносителя на выходе конденсатора после режима ГВС (подбирается экспериментально). </br>
-Пример: Клапан приоритета ГВС имеет время переключения 5 сек + время насосу прокачать конденсатор + инерционность датчика температуры ТCONOUTG закрепленного в каждом ТН индивидуально.
-Сумма времен этих нюансов, будет паузой. </br>
-<b>Время на сколько блокируются защиты при переходе с ГВС на отопление</b> - время на которое блокируются защиты отопления после переключения с ГВС, что бы температуры вышли на
-приемлемый уровень для отопления, иначе они будут срабатывать и будет возникать ошибка </br>
-</br>
-<b>Дополнительное оборудование</b></br>
-<b>Работа ТН от резервного источника питания (генератор)</b> - включение данной опции приводит к ограничению потребляемой мощности ТН.
-При включении данной опции не включается электрокотел, ТЭН бойлера, ежесуточные реле. Нагрев ГВС продолжается тепловым насосом.</br>
-Это необходимо при работе от резервного источника, например от генератора. Генератор обычно имеет мощность меньше чем максимальное потребление ТН,
-по этому что бы генератор не выключался по превышению нагрузки мощность потребления ТН надо ограничить величиной меньшей максимальной мощности генератора.</br>
-Если на НК не заведен сигнал перехода на работу от генератора (вход SGENERATOR) то необходимо в ручную установить эту опцию при работе от генератора.
-Для удобства данный чекбокс продублирован на странице СОСТОЯНИЕ (генератор) и на стартовом экране дисплея Nextion (см. рисунок - кнопка с изображением генератора)</br>
-<b>Автоматическое определение работы от резервного источника</b> - эта опция включает автоматическое ограничение мощности.
-Для этого надо понимать что к НК (вход SGENERATOR) должен быть подключен сигнал перехода на работу от генератора, без этого сигнала автоматический переход не возможен.</br>
-<b>Максимальная мощность потребления ТН от резервного источника питания</b> величина ограничения мощности при работе от резервного источника.</br>
-<b>Логировать не критичные ошибки электро-счетчика SDM</b> - включение данной опции приведет к записи ВСЕХ ошибок электро счетчика в журнал,
-в том числе ошибок чтения/записи, это увеличивает и 'засоряет' журнал но может потребоваться для отладки. Обычно данная опция выключена.</br>
-<b>Логировать обмен между беспроводными датчиками</b> - включение данной опции приведет к записи обмена с беспроводными датчиками в журнал,
-это увеличивает журнал но может потребоваться для отладки. Обычно данная опция выключена.</br>
-<b>Генерация звукового сигнала</b> - включение данной опции разрешает генерацию звукового сигнала при ошибке (прирывистый писк). Обычно эта опция включена.</br>
-<b>Использование дисплея Nextion</b> - включить использование внешнего дисплея (прошивка должна быть собрана с поддержкой дисплея #define NEXTION в файле config.h). Обычно эта опция включена.</br>
-<b>Включать дисплей при пуске компрессора</b>  - обычно дисплей засыпает через определенный интервал времени. Включение данной опции будит дисплей при включении компрессора. Можно по включению дисплея определять включение компресора.</br>
-<b>Время засыпания дисплея Nextion</b> - время через которое дисплей переводится в режим сна. Пробуждение дисплея происходит при нажатии на него, сбросе НК, или если включена опция
-<b>Включать дисплей при пуске компрессора</b> и компрессор включился.</br>
-<b>Яркость дисплея Nextion в %</b> - задается комфортная яркость дисплея.</br>
-<b>На первой шине 1-Wire только один датчик температуры</b> - НК поддерживает до четырех независимых шин 1-Wire. Данная опция говорит НК что на данной шине присутствует только один датчик, и можно проводить его опрос по упрощенной схеме.</br>
-<b>На второй шине 1-Wire только один датчик температуры</b> - Данная опция говорит НК что на данной шине присутствует только один датчик, и можно проводить его опрос по упрощенной схеме.</br>
-<b>На третьей шине 1-Wire только один датчик температуры</b> - Данная опция говорит НК что на данной шине присутствует только один датчик, и можно проводить его опрос по упрощенной схеме.</br>
-<b>На четвертой шине 1-Wire только один датчик температуры</b> - Данная опция говорит НК что на данной шине присутствует только один датчик, и можно проводить его опрос по упрощенной схеме.</br>
-</br>
-<b>Сброс настроек НК</b> - Производится сброс ВСЕХ настроек НК к дефолтному, для проведения сброса в соседнее с кнопкой поле надо ввести слово RESET, и нажать кнопку сброса.</br>
-</br>
-</br>
+<h3>Сброс настроек контроллера</h3>
+<b>Сброс настроек НК</b> - Возвращает ВСЕ настройки к заводским. Выполняется только при остановленном ТН. Для сброса введите в соседнее поле слово RESET и нажмите кнопку; контроллер перезагрузится.
+
+<h3>Где теперь остальные настройки</h3>
+<ul>
+<li>Откуда контроллер берёт страницы веба (SPI Flash или SD-карта) и загрузка файлов веба: «Система → Файлы и обновление», блок «Веб-интерфейс контроллера».
+SD-карту для файлов веба форматируйте в fat32 или fat16, лучше небольшую (1-4 Гб) с максимальным размером кластера.</li>
+<li>Интервал между точками онлайн-графиков и запись графиков только при работе компрессора: «Графики → Онлайн». После сброса или пуска ТН графики в памяти стираются.</li>
+<li>Запись истории на SD-карту (раз в минуту, файлы по годам) и детализация включений компрессора: «Графики → История». Файлы истории скачиваются на странице «Файлы и обновление».</li>
+<li>Дополнительный ТЭН отопления, работа и период останова насоса отопления в паузе: «Климат → Отопление».</li>
+<li>Дисплей Nextion (включение, засыпание, яркость) и звуковой сигнал: «Оборудование → Прочее».</li>
+<li>Журнальные флаги (ошибки SDM, обмен с беспроводными датчиками, веб-запросы): «Система → Диагностика → Флаги отладки».</li>
+</ul>
+
+</div>
+</body>
 </html>

@@ -37,9 +37,9 @@ var SHELL_MAP = [
 ];
 // Страницы, доступные роли user (WebServer.cpp, HTTP_GET)
 var SHELL_USER_PAGES = {index: 1, plan: 1, about: 1};
-// Страницы, у которых есть справка <имя>-help.html (у ЭРВ - eev-sethelp.html)
+// Страницы, у которых есть справка <имя>-help.html
 var SHELL_HELP = {heating: 1, gvs: 1, profiles: 1, scheduler: 1, config: 1, lan: 1, mqtt: 1, notice: 1,
-	time: 1, system: 1, files: 1, log: 1, test: 1, debug: 1, 'eev-set': 'eev-sethelp'};
+	time: 1, system: 1, files: 1, log: 1, test: 1, debug: 1, 'eev-set': 1};
 var SHELL_ICONS = {
 	home: 'M3 11l9-8 9 8M5 10v10h14V10M10 20v-6h4v6',
 	thermo: 'M10 14V5a2 2 0 0 1 4 0v9a4 4 0 1 1-4 0z',
@@ -367,7 +367,19 @@ function shDownload(a, type) {
 	}).catch(function() { alert('Не удалось загрузить файл ' + name); });
 	return false;
 }
+// Кликабельные <a onclick> без href, span и div с onclick внутри страницы (не подложки окон): фокус с клавиатуры, роль «кнопка», Enter и пробел нажимают
+function shButtons() {
+	[].forEach.call(document.querySelectorAll('.content a[onclick]:not([href]),.content span[onclick],.content div[onclick]'), function(e) {
+		if(!e.hasAttribute('role')) e.setAttribute('role', 'button');
+		if(!e.hasAttribute('tabindex')) e.setAttribute('tabindex', '0');
+	});
+}
+document.addEventListener('keydown', function(e) {
+	var t = e.target;
+	if((e.key == 'Enter' || e.key == ' ') && t && t.getAttribute && t.getAttribute('role') == 'button' && t.tagName != 'BUTTON' && t.hasAttribute('onclick')) { e.preventDefault(); t.click(); }
+});
 function shAria() {
+	shButtons();
 	[].forEach.call(document.querySelectorAll('.hint[data-tip]:not([aria-label])'), function(h) { h.setAttribute('role', 'note'); h.setAttribute('aria-label', h.getAttribute('data-tip')); });
 	[].forEach.call(document.querySelectorAll('input.sw:not([aria-label]),.content input[type=number]:not([aria-label]),.content input[type=text]:not([aria-label]),.content input[type=password]:not([aria-label]),.content select:not([aria-label])'), function(e) {
 		var t = shLabelOf(e);

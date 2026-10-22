@@ -68,7 +68,7 @@ function poll(kind, v, n) {
 		polls[kind] = setTimeout(function() { api.get({k: ['message.scan_' + kind.toLowerCase()]}, function(D) { var r = D['message.scan_' + kind.toLowerCase()]; poll(kind, r === undefined ? 'wait response' : r, n + 1); }); }, 3000);
 		return;
 	}
-	var bad = v == 'wait response' || /^(E\d+|error|fail|ошиб)|не отправлено/i.test(v);
+	var bad = v == 'wait response' || v === '' || /^(E\d+|error|fail|ошиб)|не отправлено/i.test(v);		// пустой ответ - нет результата, галочку не ставим
 	out.className = 'res ' + (bad ? 'bad' : 'ok');
 	out.innerHTML = (bad ? '✗ ' : '✓ ') + (v == 'wait response' ? 'ответа нет за 75 с' : (v || 'нет ответа').replace(/</g, '&lt;'));
 }

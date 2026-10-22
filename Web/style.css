@@ -4,17 +4,17 @@
    5. адаптивность */
 
 /* ---------- 1. токены и основа ---------- */
-:root{--bg:#f3f5f8;--card:#fff;--ink:#16202a;--mute:#6b7785;--line:#e6eaef;--acc:#0f8b8d;--acc2:#e8f5f5;
+:root{color-scheme:light;--bg:#f3f5f8;--card:#fff;--ink:#16202a;--mute:#6b7785;--line:#e6eaef;--acc:#0f8b8d;--acc2:#e8f5f5;
 	--heat:#f2762e;--cold:#2f7fd1;--ok:#22a06b;--bad:#d64545;--blue:#2563c9;--sand:#f3e7c9;--sand2:#e0cf9f;--navy:#1d2f5c;
 	--sh:0 1px 2px rgba(20,30,40,.05),0 8px 24px rgba(20,30,40,.06);
 	/* плотность: по умолчанию компактная; html.cozy (карточка «Интерфейс» на «Оборудование - Прочее») возвращает просторную.
 	   Предыдущие значения компактной (откат): --rail:96px;--pad:16px;--gap:10px;--cp:12px 14px;--h3m:7px;--fy:6px;--tilep:8px 10px;
-	   --tileg:8px;--kvy:5px;--top:8px var(--pad) 0;--tab:8px 14px;--subp:6px 10px;--sbp:7px var(--pad);--bar:58px */
-	--rail:88px;--pad:14px;--gap:8px;--cp:10px 13px;--h3m:6px;--fy:5px;--inp:3px 10px;--tilep:7px 10px;--tileg:7px;--kvy:4px;
+	   --tileg:8px;--top:8px var(--pad) 0;--tab:8px 14px;--subp:6px 10px;--sbp:7px var(--pad);--bar:58px */
+	--rail:88px;--pad:14px;--gap:8px;--cp:10px 13px;--h3m:6px;--fy:5px;--inp:3px 10px;--tilep:7px 10px;--tileg:7px;
 	--top:7px var(--pad) 0;--tabs:0 var(--pad);--tab:7px 14px;--subm:8px;--subp:5px 10px;--sbp:6px var(--pad);--bar:52px}
 :root{--cardline:rgba(230,234,239,.6);--tw:#fff1e8;--tb:#e8f1fc;--tok:#e6f6ee;--tbad:#fdeaea;--warnbg:#fff7f1;--warnbd:#f9d8c0;--warnfg:#a4501d;--seg:#e9edf2;--cell:#eef1f5;--swoff:#cfd6de;--savebar:rgba(255,255,255,.92)}
 /* цветовые схемы (выбор - карточка «Интерфейс» на «Оборудование → Прочее», класс на <html>) */
-html.theme-dark{--bg:#10151b;--card:#1a212a;--ink:#e8edf2;--mute:#8d99a8;--line:#2a333e;--cardline:#2a333e;--acc:#34c3c5;--acc2:#16373a;--heat:#ff8a4a;--cold:#5aa6f2;--ok:#37c28a;--bad:#ff6b6b;--sh:0 1px 2px rgba(0,0,0,.4);
+html.theme-dark{color-scheme:dark;--sand:#2a3444;--sand2:#44526a;--navy:#e3eaf6;--bg:#10151b;--card:#1a212a;--ink:#e8edf2;--mute:#8d99a8;--line:#2a333e;--cardline:#2a333e;--acc:#34c3c5;--acc2:#16373a;--heat:#ff8a4a;--cold:#5aa6f2;--ok:#37c28a;--bad:#ff6b6b;--sh:0 1px 2px rgba(0,0,0,.4);
 	--tw:#3b2518;--tb:#183044;--tok:#15382b;--tbad:#40201f;--warnbg:#3a2a1c;--warnbd:#5a3f26;--warnfg:#f0b27a;--seg:#222b36;--cell:#262f3b;--swoff:#3a4552;--savebar:rgba(26,33,42,.95)}
 html.theme-sand{--bg:#f4eee0;--card:#fffcf5;--ink:#1d2f5c;--mute:#7a7467;--line:#e8dfc8;--cardline:rgba(232,223,200,.6);--acc:#2563c9;--acc2:#e6eefb;--heat:#e0701f;--cold:#2563c9;--ok:#2f9a5f;--bad:#c9403d;--sh:0 1px 2px rgba(80,60,20,.06),0 8px 24px rgba(80,60,20,.07);
 	--seg:#efe5cf;--cell:#f1e8d3;--swoff:#d8ccb0;--savebar:rgba(255,252,245,.94)}
@@ -26,7 +26,7 @@ html.theme-ocean .ver,html.theme-ocean .foot,html.theme-ocean .foot .abt{color:#
 html.theme-ocean .uisw{background:#18365a}html.theme-ocean .uisw a{color:#a9bdd3}html.theme-ocean .uisw a.on{background:#1f4a82;color:#fff}
 html.theme-dark .btn2.p,html.theme-dark .btn.p{color:#08202a}
 html.theme-dark .nav.on{color:var(--acc)}
-html.cozy{--rail:96px;--pillp:7px 13px;--pad:28px;--gap:16px;--cp:18px 20px;--h3m:12px;--fy:11px;--inp:5px 12px;--tilep:10px 12px;--tileg:10px;--kvy:8px;
+html.cozy{--rail:96px;--pillp:7px 13px;--pad:28px;--gap:16px;--cp:18px 20px;--h3m:12px;--fy:11px;--inp:5px 12px;--tilep:10px 12px;--tileg:10px;
 	--top:16px var(--pad) 6px;--tabs:6px var(--pad) 0;--tab:10px 16px;--subm:16px;--subp:12px 16px;--sbp:12px var(--pad);--bar:90px}
 *{box-sizing:border-box}
 [hidden]{display:none!important}
@@ -99,9 +99,6 @@ dialog#sh-login .btns{display:flex;justify-content:flex-end;gap:8px;margin-top:1
 .row{display:flex;align-items:center;gap:10px}
 .big{font-size:60px;font-weight:800;letter-spacing:-2px;line-height:1}
 .big small{font-size:26px;font-weight:700;color:var(--mute);letter-spacing:0;margin-left:2px}
-.kv{display:flex;justify-content:space-between;align-items:baseline;padding:var(--kvy) 0;border-bottom:1px solid var(--line)}
-.kv:last-child{border:0}
-.kv span{color:var(--mute)}.kv b{font-size:16px}
 .tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:var(--tileg)}
 .tile{background:var(--bg);border-radius:14px;padding:var(--tilep)}
 .tile i{font-style:normal;display:block;color:var(--mute);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.3px}
@@ -112,10 +109,10 @@ dialog#sh-login .btns{display:flex;justify-content:flex-end;gap:8px;margin-top:1
 .chip.on{background:var(--ink);border-color:var(--ink);color:var(--card)}
 .chip i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px}
 /* страницы графиков (обзор, онлайн, статистика, история, ЭРВ): чипы песочные, как подсказки */
-body.index .chip,body.charts .chip,body.history .chip,body.stats .chip,body.eev .chip{border-color:var(--sand2);color:#6c7aa0;background:transparent}
-body.index .chip.on,body.charts .chip.on,body.history .chip.on,body.stats .chip.on,body.eev .chip.on{background:var(--sand);color:var(--navy);border-color:#d9c590;box-shadow:0 1px 3px rgba(29,47,92,.12)}
+body.index .chip,body.charts .chip,body.history .chip,body.stats .chip,body.eev .chip{border-color:var(--sand2);color:var(--mute);background:transparent}
+body.index .chip.on,body.charts .chip.on,body.history .chip.on,body.stats .chip.on,body.eev .chip.on{background:var(--sand);color:var(--navy);border-color:var(--sand2);box-shadow:0 1px 3px rgba(29,47,92,.12)}
 body.index .chip.bad,body.charts .chip.bad,body.history .chip.bad,body.stats .chip.bad{color:var(--bad)}
-body.index .chip i{background:#c9cfdd}body.index .chip.on i{background:var(--c)}
+body.index .chip i{background:var(--swoff)}body.index .chip.on i{background:var(--c)}
 .tag{font-size:11px;font-weight:800;padding:3px 8px;border-radius:99px;background:var(--acc2);color:var(--acc)}
 .tag.w{background:var(--tw);color:var(--heat)}.tag.b{background:var(--tb);color:var(--cold)}.tag.ok{background:var(--tok);color:var(--ok)}.tag.bad{background:var(--tbad);color:var(--bad)}
 .ev{display:flex;gap:12px;padding:7px 0;border-bottom:1px solid var(--line);font-size:13px}.ev:last-child{border:0}.ev time{color:var(--mute);width:44px;font-variant-numeric:tabular-nums}
@@ -203,7 +200,7 @@ table.t tr:last-child td{border:0}
 .cht{display:block;overflow:visible}
 .cht text{fill:var(--mute);font-size:11px;font-variant-numeric:tabular-nums}
 .cht .g{stroke:var(--line);stroke-width:1}.cht .g.v{stroke-dasharray:2 4}
-.cht .cur{stroke:#9aa5b1;stroke-dasharray:3 3}
+.cht .cur{stroke:var(--mute);stroke-dasharray:3 3}
 .cht text.lt{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.4px}
 .cht .nv{fill:transparent}.cht .ns{fill:rgba(15,139,141,.16);stroke:var(--acc);stroke-width:1;pointer-events:none}
 .cht .nh{fill:var(--acc);opacity:.55;pointer-events:none}
@@ -223,7 +220,7 @@ table.t tr:last-child td{border:0}
 .gg:not(.open) .gb{display:none}
 .cb{display:flex;align-items:center;gap:9px;padding:5px 6px;border-radius:8px;font-size:13px;cursor:pointer;line-height:1.25}
 .cb:hover{background:var(--bg)}
-.cb > i{width:16px;height:16px;border-radius:5px;border:2px solid #c5ced8;display:grid;place-items:center;flex:none}
+.cb > i{width:16px;height:16px;border-radius:5px;border:2px solid var(--swoff);display:grid;place-items:center;flex:none}
 .cb.on > i{background:var(--c,var(--acc));border-color:var(--c,var(--acc))}
 .cb.on > i:after{content:'';width:8px;height:4px;border-left:2px solid #fff;border-bottom:2px solid #fff;transform:rotate(-45deg) translate(1px,-1px)}
 .cb small{display:block;color:var(--mute);font-size:11px;font-weight:500}
@@ -236,7 +233,7 @@ table.t tr:last-child td{border:0}
 .gbox .field:last-child{border:0}
 .gtool{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
 .gtool .grow{flex:1}
-.gtool .chip{cursor:pointer}
+
 .gtool .chip.bad{color:var(--bad)}
 .gtool .win{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:7px 14px;font-weight:700;font-variant-numeric:tabular-nums}
 .gtool input[type=date],.gtool input[type=datetime-local]{border:1px solid var(--line);border-radius:10px;padding:6px 10px;font:inherit;font-weight:700;background:var(--bg)}
@@ -294,10 +291,7 @@ label.tg input:disabled + span{opacity:.5}
 @keyframes offspin{to{transform:rotate(360deg)}}
 .offl .rb{border:1px solid var(--warnbd);background:var(--card);color:var(--bad);border-radius:10px;padding:4px 12px;font:inherit;font-weight:800;cursor:pointer}
 html.off .content > .grid,html.off .content > .gwrap{opacity:.5;filter:grayscale(.5)}
-html.m .offl{margin:8px var(--pad) 0}
 /* ---------- 4. справка (*-help.html), служебные классы scripts.js ---------- */
-tr.inactive{display:none}
-tr.alarm{background:var(--bad);color:#fff}
 /* «только отопление» (hide_COOL=1): body.onlyheat; .oh - показывать только в такой сборке, .noh - только в обычной, .cool - охлаждение */
 .oh{display:none}
 .onlyheat .oh{display:inline}
@@ -338,7 +332,7 @@ html.m .card{padding:14px 16px;border-radius:18px}
 html.m .big{font-size:44px}
 html.m .card h3,html.m .card .row{flex-wrap:wrap}
 html.m .card h3 .r{flex-wrap:wrap}
-html.m .top{display:flex;gap:8px 8px;padding:12px var(--pad) 4px}
+html.m .top{gap:8px;padding:12px var(--pad) 4px}
 html.m .top > div:first-child{order:1;flex:1 1 0;min-width:0}
 html.m .top::before{content:'';order:2;flex:0 0 100%;height:0}
 html.m .top h1{font-size:21px}

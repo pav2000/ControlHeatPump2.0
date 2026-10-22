@@ -84,7 +84,7 @@ window.onload = function() {
 	<section class="card c4"><h3>Ограничение ПИД</h3><div id="c3"></div>
 		<h3 style="margin-top:18px">Программирование инвертора</h3>
 		<div class="warnbox">Только при выключенном ТН. Операция занимает около 10 секунд, подробности — в журнале. После неё нужна автонастройка (H001 = 1). Параметры связи по умолчанию: C071…C078 (C071 = 5, C072 = 1, C074 = 0, C075 = 1, C076 = 2, C077 = 0, C078 = 0).</div>
-		<div class="act" style="margin-top:10px"><button class="btn2 bad" onclick="programFc()">Запрограммировать Omron MX2<span class="hint" tabindex="0" data-tip="Установка регистров (программирование) Omron MX2 под требования НК, после программирования надо сделать автонастройку (H001=1). При программировании считается, что установлены параметры связи по умолчанию (С071=5, С072=1, С074=0, С075=1, С076=2, С077=0, С078=0).">1</span></button>
+		<div class="act" style="margin-top:10px"><button class="btn2 bad" onclick="programFc()">Запрограммировать Omron MX2<span class="hint" data-tip="Установка регистров (программирование) Omron MX2 под требования НК, после программирования надо сделать автонастройку (H001=1). При программировании считается, что установлены параметры связи по умолчанию (С071=5, С072=1, С074=0, С075=1, С076=2, С077=0, С078=0).">1</span></button>
 			<a class="btn2" id="mx2doc" href="OmronMX2.pdf" download="OmronMX2.pdf" onclick="return shDownload(this, 'application/pdf')">Описание настройки Omron MX2</a></div></section>
 	<section class="card c12" id="analog" hidden><h3>Аналоговое управление</h3><div id="c4"></div></section>
 </div>
