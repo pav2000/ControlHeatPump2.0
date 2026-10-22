@@ -305,7 +305,7 @@ uint8_t HeatPump::set_hashUser()
 	strcat(buf, Network.passUser);
 	base64_encode(Security.hashUser, buf, strlen(buf));
 	Security.hashUserLen = strlen(Security.hashUser);
-	journal.jprintf(" Hash user: %s\n", Security.hashUser);
+	journal.jprintf(" Hash user: len=%d\n", (int)Security.hashUserLen);       // хеш - это base64 логина и пароля, в журнал его не пишем
 	return Security.hashUserLen;
 }
 // расчитать хеш для администратора возвращает длину хеша
@@ -317,7 +317,7 @@ uint8_t HeatPump::set_hashAdmin()
 	strcat(buf, Network.passAdmin);
 	base64_encode(Security.hashAdmin, buf, strlen(buf));
 	Security.hashAdminLen = strlen(Security.hashAdmin);
-	journal.jprintf(" Hash admin: %s\n", Security.hashAdmin);
+	journal.jprintf(" Hash admin: len=%d\n", (int)Security.hashAdminLen);       // хеш - это base64 логина и пароля, в журнал его не пишем
 	return Security.hashAdminLen;
 }
 

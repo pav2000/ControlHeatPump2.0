@@ -455,6 +455,38 @@ uint16_t _crc16(uint16_t crc, uint8_t a)
   return crc;
 } 
 
+// Роль user видит только страницы обзора и статику морды. Раньше проверялось лишь расширение .html, причём ДО urldecode:
+// "lan%2Ehtml" проходил проверку и после декодирования отдавал lan.html, а файлы без .html (settings.txt и settings.bin
+// с паролями, журнал, графики, история, прошивочные файлы) роли user отдавались вообще без проверки.
+// Теперь имя проверяется после urldecode и по белому списку: три страницы (и их заглушки) плюс скрипты, стили и картинки.
+bool web_user_file_ok(const char *name)
+{
+	static const char *const pages[] = {"index.html", "plan.html", "about.html", "_index.html", "_plan.html", "_about.html"};
+	if(!name || !*name || strstr(name, "..") || strchr(name, '\\')) return false;
+	for(uint8_t i = 0; i < sizeof(pages) / sizeof(pages[0]); i++) if(strcmp(name, pages[i]) == 0) return true;
+	const char *ext = strrchr(name, '.');
+	if(!ext || strchr(ext, '/')) return false;
+	static const char *const stat[] = {".js", ".css", ".png", ".jpg", ".ico", ".svg"};
+	for(uint8_t i = 0; i < sizeof(stat) / sizeof(stat[0]); i++) if(strcmp(ext, stat[i]) == 0) return true;
+	return false;
+}
+
+// Сравнение значения заголовка Authorization (или хвоста "&&!Z...") с хешем целиком. Сравнение по префиксу
+// (strncmp по длине эталона) пропускало любое продолжение: base64 "admin:abc" - префикс base64 "admin:abcd",
+// поэтому к настоящему паролю можно было дописать лишние знаки. После значения обязан идти конец заголовка или адреса.
+// Нулевая длина эталона не совпадает ни с чем (strncmp с длиной 0 давал совпадение всегда).
+bool web_auth_match(const char *got, const char *hash, uint16_t hashLen)
+{
+	if(!got || !hash || !hashLen) return false;
+	uint8_t diff = 0;
+	for(uint16_t i = 0; i < hashLen; i++) {
+		if(!got[i]) return false;
+		diff |= (uint8_t)(got[i] ^ hash[i]);      // без раннего выхода по первому отличию
+	}
+	char e = got[hashLen];
+	return diff == 0 && (e == '\0' || e == '\r' || e == '\n' || e == ' ' || e == '&');
+}
+
 // Перевод строки в кодировке URL в UTF8, len - максимальная длина строки приемника + '\0'
 void urldecode(char *dst, char *src, uint16_t len)
 {       char a, b;

@@ -527,6 +527,7 @@ STRCONST(WEB_HEADER_TXT_KEEP, 		"text/html\r\nConnection: keep-alive");
 STRCONST(WEB_HEADER_END,				"\r\n\r\n");
 STRCONST(HEADER_FILE_NOT_FOUND, "HTTP/1.1 404 Not Found\r\n\r\n<html>\r\n<head><title>404 NOT FOUND</title><meta charset=\"utf-8\" /></head>\r\n<body><h1>404 NOT FOUND</h1></body>\r\n</html>\r\n\r\n");
 STRCONST(HEADER_FILE_WEB, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: keep-alive\r\nCache-Control: max-age=3600, must-revalidate\r\n\r\n"); // КЕШ ИСПОЛЬЗУЕМ
+STRCONST(HEADER_FILE_NOCACHE, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: keep-alive\r\nCache-Control: no-cache\r\n\r\n"); // меню зависит от роли: по адресу кэшировать нельзя
 STRCONST(HEADER_FILE_CSS, "HTTP/1.1 200 OK\r\nContent-Type: text/css\r\nConnection: keep-alive\r\nCache-Control: max-age=3600, must-revalidate\r\n\r\n"); // КЕШ ИСПОЛЬЗУЕМ
 STRCONST(HEADER_ANSWER, "HTTP/1.1 200 OK\r\nContent-Type: text/ajax\r\nAccess-Control-Allow-Origin: *\r\n\r\n");    // начало ответа на запрос
 // Ответ /api: "HTTP/1.1 " + статус + HEADER_API_TAIL + длина + "\r\n\r\n" + тело JSON. Content-Length обязателен: по нему браузер отличает целый ответ от оборванного.

@@ -62,6 +62,15 @@ const char* file_types[] = {"text/html", "image/x-icon", "text/css", "applicatio
 const char header_Authorization_1[] = "Authorization: Basic ";
 const char header_Authorization_2[] = "&&!Z";
 const char* pageUnauthorized      = {"HTTP/1.0 401 Unauthorized\r\nWWW-Authenticate: Basic real_m=Admin Zone\r\nContent-Type: text/html\r\nAccess-Control-Allow-Origin: *\r\n\r\n"};
+// Отказ на запрос API - БЕЗ WWW-Authenticate. Страница морды опрашивает /api/get каждые несколько секунд с тайм-аутом 3,5 с; заголовок заставлял браузер
+// открывать собственное окно входа на каждый такой запрос, а тайм-аут закрывал окно раньше, чем его успевали заполнить (и оно появлялось снова).
+// Без заголовка отказ получает сама морда и показывает свой диалог входа (shLogin); окно браузера остаётся для открытия страниц.
+const char* pageUnauthorizedApi   = {"HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: 0\r\nConnection: close\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\n\r\n"};
+static void sendUnauthorized(uint8_t thread)
+{
+	// на отказе по паролю строка запроса ещё не разобрана (GetRequestedHttpResource вернул отказ первым действием), на прочих отказах она разобрана и это не API
+	sendConstRTOS(thread, strncmp((char*)Socket[thread].inBuf, "GET /api/", 9) == 0 ? pageUnauthorizedApi : pageUnauthorized);
+}
 const char* NO_STAT               = {"Statistics are not supported in the firmware"};
 
 const char *postRet[]            = {"Настройки из файла восстановлены\r\n\r\n",                           //  Ответы на пост запросы
@@ -159,20 +168,14 @@ void web_server(uint8_t thread)
 					}
 					case HTTP_GET:     // чтение файла
 					{
-						// Для обычного пользователя подменить файл меню, для сокращения функционала
+						// Имя декодируем ДО проверки доступа: "lan%2Ehtml" иначе проходил белый список и отдавал lan.html
+						urldecode(Socket[thread].inPtr, Socket[thread].inPtr, len + 1);
+						// Для обычного пользователя подменить файл меню, для сокращения функционала; остальное - по белому списку
 						if(GETBIT(Socket[thread].flags, fUser)) {
 							if(strcmp(Socket[thread].inPtr, "menu.js") == 0) strcpy(Socket[thread].inPtr, "menu-user.js");
 							else if(strcmp(Socket[thread].inPtr, "_menu.js") == 0) strcpy(Socket[thread].inPtr, "_menu-user.js"); // мобильная морда
-							else if(strstr(Socket[thread].inPtr, ".html")) {
-								if(!(strcmp(Socket[thread].inPtr, "index.html") == 0
-									|| strcmp(Socket[thread].inPtr, "plan.html") == 0
-									|| strcmp(Socket[thread].inPtr, "about.html") == 0
-									|| strcmp(Socket[thread].inPtr, "_index.html") == 0
-									|| strcmp(Socket[thread].inPtr, "_plan.html") == 0
-									|| strcmp(Socket[thread].inPtr, "_about.html") == 0)) goto xUNAUTHORIZED;
-							}
+							else if(!web_user_file_ok(Socket[thread].inPtr)) goto xUNAUTHORIZED;
 						}
-						urldecode(Socket[thread].inPtr, Socket[thread].inPtr, len + 1);
 						readFileSD(Socket[thread].inPtr, thread);
 						break;
 					}
@@ -203,6 +206,7 @@ void web_server(uint8_t thread)
 					}
 					case HTTP_POST:    // загрузка настроек
 					{
+						if(GETBIT(Socket[thread].flags, fUser)) goto xUNAUTHORIZED;   // запись файлов, веба и настроек - только администратору
                         uint8_t ret= parserPOST(thread, len);         // разобрать и получить тип ответа
                         strcpy(Socket[thread].outBuf, HEADER_ANSWER);
 						strcat(Socket[thread].outBuf, postRet[ret]);   // вернуть текстовый ответ, который надо вывести
@@ -228,7 +232,7 @@ xUNAUTHORIZED:
 							W5100.readSnDIPR(sock, ip);
 							journal.jprintf("$UNAUTHORIZED (%d.%d.%d.%d)\n", ip[0], ip[1], ip[2], ip[3]);
 						}
-						sendConstRTOS(thread, pageUnauthorized);
+						sendUnauthorized(thread);
 						break;
 					}
 					case BAD_LOGIN_PASS: {
@@ -237,7 +241,7 @@ xUNAUTHORIZED:
 							W5100.readSnDIPR(sock, ip);
 							journal.jprintf("$Wrong login or password (%d.%d.%d.%d)\n", ip[0], ip[1], ip[2], ip[3]);
 						}
-						sendConstRTOS(thread, pageUnauthorized);
+						sendUnauthorized(thread);
 						break;
 					}
 
@@ -259,6 +263,15 @@ xUNAUTHORIZED:
 }
 
 const char filename_subst_scheme[] = "HPscheme";
+
+// Заголовок ответа для файла морды. Меню (menu.js) зависит от роли: роли user отдаётся menu-user.js под тем же адресом menu.js. Если разрешить браузеру
+// держать его час по адресу, то после смены пользователя остаётся меню прежней роли (лечится только Ctrl+F5), поэтому для него кэш по адресу отключён.
+static const char* webFileHeader(const char *filename)
+{
+	if(strstr(filename, ".css") != NULL) return HEADER_FILE_CSS;
+	if(strncmp(filename, "menu", 4) == 0 || strncmp(filename, "_menu", 5) == 0) return HEADER_FILE_NOCACHE;
+	return HEADER_FILE_WEB;
+}
 
 //  Чтение файла с SD или его генерация
 void readFileSD(char *filename, uint8_t thread)
@@ -426,8 +439,7 @@ void readFileSD(char *filename, uint8_t thread)
 xFileFound:
 			// Файл открыт читаем данные и кидаем в сеть
 			if(DBG_ON(DBG_HTTP)) { journal.jprintf("$Thread: %d socket: %d read file: %s\n",thread,Socket[thread].sock,filename); }
-			if(strstr(filename, ".css") != NULL) sendConstRTOS(thread, HEADER_FILE_CSS); // разные заголовки
-			else sendConstRTOS(thread, HEADER_FILE_WEB);
+			sendConstRTOS(thread, webFileHeader(filename));
 			SPI_switchSD();
 			while((n = webFile.read(Socket[thread].outBuf, sizeof(Socket[thread].outBuf))) > 0) {
 				if(sendBufferRTOS(thread, (byte*) (Socket[thread].outBuf), n) == 0) break;
@@ -444,8 +456,7 @@ xFileFound:
 			SerialFlashFile ff = SerialFlash.open(filename);
 			if(ff) {
 				if(DBG_ON(DBG_HTTP)) { journal.jprintf("$Thread: %d socket: %d read file: %s\n",thread,Socket[thread].sock,filename); }
-				if(strstr(filename, ".css") != NULL) sendConstRTOS(thread, HEADER_FILE_CSS); // разные заголовки
-				else sendConstRTOS(thread, HEADER_FILE_WEB);
+				sendConstRTOS(thread, webFileHeader(filename));
 				while((n = ff.read(Socket[thread].outBuf, sizeof(Socket[thread].outBuf))) > 0) {
 					if(sendBufferRTOS(thread, (byte*) (Socket[thread].outBuf), n) == 0) break;
 				} // while
@@ -471,12 +482,14 @@ uint16_t GetRequestedHttpResource(uint8_t thread)
 	WEB_STORE_DEBUG_INFO(50);
 	if((HP.get_fPass()) && (!HP.safeNetwork))  // идентификация если установлен флаг и перемычка не в нуле
 	{
-		char *str = strstr((char*)Socket[thread].inBuf, header_Authorization_1);
-		if(str) str += sizeof(header_Authorization_1) - 1;
-		else if((str = strstr((char*)Socket[thread].inBuf, header_Authorization_2))) str += sizeof(header_Authorization_2) - 1;
+		// Хвост "&&!Z..." в адресе - явные данные этого запроса (вход, выполненный в самой морде), он сильнее заголовка Authorization, который браузер
+		// подставляет из кэша прежнего входа: иначе после входа другим пользователем в морде сервер продолжал бы видеть прежнего
+		char *str = strstr((char*)Socket[thread].inBuf, header_Authorization_2);
+		if(str) str += sizeof(header_Authorization_2) - 1;
+		else if((str = strstr((char*)Socket[thread].inBuf, header_Authorization_1))) str += sizeof(header_Authorization_1) - 1;
 		if(str) {
-			if(strncmp(str, HP.Security.hashAdmin, HP.Security.hashAdminLen) == 0) goto x_ok;
-			else if(strncmp(str, HP.Security.hashUser, HP.Security.hashUserLen) == 0 || !*HP.get_passUser()) SETBIT1(Socket[thread].flags, fUser); else return BAD_LOGIN_PASS;
+			if(web_auth_match(str, HP.Security.hashAdmin, HP.Security.hashAdminLen)) goto x_ok;
+			else if(web_auth_match(str, HP.Security.hashUser, HP.Security.hashUserLen) || !*HP.get_passUser()) SETBIT1(Socket[thread].flags, fUser); else return BAD_LOGIN_PASS;
 		} else if(!*HP.get_passUser()) SETBIT1(Socket[thread].flags, fUser); else return UNAUTHORIZED;
 	}
 x_ok:

@@ -58,6 +58,8 @@ void str_replace(char *str, char find, char replace);
 bool parseBytes(const char* str, char sep, uint8_t* bytes, int maxBytes, int base);
 bool parseInt16_t(const char* str, char sep, int16_t* ints, int maxNum, int base);
 void urldecode(char *dst, char *src, uint16_t len);
+bool web_user_file_ok(const char *name);                       // можно ли роли user отдать этот файл (имя после urldecode)
+bool web_auth_match(const char *got, const char *hash, uint16_t hashLen);   // значение Authorization совпадает с эталоном целиком
 char *web_fill_tag_select(char *str, const char *select, uint8_t selected);
 
 // ---- Util.cpp: расписание (одно число - один день, массив 7 дней) ----
