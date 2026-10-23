@@ -97,11 +97,17 @@ uint16_t JournalRing_Free(const JournalRing *r)
 	return r->size - 1 - JournalRing_Used(r);
 }
 
+void JournalRing_Lose(JournalRing *r)
+{
+	uint16_t v = __atomic_load_n(&r->lost, __ATOMIC_RELAXED);
+	while(v < 0xFFFF && !__atomic_compare_exchange_n(&r->lost, &v, (uint16_t)(v + 1), true, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
+}
+
 bool JournalRing_Put(JournalRing *r, const char *s, uint16_t len)
 {
 	if(len == 0) return true;
 	if(len > JournalRing_Free(r)) {
-		if(r->lost < 0xFFFF) r->lost++;
+		JournalRing_Lose(r);
 		return false;                      // строка теряется целиком, не кусками
 	}
 	for(uint16_t i = 0; i < len; i++) {
@@ -120,4 +126,27 @@ uint16_t JournalRing_Get(JournalRing *r, uint8_t *dst, uint16_t max)
 		r->head = (uint16_t)(r->head + 1) % r->size;
 	}
 	return n;
+}
+
+void Journal_PlanWrite(int32_t numBytes, int32_t tail, uint8_t full, int32_t cap, JournalPlan *p)
+{
+	if(tail + numBytes + 2 > cap) {
+		// Не помещается вместе с TAIL и HEAD: два приёма. HEAD нужен всегда - после заворота кольцо полное,
+		// а раньше он ставился только если полное было уже ДО этой записи: при первом заворота вторым приёмом
+		// уходил случайный байт на месте HEAD.
+		p->len1 = cap - tail;
+		p->len2 = numBytes + 2 - p->len1;
+		int32_t rest = numBytes - p->len1;              // сколько данных ушло в начало области; -1 - на конце области только TAIL
+		p->tail = rest >= 0 ? rest : cap - 1;
+		p->head = (p->tail + 1) % cap;                  // раньше без деления: при TAIL на последнем байте HEAD получал адрес cap, за областью
+		p->full_after = 1;
+		p->put_head = true;
+	} else {
+		p->len1 = numBytes + 1 + full;
+		p->len2 = 0;
+		p->tail = tail + numBytes;
+		p->head = p->tail + 1;
+		p->full_after = full;
+		p->put_head = full != 0;
+	}
 }

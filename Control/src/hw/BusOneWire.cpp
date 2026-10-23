@@ -152,6 +152,7 @@ int8_t  deviceOneWire::lock_I2C_bus_reset(uint8_t checkpresence)
 
 inline void	deviceOneWire::release_I2C_bus()
 {
+	// SEM-BORROW: xI2CSemaphore - это и есть отдача замка, взятого lock_I2C_bus_reset()
 #ifdef ONEWIRE_DS2482
 		SemaphoreGive(xI2CSemaphore);
 #endif
@@ -178,6 +179,7 @@ int8_t  deviceOneWire::Scan(char *result_str)
 	byte i;
 	byte data[12];
 	byte addr[8];
+	bool i2c_lost = false;    // замок I2C отпущен на время вывода в журнал и не вернулся: отдавать его в конце нельзя
 	Watchdog_AliveHere();
 
 	if(lock_I2C_bus_reset(0)) { // reset 1-wire
@@ -251,6 +253,7 @@ int8_t  deviceOneWire::Scan(char *result_str)
 			if(SemaphoreTake(xI2CSemaphore, (I2C_TIME_WAIT/portTICK_PERIOD_MS)) == pdFALSE) {
 				journal.printf((char*)cErrorMutex,__FUNCTION__,MutexI2CBusy);
 				err = ERR_I2C_BUSY;
+				i2c_lost = true;
 				break;
 			}
 #endif
@@ -260,7 +263,7 @@ int8_t  deviceOneWire::Scan(char *result_str)
 	} else {
 		journal.jprintf("Error reset 1-Wire bus %d\n", bus + 1);
 	}
-	release_I2C_bus();
+	if(!i2c_lost) release_I2C_bus();
 #endif  // DEMO
 	return OK;
 }

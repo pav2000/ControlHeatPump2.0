@@ -78,6 +78,9 @@ static inline void _delay(int t)
 // Захват семафора. До старта шедулера возвращает pdTRUE без захвата: задачи
 // ещё не работают, конкуренции нет. После старта это обычный блокирующий
 // захват, xBlockTime - настоящее время ожидания (тик 1 мс = 1 мсек).
+// При ОСТАНОВЛЕННОМ планировщике (между vTaskSuspendAll и xTaskResumeAll) возвращает pdFALSE и считает
+// попытку в Diag.num_semSuspended: задачи там тоже не работают, но держатель замка может стоять посреди
+// транзакции, и "успех без захвата" пускал бы вызывающего на шину поверх чужой операции.
 BaseType_t SemaphoreTake(QueueHandle_t xSemaphore, TickType_t xBlockTime);
 
 // Освободить семафор с проверкой, что шедулер работает.
@@ -122,6 +125,7 @@ struct ControllerDiag
 	uint16_t num_resW5200;     // сбросов сетевого чипа
 	uint16_t num_resMutexSPI;  // сбросов замка шины SPI
 	uint16_t num_resMutexI2C;  // сбросов замка шины I2C
+	uint16_t num_semSuspended; // попыток взять замок при ОСТАНОВЛЕННОМ планировщике (должно быть 0)
 	uint16_t num_resMQTT;      // повторных инициализаций MQTT-клиента
 	uint16_t num_resPing;      // не прошедших пингов
 	uint32_t countResSocket;   // сбросов сокетов

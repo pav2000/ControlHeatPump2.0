@@ -567,7 +567,10 @@ boolean devOmronMX2::set_paramFC(char *var, float x)
     if(strcmp(var,fc_LEVEL100)==0)              { if ((x>=0)&&(x<=4096)) { level100=x; return true;} else return false;    } else 
     if(strcmp(var,fc_LEVELOFF)==0)              { if ((x>=0)&&(x<=4096)) { levelOff=x; return true;} else return false;    } else 
     #endif
-    if(strcmp(var,fc_BLOCK)==0)                 { SemaphoreGive(xModbusSemaphore); // отдать семафор ВСЕГДА
+    // Замок Modbus здесь не отдаётся: его никто не брал. Прежний веб брал его перед set_paramFC, нынешний
+    // (WebApiGet.cpp, apiFcSet) - нет, и отдача чужого мьютекса из веб-задачи при транзакции ReadSensor
+    // (приоритет 4) вызывает assert ядра и остановку контроллера.
+    if(strcmp(var,fc_BLOCK)==0)                 {
                                                 if (x==0) { SETBIT0(flags,fErrFC); note=(char*)noteFC_OK; }
                                                 else      { SETBIT1(flags,fErrFC); note=(char*)noteFC_NO; }
                                                 return true;            

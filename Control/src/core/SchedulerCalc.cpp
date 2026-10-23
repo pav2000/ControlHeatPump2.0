@@ -22,6 +22,8 @@
  * Scheduler::calc_active_profile. Единственное отличие - вместо HP.Prof.get_idProfile()
  * здесь возвращается SCHDLR_KeepProfile, а подставляет вызывающий.
  */
+#include <stdlib.h>
+#include <string.h>
 #include "SchedulerCalc.h"
 
 // Один элемент календаря - два байта подряд.
@@ -44,7 +46,7 @@ int8_t Scheduler_CalcProfile(const uint8_t *timetable, uint16_t size,
 
 	*change_out = 0;
 	// Пустой календарь: длина нулевая либо запись вылезла за буфер.
-	if(ptr == max || max > size) return SCHDLR_Profile_off;
+	if(ptr == max || max >= size) return SCHDLR_Profile_off;   // max - индекс ПОСЛЕДНЕГО байта календаря, он обязан быть < size
 
 	// Идём по записям, пока не встретим первую, которая ПОЗЖЕ текущего момента.
 	// Последняя пройденная (found) и есть действующая сейчас.
@@ -72,7 +74,7 @@ bool Scheduler_UsesProfile(const uint8_t *timetable, uint16_t size, uint8_t cale
 	for(uint8_t num = 0; num < calendars; num++) {
 		uint16_t ptr = Scheduler_TimetablePtr(timetable, size, num);
 		uint16_t max = ptr + timetable[ptr];
-		if(ptr == max || max > size) continue;                 // пустой календарь или вылез за буфер
+		if(ptr == max || max >= size) continue;                // пустой календарь или вылез за буфер (max - индекс последнего байта)
 		for(ptr++; ptr < max; ptr += ITEM_SIZE) {
 			int8_t b = (int8_t) timetable[ptr + 1];
 			if(b < -100 && 128 + b - 1 == profile) return true;
@@ -98,4 +100,35 @@ bool Scheduler_FixActive(uint8_t *flags, uint8_t *active, uint8_t keep, uint8_t 
 	*active = 0;
 	*flags &= ~mask;
 	return true;
+}
+
+int8_t Scheduler_SetCalendar(uint8_t *tt, uint16_t cap, uint8_t calendars, uint8_t cnum, char *val)
+{
+	if(cnum >= calendars) return 1;
+	char *p;
+	uint16_t cur_ptr = 0, cur_end = 0;
+	bool started = false;
+	while((p = strchr(val, ';'))) {
+		*p = 0;
+		uint8_t dec = atoi(val);
+		val = p + 1;
+		if(!started) {
+			started = true;
+			uint16_t last = Scheduler_TimetablePtr(tt, cap, calendars - 1);
+			uint16_t size = last + 1 + tt[last];                 // занято всеми календарями
+			cur_ptr = Scheduler_TimetablePtr(tt, cap, cnum);
+			uint16_t old_len = tt[cur_ptr];
+			uint16_t end = cur_ptr + 1 + old_len;                // за последним байтом редактируемого
+			if(size > cap || end > size || size - old_len + dec > cap) return 2;   // не лезет, либо таблица повреждена
+			if(cnum < calendars - 1) memmove(tt + cur_ptr + 1 + dec, tt + end, size - end);   // сдвинуть хвост ВЕСЬ, включая последний байт
+			if(dec < old_len) memset(tt + size - (old_len - dec), 0, old_len - dec);        // после сжатия хвост буфера обнулить
+			memset(tt + cur_ptr + 1, 0, dec);                    // недоданные записи - нули, а не остатки прежних данных
+			cur_end = cur_ptr + 1 + dec;
+			tt[cur_ptr++] = dec;
+			if(dec == 0) return 0;
+		} else if(cur_ptr < cur_end) {
+			tt[cur_ptr++] = dec;                                 // лишние сверх объявленной длины отбрасываем
+		}
+	}
+	return 0;
 }

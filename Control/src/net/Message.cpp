@@ -377,6 +377,7 @@ void Message::smtpWriteBlock(const char *block)
 // иначе каждый обмен стоил бы полного шага ожидания, а их за сеанс около десятка.
 boolean Message::smtpReadLine(char *buf, uint16_t size, uint32_t timeout)
 {
+	// SEM-BORROW: xWebThreadSemaphore - замок сети принадлежит вызывающему (sendMail), на время ожидания строки он отпускается и берётся обратно
 	uint16_t pos = 0, poll = 0;
 	uint32_t startTick = GetTickCount();
 	for(;;) {
@@ -926,36 +927,37 @@ boolean Message::sendSMS()
 	}
 
 	// посылка смс
-	strcpy(tempBuf, "GET http://sms.ru/sms/send?api_id=");                    // Начало
-	strcat(tempBuf, messageSetting.sms_p1);                                   // id
-	strcat(tempBuf, "&to=");
-	strcat(tempBuf, messageSetting.sms_phone);                                // номер
-	strcat(tempBuf, "&text=");
-	strcat(tempBuf, SendSMSTitle);
-	strcat(tempBuf, "+");
+	strcpy(mailBuf, "GET http://sms.ru/sms/send?api_id=");                    // Начало
+	strcat(mailBuf, messageSetting.sms_p1);                                   // id
+	strcat(mailBuf, "&to=");
+	strcat(mailBuf, messageSetting.sms_phone);                                // номер
+	strcat(mailBuf, "&text=");
+	strcat(mailBuf, SendSMSTitle);
+	strcat(mailBuf, "+");
 	switch((int) messageData.ms)   // Заголовок уведомления - добавляем тип уведомления
 	{
 	case pMESSAGE_NONE:	break;                                                                                       // Нет уведомлений
-	case pMESSAGE_TESTMAIL:	strcat(tempBuf, "TESTMAIL+"); break;                                                         // Тестовое почта
-	case pMESSAGE_TESTSMS:	strcat(tempBuf, "TESTSMS+"); break;                                                         // Тестовое смс
-	case pMESSAGE_RESET:    strcat(tempBuf, "RESET+");	 break;                                                            // Уведомление Сброс
-	case pMESSAGE_ERROR:	strcat(tempBuf, "ERROR+");	break;                                                            // Уведомление Ошибка
-	case pMESSAGE_LIFE: 	strcat(tempBuf, "LIFE+");   break;                                                             // Уведомление Сигнал жизни
-	case pMESSAGE_TEMP:		strcat(tempBuf, "TEMP+");	break;                                                             // Уведомление Достижение граничной температуры
-	case pMESSAGE_SD:		strcat(tempBuf, "ERROR+SD+");	break;                                                         // Уведомление "Проблемы с sd картой"
-	case pMESSAGE_WARNING:	strcat(tempBuf, "WARNING+");  break;                                                          // Уведомление "Прочие уведомления"
+	case pMESSAGE_TESTMAIL:	strcat(mailBuf, "TESTMAIL+"); break;                                                         // Тестовое почта
+	case pMESSAGE_TESTSMS:	strcat(mailBuf, "TESTSMS+"); break;                                                         // Тестовое смс
+	case pMESSAGE_RESET:    strcat(mailBuf, "RESET+");	 break;                                                            // Уведомление Сброс
+	case pMESSAGE_ERROR:	strcat(mailBuf, "ERROR+");	break;                                                            // Уведомление Ошибка
+	case pMESSAGE_LIFE: 	strcat(mailBuf, "LIFE+");   break;                                                             // Уведомление Сигнал жизни
+	case pMESSAGE_TEMP:		strcat(mailBuf, "TEMP+");	break;                                                             // Уведомление Достижение граничной температуры
+	case pMESSAGE_SD:		strcat(mailBuf, "ERROR+SD+");	break;                                                         // Уведомление "Проблемы с sd картой"
+	case pMESSAGE_WARNING:	strcat(mailBuf, "WARNING+");  break;                                                          // Уведомление "Прочие уведомления"
 	default:
-		strcat(tempBuf, "ERROR+TYPE+");
+		strcat(mailBuf, "ERROR+TYPE+");
+		clientMessage.stop();   // соединение уже открыто: без stop системный сокет оставался занятым
 		SemaphoreGive (xWebThreadSemaphore);
 		return false;
 	}
 	// Замена пробела на знак "+" т.к. это запрещенный знак при отправке сообщения.
 	// Заменяем в КОПИИ: сам messageData.data править нельзя, его использует и отправка почты
-	i = strlen(tempBuf);
-	strcat(tempBuf, messageData.data);                       // содержимое
-	for(; tempBuf[i]; i++) if(tempBuf[i] == ' ') tempBuf[i] = '+';
-	strcat(tempBuf, cStrEnd);
-	clientMessage.write(tempBuf, strlen(tempBuf));
+	i = strlen(mailBuf);
+	strcat(mailBuf, messageData.data);                       // содержимое
+	for(; mailBuf[i]; i++) if(mailBuf[i] == ' ') mailBuf[i] = '+';
+	strcat(mailBuf, cStrEnd);
+	clientMessage.write(mailBuf, strlen(mailBuf));
 
 
 	// Ожидание и получение ответа
@@ -1055,34 +1057,35 @@ boolean Message::sendSMSC()
   }
 
   // посылка смс
-  if ((messageSetting.sms_service) == pSMSC_RU) strcpy(tempBuf, "GET http://smsc.ru/sys/send.php?login=");         // Начало
-  if ((messageSetting.sms_service) == pSMSC_UA) strcpy(tempBuf, "GET http://smsc.ua/sys/send.php?login=");         // Начало
-  strcat(tempBuf, messageSetting.sms_p1);                                   // login
-  strcat(tempBuf, messageSetting.sms_p2);                                   // password
-  strcat(tempBuf, "&phones=");
-  strcat(tempBuf, messageSetting.sms_phone);                                // номер
-  strcat(tempBuf, "&mes=");
-  strcat(tempBuf, SendSMSTitle);
-  strcat(tempBuf, "+");
+  if ((messageSetting.sms_service) == pSMSC_RU) strcpy(mailBuf, "GET http://smsc.ru/sys/send.php?login=");         // Начало
+  if ((messageSetting.sms_service) == pSMSC_UA) strcpy(mailBuf, "GET http://smsc.ua/sys/send.php?login=");         // Начало
+  strcat(mailBuf, messageSetting.sms_p1);                                   // login
+  if(messageSetting.sms_p2[0] != '&') strcat(mailBuf, "&psw=");   // пароль без имени параметра; у того, кто вписал его вместе с "&psw=" - как было
+  strcat(mailBuf, messageSetting.sms_p2);                                   // password
+  strcat(mailBuf, "&phones=");
+  strcat(mailBuf, messageSetting.sms_phone);                                // номер
+  strcat(mailBuf, "&mes=");
+  strcat(mailBuf, SendSMSTitle);
+  strcat(mailBuf, "+");
   switch ((int)messageData.ms)   // Заголовок уведомления - добавляем тип уведомления
   {
     case pMESSAGE_NONE    : break;                                                                                       // Нет уведомлений
-    case pMESSAGE_TESTMAIL: strcat(tempBuf, "TESTMAIL+"); break;                                                         // Тестовое почта
-    case pMESSAGE_TESTSMS : strcat(tempBuf, "TESTSMS+");  break;                                                         // Тестовое смс
-    case pMESSAGE_RESET   : strcat(tempBuf, "RESET+"); break;                                                            // Уведомление Сброс
-    case pMESSAGE_ERROR   : strcat(tempBuf, "ERROR+"); break;                                                            // Уведомление Ошибка
-    case pMESSAGE_LIFE    : strcat(tempBuf, "LIFE+"); break;                                                             // Уведомление Сигнал жизни
-    case pMESSAGE_TEMP    : strcat(tempBuf, "TEMP+"); break;                                                             // Уведомление Достижение граничной температуры
-    case pMESSAGE_SD      : strcat(tempBuf, "ERROR+SD+"); break;                                                         // Уведомление "Проблемы с sd картой"
-    case pMESSAGE_WARNING : strcat(tempBuf, "WARNING+"); break;                                                          // Уведомление "Прочие уведомления"
-    default               : strcat(tempBuf, "ERROR+TYPE+"); SemaphoreGive(xWebThreadSemaphore); return false; break;    // ответ содержит ошибки
+    case pMESSAGE_TESTMAIL: strcat(mailBuf, "TESTMAIL+"); break;                                                         // Тестовое почта
+    case pMESSAGE_TESTSMS : strcat(mailBuf, "TESTSMS+");  break;                                                         // Тестовое смс
+    case pMESSAGE_RESET   : strcat(mailBuf, "RESET+"); break;                                                            // Уведомление Сброс
+    case pMESSAGE_ERROR   : strcat(mailBuf, "ERROR+"); break;                                                            // Уведомление Ошибка
+    case pMESSAGE_LIFE    : strcat(mailBuf, "LIFE+"); break;                                                             // Уведомление Сигнал жизни
+    case pMESSAGE_TEMP    : strcat(mailBuf, "TEMP+"); break;                                                             // Уведомление Достижение граничной температуры
+    case pMESSAGE_SD      : strcat(mailBuf, "ERROR+SD+"); break;                                                         // Уведомление "Проблемы с sd картой"
+    case pMESSAGE_WARNING : strcat(mailBuf, "WARNING+"); break;                                                          // Уведомление "Прочие уведомления"
+    default               : strcat(mailBuf, "ERROR+TYPE+"); clientMessage.stop(); SemaphoreGive(xWebThreadSemaphore); return false; break;    // ответ содержит ошибки
   }
   // Замена пробела на знак "+" т.к. это запрещенный знак при отправке сообщения.
   // Заменяем в КОПИИ: сам messageData.data править нельзя, его использует и отправка почты
-  i = strlen(tempBuf);
-  strcat(tempBuf, messageData.data);                       // содержимое
-  for (; tempBuf[i]; i++) if (tempBuf[i] == ' ') tempBuf[i] = '+';
-  strcat(tempBuf, cStrEnd);  clientMessage.write(tempBuf, strlen(tempBuf));
+  i = strlen(mailBuf);
+  strcat(mailBuf, messageData.data);                       // содержимое
+  for (; mailBuf[i]; i++) if (mailBuf[i] == ' ') mailBuf[i] = '+';
+  strcat(mailBuf, cStrEnd);  clientMessage.write(mailBuf, strlen(mailBuf));
 
 
   // Ожидание и получение ответа
@@ -1173,39 +1176,39 @@ boolean Message::sendSMSCLUB()
 
   }
   // посылка смс
-  strcpy(tempBuf, "POST /xml/ HTTP/1.1\r\nHost: gate.smsclub.mobi\r\nUser-Agent: HK 1.017\r\nConnection: close\r\nContent-Type: application/xml\r\nContent-Length:    ");      // заголовок POST запроса
-  strcat(tempBuf, "\r\n\r\n");
-  headerLength = strlen(tempBuf);			// длина заголовка
-  strcat(tempBuf, "<?xml version='1.0' encoding='utf-8'?>\r\n<request_sendsms>\r\n<username><![CDATA[");
-  strcat(tempBuf, messageSetting.sms_p1);
-  strcat(tempBuf, "]]></username>\r\n<password><![CDATA[");
-  strcat(tempBuf, messageSetting.sms_p2);
-  strcat(tempBuf, "]]></password>\r\n<from><![CDATA[infomir]]></from>\r\n<to><![CDATA[");
-  strcat(tempBuf, messageSetting.sms_phone);
-  strcat(tempBuf, "]]></to>\r\n<text><![CDATA[");
-  strcat(tempBuf, SendSMSTitle);
-  strcat(tempBuf, "+");
+  strcpy(mailBuf, "POST /xml/ HTTP/1.1\r\nHost: gate.smsclub.mobi\r\nUser-Agent: HK 1.017\r\nConnection: close\r\nContent-Type: application/xml\r\nContent-Length:    ");      // заголовок POST запроса
+  strcat(mailBuf, "\r\n\r\n");
+  headerLength = strlen(mailBuf);			// длина заголовка
+  strcat(mailBuf, "<?xml version='1.0' encoding='utf-8'?>\r\n<request_sendsms>\r\n<username><![CDATA[");
+  strcat(mailBuf, messageSetting.sms_p1);
+  strcat(mailBuf, "]]></username>\r\n<password><![CDATA[");
+  strcat(mailBuf, messageSetting.sms_p2);
+  strcat(mailBuf, "]]></password>\r\n<from><![CDATA[infomir]]></from>\r\n<to><![CDATA[");
+  strcat(mailBuf, messageSetting.sms_phone);
+  strcat(mailBuf, "]]></to>\r\n<text><![CDATA[");
+  strcat(mailBuf, SendSMSTitle);
+  strcat(mailBuf, "+");
 
   switch ((int)messageData.ms)   // Заголовок уведомления - добавляем тип уведомления
   {
     case pMESSAGE_NONE    : break;                                                                                       // Нет уведомлений
-    case pMESSAGE_TESTMAIL: strcat(tempBuf, "TESTMAIL+"); break;                                                         // Тестовое почта
-    case pMESSAGE_TESTSMS : strcat(tempBuf, "TESTSMS+");  break;                                                         // Тестовое смс
-    case pMESSAGE_RESET   : strcat(tempBuf, "RESET+"); break;                                                            // Уведомление Сброс
-    case pMESSAGE_ERROR   : strcat(tempBuf, "ERROR+"); break;                                                            // Уведомление Ошибка
-    case pMESSAGE_LIFE    : strcat(tempBuf, "LIFE+"); break;                                                             // Уведомление Сигнал жизни
-    case pMESSAGE_TEMP    : strcat(tempBuf, "TEMP+"); break;                                                             // Уведомление Достижение граничной температуры
-    case pMESSAGE_SD      : strcat(tempBuf, "ERROR+SD+"); break;                                                         // Уведомление "Проблемы с sd картой"
-    case pMESSAGE_WARNING : strcat(tempBuf, "WARNING+"); break;                                                          // Уведомление "Прочие уведомления"
-    default               : strcat(tempBuf, "ERROR+TYPE+"); SemaphoreGive(xWebThreadSemaphore); return false; break;    // ответ содержит ошибки
+    case pMESSAGE_TESTMAIL: strcat(mailBuf, "TESTMAIL+"); break;                                                         // Тестовое почта
+    case pMESSAGE_TESTSMS : strcat(mailBuf, "TESTSMS+");  break;                                                         // Тестовое смс
+    case pMESSAGE_RESET   : strcat(mailBuf, "RESET+"); break;                                                            // Уведомление Сброс
+    case pMESSAGE_ERROR   : strcat(mailBuf, "ERROR+"); break;                                                            // Уведомление Ошибка
+    case pMESSAGE_LIFE    : strcat(mailBuf, "LIFE+"); break;                                                             // Уведомление Сигнал жизни
+    case pMESSAGE_TEMP    : strcat(mailBuf, "TEMP+"); break;                                                             // Уведомление Достижение граничной температуры
+    case pMESSAGE_SD      : strcat(mailBuf, "ERROR+SD+"); break;                                                         // Уведомление "Проблемы с sd картой"
+    case pMESSAGE_WARNING : strcat(mailBuf, "WARNING+"); break;                                                          // Уведомление "Прочие уведомления"
+    default               : strcat(mailBuf, "ERROR+TYPE+"); clientMessage.stop(); SemaphoreGive(xWebThreadSemaphore); return false; break;    // ответ содержит ошибки
   }
-  strcat(tempBuf, messageData.data);										// содержимое
-  strcat(tempBuf, "]]></text>\r\n</request_sendsms>\r\n");
-  itoa((strlen(tempBuf) - headerLength), tmp_buf, 10);							//длина контента
-  tempBuf[headerLength - 7] = tmp_buf[0];
-  tempBuf[headerLength - 6] = tmp_buf[1];
-  tempBuf[headerLength - 5] = tmp_buf[2];
-  clientMessage.write(tempBuf, strlen(tempBuf));
+  strcat(mailBuf, messageData.data);										// содержимое
+  strcat(mailBuf, "]]></text>\r\n</request_sendsms>\r\n");
+  itoa((strlen(mailBuf) - headerLength), tmp_buf, 10);							//длина контента
+  mailBuf[headerLength - 7] = tmp_buf[0];
+  mailBuf[headerLength - 6] = tmp_buf[1];
+  mailBuf[headerLength - 5] = tmp_buf[2];
+  clientMessage.write(mailBuf, strlen(mailBuf));
 
   // Ожидание и получение ответа
   while (!clientMessage.available()) // ожидание ответа 5 сек
@@ -1249,7 +1252,7 @@ boolean Message::sendSMSCLUB()
             for (i = 0; i < strlen(retSMS); i++) if (retSMS[i] == '=') retSMS[i] = ':'; // замена = на знак ":" веб морда глючит в ответах - обрезает по  =
             clientMessage.stop();
             SemaphoreGive(xWebThreadSemaphore);
-            if (strstr(retSMS, ">OK<")) {
+            if (!strstr(retSMS, ">OK<")) {   // раньше условие было обратным: успех (">OK<") считался ошибкой
             	if(!GETBIT(WorkFlags, fWF_SMSSendError)) journal.jprintf("Error send SMS: %s\n", retSMS);
             	SETBIT1(WorkFlags, fWF_SMSSendError);
             	return false;

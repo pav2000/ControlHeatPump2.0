@@ -403,6 +403,7 @@ int8_t save_struct(uint32_t &addr_to, uint8_t *addr_from, uint16_t size, uint16_
 // Запись в каркасе НОВОГО формата: [тег][длина][данные]. Описание каркаса -
 // в Util.h. Контрольная сумма считается по тем же байтам, что уходят в
 // EEPROM, включая заголовок: иначе перестановка записей не изменила бы сумму.
+#define SAVE_REC_ATTEMPTS  3      // сколько раз переписывать запись, если структуру меняли во время записи
 int8_t save_rec(uint32_t &addr_to, uint16_t tag, const uint8_t *addr_from, uint16_t size, uint16_t &crc)
 {
 	uint8_t hdr[REC_HDR_SIZE];
@@ -414,11 +415,19 @@ int8_t save_rec(uint32_t &addr_to, uint16_t tag, const uint8_t *addr_from, uint1
 	for(uint8_t i = 0; i < sizeof(hdr); i++) crc = _crc16(crc, hdr[i]);
 	addr_to += sizeof(hdr);
 	if(size) {
-		if(writeEEPROM_I2C(addr_to, (uint8_t*)addr_from, size)) {
+		// Данные пишутся из ЖИВОЙ структуры, которую могут менять другие задачи, а CRC обязана совпасть с
+		// записанными байтами: иначе контрольное чтение даст ERR_SETTINGS_VERIFY. Запись с повтором при изменении.
+		struct W { static int put(void *a, const uint8_t *d, uint16_t n) { return writeEEPROM_I2C(*(uint32_t *) a, (uint8_t *) d, n); } };
+		uint32_t at = addr_to;
+		int8_t r = Record_WriteStable(W::put, &at, addr_from, size, &crc, SAVE_REC_ATTEMPTS);
+		if(r == 1) {
 			set_Error(ERR_SAVE_EEPROM, (char*)nameHeatPump);
 			return ERR_SAVE_EEPROM;
+		} else if(r == 2) {
+			journal.jprintf("Save record %d: data kept changing, gave up\n", (int) tag);
+			set_Error(ERR_SETTINGS_VERIFY, (char*)nameHeatPump);
+			return ERR_SETTINGS_VERIFY;
 		}
-		crc = calc_crc16((uint8_t*)addr_from, size, crc);
 		addr_to += size;
 	}
 	return OK;

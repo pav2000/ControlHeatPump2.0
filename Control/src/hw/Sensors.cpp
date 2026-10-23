@@ -199,9 +199,21 @@ void sensorADC::initSensorADC(uint8_t sensor, uint8_t pinA, uint16_t filter_size
 			 // (adc_last == 0, adc_flagFull == false) деление adc_sum / adc_last было
 			 // делением на ноль: на Cortex-M3 без DIV_0_TRP это молча даёт 0,
 			 // то есть нулевое давление и возможную ложную ошибку диапазона.
-			 if(adc_flagFull) lastADC = adc_sum / (adc_filter_max + 1);
-			 else if(adc_last) lastADC = adc_sum / adc_last;
-			 else lastADC = adc_lastVal;   // ещё нет усреднения - берём сырое значение
+			 // Сумма, индекс, флаг и последнее значение снимаются ОДНИМ срезом под запретом прерываний. По отдельности
+			 // читатель мог проверить adc_last != 0, а перед делением прерывание обнуляло индекс (деление на ноль, на
+			 // Cortex-M3 молча давшее 0 - нулевое давление и ложную ошибку диапазона), либо получал сумму уже с новым
+			 // отсчётом при старом индексе. Запрет прерываний целиком, а не taskENTER_CRITICAL: прерывание АЦП работает
+			 // выше барьера FreeRTOS (см. sensorFrequency::Read).
+			 uint32_t s; uint16_t n; bool full; uint16_t raw;
+			 {
+				 uint32_t primask = __get_PRIMASK();
+				 __disable_irq();
+				 s = adc_sum; n = adc_last; full = adc_flagFull; raw = adc_lastVal;
+				 __set_PRIMASK(primask);
+			 }
+			 if(full) lastADC = s / (adc_filter_max + 1);
+			 else if(n) lastADC = s / n;
+			 else lastADC = raw;           // ещё нет усреднения - берём сырое значение
 		 }
 #endif
 		 lastPress = (int32_t) lastADC * cfg.transADC / 1000 - cfg.zeroValue;

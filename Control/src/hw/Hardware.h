@@ -69,12 +69,13 @@ class sensorADC : public Sensor
     void	after_load(void);
    
     //type_rawADC adc;                                  // структура для хранения сырых данных с АЦП
-    uint32_t adc_sum;                          			// сумма
+    // Поля adc_* пишет обработчик прерывания АЦП, читает sensorADC::Read: volatile, а читать парой - только под запретом прерываний
+    volatile uint32_t adc_sum;                 			// сумма
     uint16_t *adc_filter;              					// массив накопленных значений
     uint16_t adc_filter_max;
-    uint16_t adc_last;       			                // текущий индекс
-    boolean  adc_flagFull;              			    // буфер полный
-    uint16_t adc_lastVal;                      			// последнее считанное значение
+    volatile uint16_t adc_last;       	                // текущий индекс
+    volatile boolean  adc_flagFull;     			    // буфер полный
+    volatile uint16_t adc_lastVal;             			// последнее считанное значение
     int16_t  Temp;										// Температура в сотых
     
   private:

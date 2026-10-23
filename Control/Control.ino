@@ -102,6 +102,7 @@ SemaphoreHandle_t xModbusSemaphore;                 // Семафор Modbus, и
 SemaphoreHandle_t xWebThreadSemaphore;              // Семафор потоки вебсервера,  деление сетевой карты
 SemaphoreHandle_t xI2CSemaphore;                    // Семафор шины I2C, часы, память, мастер OneWire
 SemaphoreHandle_t xSPISemaphore;                    // Семафор шины SPI  сетевая карта, память. SD карта // пока не используется
+volatile uint8_t fWebUploadingFilesTo = 0;          // Куда грузим файлы: 1 - SPI flash, 2 - SD card; одна на всех, extern в Constant.h (раньше static в заголовке - у каждого модуля своя копия)
 SemaphoreHandle_t xLoadingWebSemaphore;             // Семафор загрузки веб морды в spi память
 uint16_t lastErrorFreeRtosCode;                     // код последней ошибки операционки нужен для отладки
 uint32_t startSupcStatusReg;                        // Состояние при старте SUPC Supply Controller Status Register - проверяем что с питание
@@ -335,7 +336,9 @@ const char *Watchdog_Worst(uint16_t *percent_out)
 // тиков совпадает с числом миллисекунд.
 BaseType_t SemaphoreTake(QueueHandle_t xSemaphore, TickType_t xBlockTime)
 {
-	if(xTaskGetSchedulerState() != taskSCHEDULER_RUNNING) return pdTRUE;
+	BaseType_t st = xTaskGetSchedulerState();
+	if(st == taskSCHEDULER_NOT_STARTED) return pdTRUE;                  // старт: задач ещё нет, конкуренции нет
+	if(st == taskSCHEDULER_SUSPENDED) { Diag.num_semSuspended++; return pdFALSE; }   // замок при остановленном планировщике не берётся
 	return xSemaphoreTake(xSemaphore, xBlockTime);
 }
 
@@ -884,6 +887,7 @@ x_I2C_init_std_message:
 	if (xWebThreadSemaphore==NULL) set_Error(ERR_MEM_FREERTOS,(char*)nameFREERTOS);
 	xI2CSemaphore = xSemaphoreCreateMutex();         // мьютекс: FRAM, часы, мастер OneWire                     // Создание мютекса
 	if (xI2CSemaphore==NULL) set_Error(ERR_MEM_FREERTOS,(char*)nameFREERTOS);
+	journal.CreateLocks();                           // замки журнала: L1 строки/кольцо, L2 писатель EEPROM
 	// Дополнительные семафоры (почему то именно здесь) Создается когда есть Modbus
 	if(Modbus.get_present())
 	{

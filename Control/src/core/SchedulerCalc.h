@@ -58,6 +58,13 @@ int8_t Scheduler_CalcProfile(const uint8_t *timetable, uint16_t size,
                              uint8_t active, uint8_t day_of_week, uint8_t hour,
                              int16_t *change_out);
 
+// Записать календарь cnum из строки val вида "длина;байт;байт;...;" (разбор SetSchdlr CalendarX).
+// val портится (в нём ставятся нули вместо ';'). Возврат: 0 - готово, 1 - нет такого календаря,
+// 2 - не лезет в cap байт (или таблица повреждена); при отказе буфер не меняется.
+// Байты сверх объявленной длины отбрасываются, недоданные - нули. Календари после
+// редактируемого сдвигаются целиком.
+int8_t Scheduler_SetCalendar(uint8_t *timetable, uint16_t cap, uint8_t calendars, uint8_t cnum, char *val);
+
 // Используется ли профиль profile (0-based) хоть в одном из calendars календарей.
 // Нужно, чтобы не стереть профиль, на который ссылается расписание.
 // Разбор записей тот же, что в Scheduler_CalcProfile: "сменить профиль" - это

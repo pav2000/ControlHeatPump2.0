@@ -119,15 +119,20 @@ boolean set_time_NTP(void)
 				journal.jprintf(" send error\n");
 			} else {
 				uint8_t wait = 20;
+				bool locked = true;      // замок сети у нас; в цикле он отпускается и может не вернуться
 				flag = 0;
 				while(wait--) { // ожидание ответа
 					SemaphoreGive(xWebThreadSemaphore);
 					_delay(100);
-					if(SemaphoreTake(xWebThreadSemaphore,(W5200_TIME_WAIT/portTICK_PERIOD_MS))==pdFALSE) break; // Захват семафора потока или ОЖИДАНИЕ W5200_TIME_WAIT, если семафор не получен то выходим
+					if(SemaphoreTake(xWebThreadSemaphore,(W5200_TIME_WAIT/portTICK_PERIOD_MS))==pdFALSE) { locked = false; break; } // SEM-OK: ниже сразу выход без замка и без обращения к сокету
 					if(tTCP.available()) {
 						flag = 1;
 						break;
 					}
+				}
+				if(!locked) {            // замок не вернули: шина SPI чужая, сокет закроет checkSockStatus, отдавать нечего
+					ntp_done(NTP_RES_BUSY);
+					return false;  // SEM-OK: замок потерян, отдавать нечего
 				}
 				if(flag > 0) { // Ответ получен, формат: "<время UTC>;"
 					if(tTCP.read((uint8_t *)&NTP_buffer, sizeof(http_key_ok1)-1) == sizeof(http_key_ok1)-1) {

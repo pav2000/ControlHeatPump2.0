@@ -463,6 +463,15 @@ bool web_user_file_ok(const char *name)
 {
 	static const char *const pages[] = {"index.html", "plan.html", "about.html", "_index.html", "_plan.html", "_about.html"};
 	if(!name || !*name || strstr(name, "..") || strchr(name, '\\')) return false;
+	// Файлы, которые readFileSD не читает с карты, а ГЕНЕРИРУЕТ или переписывает по имени. Расширение у них проверку проходило:
+	// "stats_2026.csv.png" readFileSD превращал в stats_2026.dat и отдавал файл целиком, а "TEST.SD:x.png" занимал шину на секунды.
+	// Белый список по расширению к таким именам неприменим - закрыты по имени. state/settings/journal/chart сравниваются в readFileSD
+	// ТОЧНО (settings.js - обычный файл морды, он нужен страницам user), статистика, история и TEST.* - по префиксу.
+	static const char *const exact[] = {"state.txt", "settings.txt", "settings.bin", "settings_eeprom.bin", "journal.txt", "chart.csv"};
+	for(uint8_t i = 0; i < sizeof(exact) / sizeof(exact[0]); i++) if(strcmp(name, exact[i]) == 0) return false;
+	static const char *const prefix[] = {"stats_", "hist_", "hist2_", "TEST."};
+	for(uint8_t i = 0; i < sizeof(prefix) / sizeof(prefix[0]); i++) if(strncmp(name, prefix[i], strlen(prefix[i])) == 0) return false;
+	if(strchr(name, ':')) return false;
 	for(uint8_t i = 0; i < sizeof(pages) / sizeof(pages[0]); i++) if(strcmp(name, pages[i]) == 0) return true;
 	const char *ext = strrchr(name, '.');
 	if(!ext || strchr(ext, '/')) return false;
@@ -536,12 +545,24 @@ char *web_fill_tag_select(char *str, const char *select, uint8_t selected)
 // memcpy: <size[uint8_t: 1|2]><struct>
 void load_struct(void *to, uint8_t **from, uint16_t to_size)
 {
-	uint16_t size = *((uint16_t *)*from);
+	uint16_t size;
+	memcpy(&size, *from, sizeof(size));   // запись не выровнена: разыменование uint16_t* по нечётному адресу - неопределённое поведение (ловит UBSan)
 	if((size & 1) == 0) size &= 0xFF; else (*from)++;
 	(*from)++;
 	size >>= 1;
 	if(to != NULL) memcpy(to, *from, size <= to_size ? size : to_size);
 	*from += size;
+}
+
+int8_t Record_WriteStable(RecWriteFn wr, void *ctx, const uint8_t *src, uint16_t size, uint16_t *crc, uint8_t attempts)
+{
+	while(attempts--) {
+		uint16_t before = calc_crc16((unsigned char *) src, size, *crc);
+		if(wr(ctx, src, size)) return 1;
+		uint16_t after = calc_crc16((unsigned char *) src, size, *crc);
+		if(before == after) { *crc = after; return 0; }
+	}
+	return 2;
 }
 
 // Заголовок записи нового формата. Порядок байт - как у платформы, теми же

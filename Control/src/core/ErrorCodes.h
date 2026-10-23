@@ -420,4 +420,18 @@ void Error_Store(char *source, uint16_t source_size,
                  char *note,   uint16_t note_size,
                  const char *now, const char *src, int8_t err);
 
+/*
+ * Занять поле кода ошибки. Возвращает true, если код записал именно этот вызов (поле было OK),
+ * и false, если ошибка уже стоит - тогда первая остаётся, а повторная только игнорируется.
+ *
+ * ЗАЧЕМ ОТДЕЛЬНО. set_Error зовут из ReadSensor, UpdateHP, UpdateEEV, CommandHP и веб-потоков, а
+ * прежнее "if(error == OK) { error = code; ... }" - проверка и запись двумя действиями. Задача
+ * с более высоким приоритетом успевала вклиниться между ними: обе видели OK, обе писали
+ * source_error/note_error (рваная строка из двух ошибок) и обе звали process_error (двойной
+ * останов или двойной повторный пуск). Здесь проверка и запись - одна атомарная операция
+ * (LDREX/STREX на Cortex-M3), без запрета прерываний и без замка, поэтому годится и до старта
+ * планировщика. Проверяется потоками на хосте (tests/test_errorcodes.cpp).
+ */
+bool Error_Claim(volatile int8_t *field, int8_t code);
+
 #endif

@@ -305,7 +305,8 @@ class HeatPump
     // SettingsLegacy.cpp - файле, который через год удаляется целиком.
     int32_t load_all_old(uint8_t *buffer);
     // ---- НОВЫЙ формат, версия 150. Каркас записи описан в Util.h ----
-    int32_t save_all(void);                          // записать ВСЕ настройки новым форматом
+    int32_t save_all(void);                          // записать ВСЕ настройки новым форматом; занято - ERR_I2C_BUSY
+    volatile uint8_t saving;                         // идёт save_all (занимается атомарно)
     int32_t save_new(void);                          // записать настройки новым форматом
     int32_t load_new(uint8_t *buffer, uint8_t from_RAM = 0); // прочитать новый формат
     int32_t load_fail(int8_t code, uint8_t from_RAM);       // ошибка загрузки настроек: в журнал ошибок (старт) или кодом возврата (файл)
@@ -587,7 +588,7 @@ class HeatPump
     type_status Status;                   // Описание состояния ТН
 
     // Ошибки и описания
-    int8_t error;                         // Код ошибки
+    volatile int8_t error;                // Код ошибки; читают и пишут разные задачи, занимается атомарно (Error_Claim)
     char   source_error[16];              // источник ошибки
     char   note_error[160+1];             // Строка c описанием ошибки формат "время источник:описание"
     uint8_t fSD;                          // Признак наличия SD карты: 0 - нет, 1 - есть, но пустая, 2 - есть, веб в наличии

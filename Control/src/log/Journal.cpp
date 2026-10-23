@@ -36,6 +36,40 @@
 
 #define bufI2C Socket[0].outBuf
 
+// Замки журнала. Схема и порядок захвата описаны в Journal.h (_lock).
+#define JOURNAL_LOCK_WAIT  100     // мсек. Дольше ждать нельзя: строку проще потерять, чем остановить задачу
+static SemaphoreHandle_t xJournalSemaphore;        // L1: pbuf, кольцо, dedup, lost
+static SemaphoreHandle_t xJournalWriteSemaphore;   // L2: писатель в EEPROM, Format
+
+static inline bool lockTake(SemaphoreHandle_t h, TickType_t wait)
+{
+	if(h == NULL) return true;                      // замок не создан (нехватка памяти): работаем как раньше
+	return SemaphoreTake(h, wait) == pdTRUE;
+}
+static inline void lockGive(SemaphoreHandle_t h) { if(h != NULL) SemaphoreGive(h); }  // SEM-OK: обёртка, замок взял вызывающий
+
+void Journal::CreateLocks(void)
+{
+	xJournalSemaphore = xSemaphoreCreateMutex();     // мьютекс: нужна передача приоритета
+	xJournalWriteSemaphore = xSemaphoreCreateMutex();
+}
+
+// L1 берётся на форматирование и постановку одной строки. При ОСТАНОВЛЕННОМ планировщике SemaphoreTake
+// отказывает сразу, и это верно: держатель L1 мог быть вытеснен посреди pbuf или Ring_Put, а писать
+// поверх него нельзя. Строка не пишется, а засчитывается в потери - Drain покажет их в журнале.
+bool Journal::_lock(void)
+{
+	if(lockTake(xJournalSemaphore, JOURNAL_LOCK_WAIT / portTICK_PERIOD_MS)) return true;
+	JournalRing_Lose(&ring);
+	return false;
+}
+void Journal::_unlock(void) { lockGive(xJournalSemaphore); }
+
+// Согласованная пара/тройка bufferHead, bufferTail, full: пишет один писатель (под L2), читает кто угодно.
+// Замок не годится: читает и веб-поток, и писатель держит L2 долго, а правится три слова.
+static inline uint32_t irqSave(void) { uint32_t p = __get_PRIMASK(); __disable_irq(); return p; }
+static inline void irqRestore(uint32_t p) { __set_PRIMASK(p); }
+
 // ---------------------------------------------------------------------------
 // ---- Класс системный журнал пишет в консоль и в память ----
 //  Журнал лежит в микросхеме I2C, какая именно - выбирается в Config.h
@@ -116,6 +150,9 @@ boolean Journal::checkREADY()
 // Форматирование журнала (инициализация I2C памяти уже проведена), sizeof(buf)=W5200_MAX_LEN
 void Journal::Format(void)
 {
+	// L2: писатель (Drain/FlushAll) не должен работать с границами, пока их сбрасывают.
+	// До старта шедулера SemaphoreTake пропускает (Init зовёт Format первым делом).
+	if(!lockTake(xJournalWriteSemaphore, I2C_TIME_WAIT / portTICK_PERIOD_MS)) return;
 	err = OK;
 	printf("Formating I2C journal ");
 	uint8_t buf[] = { I2C_JOURNAL_HEAD, I2C_JOURNAL_TAIL };
@@ -123,40 +160,48 @@ void Journal::Format(void)
 		err = ERR_WRITE_I2C_JOURNAL;
 		SerialDbg.println(errorWriteI2C);
 	}
+	uint32_t pm = irqSave();
 	full = 0;                   // Буфер не полный
 	bufferHead = 0;
 	bufferTail = 1;
+	irqRestore(pm);
 	if(err == OK) {
 		writeREADY();                 // было форматирование
 		jprintf("\nFormat I2C journal (size %d bytes) - Ok\n", JOURNAL_LEN);
 	}
+	lockGive(xJournalWriteSemaphore);
 }
     
 // Печать только в консоль
 void Journal::printf(const char *format, ...)             
 {
 	if(!Is_otg_vbus_high()) return;
+	if(!_lock()) return;
 	va_list ap;
 	va_start(ap, format);
 	m_vsnprintf(pbuf, PRINTF_BUF, format, ap);
 	va_end(ap);
 	SerialDbg.print(pbuf);
+	_unlock();
 }
 
 // Печать в консоль и журнал возвращает число записанных байт
 void Journal::jprintf(const char *format, ...)
 {
+	if(!_lock()) return;
 	va_list ap;
 	va_start(ap, format);
 	m_vsnprintf(pbuf, PRINTF_BUF, format, ap);
 	va_end(ap);
 	if(Is_otg_vbus_high()) SerialDbg.print(pbuf);
 	_post(pbuf, pbuf);          // вся строка - и тело для сравнения повторов
+	_unlock();
 }
 
 // +Time, далее печать в консоль и журнал
 void Journal::jprintf_time(const char *format, ...)
 {
+	if(!_lock()) return;
 	NowTimeToStr(pbuf);
 	pbuf[8] = ' ';
 	va_list ap;
@@ -165,11 +210,13 @@ void Journal::jprintf_time(const char *format, ...)
 	va_end(ap);
 	if(Is_otg_vbus_high()) SerialDbg.print(pbuf);
 	_post(pbuf, pbuf + 9);      // тело без отметки времени "HH:MM:SS "
+	_unlock();
 }   
 
 // +DateTime, далее печать в консоль и журнал
 void Journal::jprintf_date(const char *format, ...)
 {
+	if(!_lock()) return;
 	NowDateToStr(pbuf);
 	pbuf[10] = ' ';
 	NowTimeToStr(pbuf + 11);
@@ -180,6 +227,7 @@ void Journal::jprintf_date(const char *format, ...)
 	va_end(ap);
 	if(Is_otg_vbus_high()) SerialDbg.print(pbuf);
 	_post(pbuf, pbuf + 20);     // тело без отметки "DD.MM.YYYY HH:MM:SS "
+	_unlock();
 }
 
 // отдать журнал в сеть клиенту  Возвращает число записанных байт
@@ -190,15 +238,20 @@ int32_t Journal::send_Data(uint8_t thread)
 	// самые интересные при разборе аварии - в файл не попадут.
 	FlushAll();
 	int32_t num, len, sum = 0;
-	num = bufferHead + 1;                     // Начинаем с начала журнала, num позиция в буфере пропуская символ начала
+	// Снимок границ: писатель двигает их во время долгой отправки, замок на неё не держат
+	uint32_t pm = irqSave();
+	const int32_t head = bufferHead, tail = bufferTail;
+	const int32_t avail = full ? JOURNAL_LEN - 2 : bufferTail - 1;
+	irqRestore(pm);
+	num = head + 1;                           // Начинаем с начала журнала, num позиция в буфере пропуская символ начала
 	for(uint16_t i = 0; i < (JOURNAL_LEN / W5200_MAX_LEN + 1); i++) // Передаем пакетами по W5200_MAX_LEN байт, может быть два неполных пакета!!
 	{
 		__asm__ volatile ("" ::: "memory");
-		if((num > bufferTail))                                        // Текущая позиция больше хвоста (начало передачи)
+		if((num > tail))                                              // Текущая позиция больше хвоста (начало передачи)
 		{
 			if(JOURNAL_LEN - num >= W5200_MAX_LEN) len = W5200_MAX_LEN;	else len = JOURNAL_LEN - num;   // Контроль достижения границы буфера
 		} else {                                                        // Текущая позиция меньше хвоста (конец передачи)
-			if(bufferTail - num >= W5200_MAX_LEN) len = W5200_MAX_LEN; else len = bufferTail - num;     // Контроль достижения хвоста журнала
+			if(tail - num >= W5200_MAX_LEN) len = W5200_MAX_LEN; else len = tail - num;     // Контроль достижения хвоста журнала
 		}
 		if(readEEPROM_I2C(I2C_JOURNAL_START + num, (byte*) Socket[thread].outBuf, len))         // чтение из памяти
 		{
@@ -209,7 +262,7 @@ int32_t Journal::send_Data(uint8_t thread)
 		if(sendPacketRTOS(thread, (byte*) Socket[thread].outBuf, len, 0) == 0) return 0;        // передать пакет, при ошибке выйти
 		_delay(2);
 		sum = sum + len;                                                                        // сколько байт передано
-		if(sum >= available()) break;                                                           // Все передано уходим
+		if(sum >= avail) break;                                                                 // Все передано уходим
 		num = num + len;                                                                        // Указатель на переданные данные
 		if(num >= JOURNAL_LEN) num = 0;                                                         // переходим на начало
 	}  // for
@@ -250,10 +303,12 @@ void Journal::_putRepeats(uint16_t repeats, const char *msg)
 //   body - та её часть, по которой определяется повтор (без отметки времени)
 //
 // До старта шедулера писать отложенно нельзя: выгружать кольцо некому,
-// а журнал загрузки нужен целиком - пишем сразу.
+// а журнал загрузки нужен целиком - пишем сразу. При ОСТАНОВЛЕННОМ планировщике (между vTaskSuspendAll и
+// xTaskResumeAll) прямая запись в EEPROM недопустима: замок I2C тогда не берётся, а держатель может стоять
+// посреди транзакции. Кольцо замков не использует, поэтому строка кладётся в него и уйдёт позже.
 void Journal::_post(char *line, const char *body)
 {
-	if(xTaskGetSchedulerState() != taskSCHEDULER_RUNNING) { _write(line); return; }
+	if(xTaskGetSchedulerState() == taskSCHEDULER_NOT_STARTED) { _write(line); return; }
 
 	uint16_t repeats = 0;
 	const char *repeated = NULL;
@@ -264,38 +319,23 @@ void Journal::_post(char *line, const char *body)
 	lastPostTick = GetTickCount();
 }
 
-// Выгрузить кольцо целиком. Вызывается перед чтением журнала.
-void Journal::FlushAll(void)
+// Забрать из кольца один кусок. Всё, что трогает общее состояние (кольцо, dedup, lost), - под L1;
+// запись в EEPROM идёт уже вне его, чтобы задачи в это время клали строки.
+// housekeeping: сообщить о потерях и выдать накопленные повторы по таймауту (раз за вызов Drain).
+uint16_t Journal::_take(uint8_t *chunk, bool housekeeping)
 {
-	if(xTaskGetSchedulerState() != taskSCHEDULER_RUNNING) return;
-	uint8_t chunk[JOURNAL_DRAIN_CHUNK + 2];  // +NUL и +байт HEAD, который _write дописывает за данными
-	// Предел на случай, если кто-то пишет быстрее, чем мы выгружаем
-	for(uint16_t guard = 0; guard < JOURNAL_RING_SIZE / JOURNAL_DRAIN_CHUNK + 4; guard++) {
-		uint16_t n = JournalRing_Get(&ring, chunk, JOURNAL_DRAIN_CHUNK);
-		if(!n) break;
-		chunk[n] = 0;
-		_write((char*) chunk);
-	}
-}
-
-// Выгрузить пачку из кольца в EEPROM. Вызывается раз в секунду из vServiceHP.
-// Мьютекс журнала на время записи НЕ удерживается: запись в EEPROM занимает
-// около 5 мс и берёт xI2CSemaphore, а задачи в это время должны иметь
-// возможность класть строки в кольцо.
-void Journal::Drain(void)
-{
-	// Потери при переполнении кольца показываем один раз на каждое новое значение
-	if(ring.lost != lostReported) {
-		lostReported = ring.lost;
-		char lbuf[56];
-		int n = m_snprintf(lbuf, sizeof(lbuf), "  ^ журнал: потеряно строк %u\n", (unsigned) lostReported);
-		if(n > 0) JournalRing_Put(&ring, lbuf, (uint16_t) n);
-	}
-
-	if(JournalRing_Used(&ring) == 0) {
+	if(!lockTake(xJournalSemaphore, JOURNAL_LOCK_WAIT / portTICK_PERIOD_MS)) return 0;
+	if(housekeeping) {
+		// Потери при переполнении кольца показываем один раз на каждое новое значение
+		if(ring.lost != lostReported) {
+			lostReported = ring.lost;
+			char lbuf[56];
+			int n = m_snprintf(lbuf, sizeof(lbuf), "  ^ журнал: потеряно строк %u\n", (unsigned) lostReported);
+			if(n > 0) JournalRing_Put(&ring, lbuf, (uint16_t) n);
+		}
 		// Ничего не пришло - выдать накопленные повторы, чтобы они не висели
 		// в счётчике неопределённо долго.
-		if(GetTickCount() - lastPostTick > JOURNAL_REPEAT_TIMEOUT) {
+		if(JournalRing_Used(&ring) == 0 && GetTickCount() - lastPostTick > JOURNAL_REPEAT_TIMEOUT) {
 			uint16_t repeats;
 			const char *repeated = NULL;
 			// Имя повторявшегося сообщения отдаёт сам Flush: иначе счётчик
@@ -304,19 +344,45 @@ void Journal::Drain(void)
 			if(JournalDedup_Flush(&dedup, &repeats, &repeated)) _putRepeats(repeats, repeated);
 			lastPostTick = GetTickCount();
 		}
-		return;
 	}
+	uint16_t n = JournalRing_Get(&ring, chunk, JOURNAL_DRAIN_CHUNK);
+	lockGive(xJournalSemaphore);
+	return n;
+}
 
-	// Несколько страниц за вызов: одна страница в секунду - слишком медленно,
-	// при всплеске записей кольцо переполнится. Между записями мьютекс шины
-	// отпускается, поэтому задачи с высоким приоритетом не ждут всю пачку.
+// Выгрузить кольцо целиком. Вызывается перед чтением журнала из веб-потока.
+// L2 исключает второго писателя (Drain из ServiceHP) и Format.
+void Journal::FlushAll(void)
+{
+	if(xTaskGetSchedulerState() != taskSCHEDULER_RUNNING) return;
+	if(!lockTake(xJournalWriteSemaphore, I2C_TIME_WAIT / portTICK_PERIOD_MS)) return;
 	uint8_t chunk[JOURNAL_DRAIN_CHUNK + 2];  // +NUL и +байт HEAD, который _write дописывает за данными
-	for(uint8_t k = 0; k < JOURNAL_DRAIN_CHUNKS; k++) {
-		uint16_t n = JournalRing_Get(&ring, chunk, JOURNAL_DRAIN_CHUNK);
+	// Предел на случай, если кто-то пишет быстрее, чем мы выгружаем
+	for(uint16_t guard = 0; guard < JOURNAL_RING_SIZE / JOURNAL_DRAIN_CHUNK + 4; guard++) {
+		uint16_t n = _take(chunk, false);
 		if(!n) break;
 		chunk[n] = 0;
 		_write((char*) chunk);
 	}
+	lockGive(xJournalWriteSemaphore);
+}
+
+// Выгрузить пачку из кольца в EEPROM. Вызывается раз в секунду из vServiceHP.
+// Несколько страниц за вызов: одна страница в секунду - слишком медленно,
+// при всплеске записей кольцо переполнится. Между записями мьютекс шины
+// отпускается, поэтому задачи с высоким приоритетом не ждут всю пачку.
+// Если писатель занят (FlushAll или Format), пачка пропускается до следующей секунды.
+void Journal::Drain(void)
+{
+	if(!lockTake(xJournalWriteSemaphore, JOURNAL_LOCK_WAIT / portTICK_PERIOD_MS)) return;
+	uint8_t chunk[JOURNAL_DRAIN_CHUNK + 2];  // +NUL и +байт HEAD, который _write дописывает за данными
+	for(uint8_t k = 0; k < JOURNAL_DRAIN_CHUNKS; k++) {
+		uint16_t n = _take(chunk, k == 0);
+		if(!n) break;
+		chunk[n] = 0;
+		_write((char*) chunk);
+	}
+	lockGive(xJournalWriteSemaphore);
 }
 
 void Journal::_write(char *dataPtr)
@@ -330,33 +396,36 @@ void Journal::_write(char *dataPtr)
 		return;
 	}
 	__asm__ volatile ("" ::: "memory");
+	JournalPlan pl;
+	Journal_PlanWrite(numBytes, bufferTail, full, JOURNAL_LEN, &pl);
 	dataPtr[numBytes] = I2C_JOURNAL_TAIL;
-	if(full) dataPtr[numBytes + 1] = I2C_JOURNAL_HEAD;
-	if(bufferTail + numBytes + 2 > JOURNAL_LEN) { //  Запись в два приема если число записываемых бит больше чем место от конца очереди до конца буфера ( помним про символ начала)
-		int32_t n;
-		if(eepromI2C.write(I2C_JOURNAL_START + bufferTail, (byte*) dataPtr, n = JOURNAL_LEN - bufferTail)) {
+	if(pl.put_head) dataPtr[numBytes + 1] = I2C_JOURNAL_HEAD;
+	if(pl.len2) { //  Запись в два приема: до конца области и с её начала (помним про символ начала)
+		if(eepromI2C.write(I2C_JOURNAL_START + bufferTail, (byte*) dataPtr, pl.len1)) {
 				if(err != ERR_WRITE_I2C_JOURNAL) SerialDbg.print(errorWriteI2C);
 			err = ERR_WRITE_I2C_JOURNAL;
 		} else {
-			dataPtr += n;
-			numBytes -= n;
-			full = 1;
-			if(eepromI2C.write(I2C_JOURNAL_START, (byte*) dataPtr, numBytes + 2)) {
+			if(eepromI2C.write(I2C_JOURNAL_START, (byte*) dataPtr + pl.len1, pl.len2)) {
 				err = ERR_WRITE_I2C_JOURNAL;
 					SerialDbg.print(errorWriteI2C);
 			} else {
-				bufferTail = numBytes >= 0 ? numBytes : JOURNAL_LEN - 1;
-				bufferHead = bufferTail + 1;
+				uint32_t pm = irqSave();
+				bufferTail = pl.tail;
+				bufferHead = pl.head;
+				full = 1;
+				irqRestore(pm);
 				err = OK;
 			}
 		}
 	} else {  // Запись в один прием
-		if(eepromI2C.write(I2C_JOURNAL_START + bufferTail, (byte*) dataPtr, numBytes + 1 + full)) {
+		if(eepromI2C.write(I2C_JOURNAL_START + bufferTail, (byte*) dataPtr, pl.len1)) {
 				if(err != ERR_WRITE_I2C_JOURNAL) SerialDbg.print(errorWriteI2C);
 			err = ERR_WRITE_I2C_JOURNAL;
 		} else {
-			bufferTail += numBytes;
-			if(full) bufferHead = bufferTail + 1;
+			uint32_t pm = irqSave();
+			bufferTail = pl.tail;
+			if(full) bufferHead = pl.head;
+			irqRestore(pm);
 		}
 	}
 	SemaphoreGive(xI2CSemaphore);

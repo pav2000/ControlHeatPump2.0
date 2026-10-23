@@ -783,6 +783,7 @@ bool Statistics::SendFileChunk(uint8_t thread, uint32_t *len, bool noMarkers, bo
 // step - прореживание, секунды (0 - отдавать все записи), см. history_thin
 void Statistics::SendFileDataByPeriod(uint8_t thread, SdFile *File, char *Prefix, char *TimeStart, char *TimeEnd, uint32_t step)
 {
+	// SEM-BORROW: xWebThreadSemaphore - замок сети принадлежит web_server (вызов из readFileSD); на паузах отдачи файла он отпускается и берётся обратно, при потере выставляется fLOCK_LOST
 	uint32_t bendfile = m_strlen((char*)_buffer_);
 	strcpy((char*)_buffer_ + bendfile + 1, Prefix);
 	strncat((char*)_buffer_+ bendfile + 1, TimeStart, 4); // year
@@ -925,6 +926,7 @@ xFoundStart:
 			SemaphoreGive(xWebThreadSemaphore);
 			_delay(WEB_SEND_FILE_PAUSE);
 			if(SemaphoreTake(xWebThreadSemaphore, W5200_TIME_WAIT) !=pdPASS) {
+				SETBIT1(Socket[thread].flags, fLOCK_LOST);   // web_server по этому флагу не отдаёт чужой замок
 				journal.jprintf("Cant take SEM while sending file!\n");
 				return;
 			}
@@ -955,8 +957,8 @@ int8_t Statistics::SaveStats(uint8_t newday)
 	int8_t retval = OK;
 	StatsFileString(rbuf);
 	uint16_t lensav, len = m_strlen(rbuf) + 1;
-	memcpy(stats_buffer + CurrentPos, rbuf, lensav = SD_BLOCK - CurrentPos < len ? SD_BLOCK - CurrentPos : len);
 #ifdef STATS_USE_BUFFER_FOR_SAVING
+	memcpy(stats_buffer + CurrentPos, rbuf, lensav = SD_BLOCK - CurrentPos < len ? SD_BLOCK - CurrentPos : len);
 	if(newday < 2 || lensav != len) { // save when there is no space in buffer
 #endif
 		if(newday != 1 && SemaphoreTake(xWebThreadSemaphore, newday == 0 ? W5200_TIME_WAIT : 0) == pdFALSE) {
@@ -964,6 +966,14 @@ int8_t Statistics::SaveStats(uint8_t newday)
 			free(rbuf);
 			return retval;
 		}
+#ifndef STATS_USE_BUFFER_FOR_SAVING
+		// Позиция в блоке и запись в stats_buffer - ПОД замком сети. Раньше memcpy стоял до захвата: полночный
+		// SaveStats(2) из ReadSensor правил буфер и CurrentPos одновременно с SaveStats(0) из CommandHP или
+		// выгрузкой файла статистики из веб-потока (она копирует stats_buffer под тем же замком), и блок уходил
+		// на карту, а в браузер - рваным. Если замок не взят, запись не копируется: следующее сохранение
+		// соберёт строку заново.
+		memcpy(stats_buffer + CurrentPos, rbuf, lensav = SD_BLOCK - CurrentPos < len ? SD_BLOCK - CurrentPos : len);
+#endif
 		SPI_switchSD();
 		if(!card.card()->writeBlock(CurrentBlock, stats_buffer)) {
 			Error("save", ID_STATS);

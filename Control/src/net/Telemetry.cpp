@@ -189,6 +189,7 @@ static char* nm_add(char *p, char *end, const char *metric, const char *value)
 //          -1 - семафор потерян: вызывающему трогать сокет и делать SemaphoreGive НЕЛЬЗЯ.
 static int16_t nm_read_line(EthernetClient &c, char *buf, uint16_t size, uint32_t timeout)
 {
+	// SEM-BORROW: xWebThreadSemaphore - замок сети принадлежит вызывающему (sendNarodMon2022), на время ожидания строки он отпускается и берётся обратно
 	uint16_t pos = 0, poll = 0;
 	uint32_t startTick = GetTickCount();
 	buf[0] = '\0';

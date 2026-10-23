@@ -202,10 +202,21 @@ int32_t HeatPump::save_all(void)
 	if(Option.ver < SETTINGS_VER_NEW) {
 		journal.jprintf(" Converting settings to v.%d (was %d)\n", VER_SAVE, Option.ver);
 	}
+	// Сохранение одно за раз. save_all зовут CommandHP (pSAVE), веб-потоки (save.all) и загрузка прежнего формата,
+	// а три области EEPROM (профили, расписание, настройки) пишутся по частям: две записи вперемешку дали бы
+	// область из кусков двух сохранений. Флаг занимается атомарно, без мьютекса и без остановки планировщика.
+	// Второй вызывающий получает отказ ERR_I2C_BUSY ("занято") и ничего не пишет; set_Error для него не вызывается.
+	if(__atomic_exchange_n(&saving, (uint8_t) 1, __ATOMIC_SEQ_CST)) {
+		journal.jprintf(" Save settings: busy, another save is in progress\n");
+		return ERR_I2C_BUSY;
+	}
+	int32_t ret;
 	Prof.cache_store(Prof.get_idProfile());        // текущий профиль - в кеш, оттуда пишется область
-	if(Prof.save_region() < 0) return error;
-	if(Schdlr.save() != OK) return error;
-	return save_new();                             // настройки последними
+	if(Prof.save_region() < 0) ret = error;
+	else if(Schdlr.save() != OK) ret = error;
+	else ret = save_new();                         // настройки последними
+	__atomic_store_n(&saving, (uint8_t) 0, __ATOMIC_SEQ_CST);
+	return ret;
 }
 
 int32_t HeatPump::save_new(void)
@@ -213,7 +224,8 @@ int32_t HeatPump::save_new(void)
 	uint16_t crc = 0xFFFF;
 	uint32_t addr = I2C_SETTING_EEPROM + 2;     // впереди общая длина
 	Option.numProf = Prof.get_idProfile();      // нужно для восстановления настроек
-	uint8_t tasks_suspended = TaskSuspendAll();
+	// Планировщик НЕ останавливается: он замораживал держателей замка I2C посреди транзакции (замок при остановке
+	// фиктивный), а нужен был для согласованности CRC с записанными байтами - её теперь даёт save_rec (Record_WriteStable).
 	if(error == ERR_SAVE_EEPROM || error == ERR_LOAD_EEPROM || error == ERR_CRC16_EEPROM || error == ERR_SETTINGS_VERIFY) error = OK;
 	journal.jprintf(" Save settings v.%d ", VER_SAVE);
 	DateTime.saveTime = rtcSAM3X8.unixtime();
@@ -280,7 +292,6 @@ int32_t HeatPump::save_new(void)
 		journal.jprintf("OK, wrote: %d bytes, crc: %04x\n", (int)(addr), crc);
 		break;
 	}
-	if(tasks_suspended) xTaskResumeAll();
 	if(error == ERR_SAVE_EEPROM || error == ERR_LOAD_EEPROM || error == ERR_CRC16_EEPROM || error == ERR_SETTINGS_VERIFY) {
 		set_Error(error, (char*)__FUNCTION__);
 		return error;
@@ -599,6 +610,7 @@ void HeatPump::resetSettingHP()
 	Diag.num_resW5200 = 0;                               // текущее число сбросов сетевого чипа
 	Diag.num_resMutexSPI = 0;                            // текущее число сброса митекса SPI
 	Diag.num_resMutexI2C = 0;                            // текущее число сброса митекса I2C
+	Diag.num_semSuspended = 0;                           // попыток взять замок при остановленном планировщике
 	Diag.num_resMQTT = 0;                                // число повторных инициализация MQTT клиента
 	Diag.num_resPing = 0;                                // число не прошедших пингов
 

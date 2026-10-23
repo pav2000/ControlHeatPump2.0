@@ -93,6 +93,7 @@ static void sysInfoText(char *strReturn)
 	strcat(strReturn,"Счетчик \"Потеря связи с "); strcat(strReturn,nameWiznet);strcat(strReturn,"\", повторная инициализация  <sup>3</sup>|");_itoa(Diag.num_resW5200,strReturn);strcat(strReturn,";");
 	strcat(strReturn,"Счетчик числа сбросов мютекса захвата шины SPI|");_itoa(Diag.num_resMutexSPI,strReturn);strcat(strReturn,";");
 	strcat(strReturn,"Счетчик числа сбросов мютекса захвата шины I2C|");_itoa(Diag.num_resMutexI2C,strReturn);strcat(strReturn,";");
+	strcat(strReturn,"Попыток взять замок при остановленном планировщике (должно быть 0)|");_itoa(Diag.num_semSuspended,strReturn);strcat(strReturn,";");
 	#ifdef MQTT
 	strcat(strReturn,"Счетчик числа повторных соединений MQTT клиента|");_itoa(Diag.num_resMQTT,strReturn);strcat(strReturn,";");
 	#endif
@@ -925,6 +926,7 @@ static int apiAct_power_off(ApiOut *o, const char *) { HP.sendCommand(pSTOP);  a
 static int apiAct_save_all(ApiOut *o, const char *)
 {
 	int32_t r = HP.save_all();     // профили, расписание и настройки новым форматом
+	if(r == ERR_I2C_BUSY) return AE_BUSY;   // другое сохранение ещё идёт
 	HP.save_motoHour();
 	if(r < 0) return AE_FAIL;
 	api_put_int(o, r);             // число записанных байт, как отвечал set_SAVE

@@ -367,6 +367,7 @@ uint16_t sendPacketRTOS(uint8_t thread, const uint8_t * buf, uint16_t len, uint1
 	uint16_t ret = 0;
 	uint16_t freesize = 0;
 
+	if(GETBIT(Socket[thread].flags, fLOCK_LOST)) return 0;   // замок уже потерян раньше в этом запросе: на шину и сокет не лезем
 	SPI_switchW5200();
 	if(len > W5200_MAX_LEN) ret = W5200_MAX_LEN;
 	else ret = len;
@@ -380,6 +381,7 @@ uint16_t sendPacketRTOS(uint8_t thread, const uint8_t * buf, uint16_t len, uint1
 				taskYIELD();
 			} else delay(1);
 			if(SemaphoreTake(xWebThreadSemaphore, (W5200_TIME_WAIT / portTICK_PERIOD_MS)) == pdFALSE) {
+				SETBIT1(Socket[thread].flags, fLOCK_LOST);   // web_server по этому флагу не отдаёт замок и не трогает SPI
 				journal.jprintf("Socket: %d %s\n", Socket[thread].sock, MutexWebThreadBusy);
 				return 0;
 			} // Захват мютекса потока или ОЖИДАНИНЕ W5200_TIME_WAIT
@@ -398,6 +400,7 @@ uint16_t sendPacketRTOS(uint8_t thread, const uint8_t * buf, uint16_t len, uint1
 		SemaphoreGive (xWebThreadSemaphore);                                                             // Мютекс потока отдать
 		_delay(pause);                                                            // Ждем pause мсек
 		if(SemaphoreTake(xWebThreadSemaphore, (W5200_TIME_WAIT / portTICK_PERIOD_MS)) == pdFALSE) {
+			SETBIT1(Socket[thread].flags, fLOCK_LOST);
 			journal.jprintf("Socket: %d %s\n", Socket[thread].sock, MutexWebThreadBusy);
 			return 0;
 		} // Захват мютекса потока или ОЖИДАНИНЕ W5200_TIME_WAIT
@@ -580,6 +583,7 @@ int Send_HTTP_Request(const char *server, const char *request, uint8_t fget_valu
 	}
 	EthernetClient tTCP;
 	int ret = 0;
+	bool locked = true;    // замок сети у нас в руках; в цикле ожидания он отпускается и может не вернуться
 	const uint16_t port = 80;
 	if(DBG_ON(DBG_WFULL)) journal.jprintf_time("Send request: %s%s\n", server, request);
 	uint8_t *buffer = (uint8_t *) Socket[MAIN_WEB_TASK].outBuf + sizeof(Socket[MAIN_WEB_TASK].outBuf)/2;
@@ -603,7 +607,7 @@ int Send_HTTP_Request(const char *server, const char *request, uint8_t fget_valu
 				while(timeout-- > 0) { // ожидание ответа
 					SemaphoreGive(xWebThreadSemaphore);
 					_delay(20);
-					if(SemaphoreTake(xWebThreadSemaphore,(W5200_TIME_WAIT/portTICK_PERIOD_MS)) == pdFALSE) break; // Захват семафора потока или ОЖИДАНИЕ W5200_TIME_WAIT, если семафор не получен то выходим
+					if(SemaphoreTake(xWebThreadSemaphore,(W5200_TIME_WAIT/portTICK_PERIOD_MS)) == pdFALSE) { locked = false; break; } // SEM-OK: замок не вернули - дальше locked закрывает и stop(), и Give
 					if(tTCP.available()) {
 						ret = 0;
 						break;
@@ -619,8 +623,9 @@ int Send_HTTP_Request(const char *server, const char *request, uint8_t fget_valu
 										ret = 0;
 									} else {
 										int datasize = tTCP.available();
-										if(datasize > (int)sizeof(Socket[MAIN_WEB_TASK].outBuf)) datasize = sizeof(Socket[MAIN_WEB_TASK].outBuf);
+										if(datasize > (int)sizeof(Socket[MAIN_WEB_TASK].outBuf) - 1) datasize = sizeof(Socket[MAIN_WEB_TASK].outBuf) - 1;   // -1: место под терминатор
 										if(tTCP.read(buffer, datasize) == datasize) {
+											buffer[datasize] = '\0';   // дальше strstr/strchr/%s: без терминатора они читали за буфер
 											buffer = (uint8_t*)strstr((char*)buffer, WEB_HEADER_END);
 											if(buffer) {
 												buffer += sizeof(WEB_HEADER_END)-1;
@@ -655,10 +660,10 @@ int Send_HTTP_Request(const char *server, const char *request, uint8_t fget_valu
 					} else ret = -2000000005;
 				}
 			}
-			tTCP.stop();
+			if(locked) tTCP.stop();   // без замка сокет закроет checkSockStatus: SPI сейчас не наша
 		}
 	}
-	SemaphoreGive(xWebThreadSemaphore);
+	if(locked) SemaphoreGive(xWebThreadSemaphore);   // отдавать чужой замок нельзя: assert ядра остановит контроллер
 	if(DBG_ON(DBG_WFULL)) journal.jprintf(" Ret = %d\n", ret);
 	else if(ret < 0 && (DBG_ON(DBG_WERR))) {
 		journal.jprintf_time("Error %d send request to %s!", ret + 2000000000, server);

@@ -507,7 +507,7 @@ xSecond_sub_1:				if(pidw.hyst[0] > 0) {
 	if(newEEV < _data.minSteps) {
 #if !defined(DEMO) && defined(EEV_MIN_CONTROL) // Контролировать достижение минимального открытия, ошибка генерится
 		if(HP.is_compressor_on()) {   // во время работы - Сообщение
-			err = _data.minSteps;
+			err = ERR_MIN_EEV;
 			set_Error(err, (char*) name);
 			return err;
 		}

@@ -208,6 +208,12 @@ void Error_Store(char *source, uint16_t source_size,
 	      append(note, note_size, len, Error_Text(err));
 }
 
+bool Error_Claim(volatile int8_t *field, int8_t code)
+{
+	int8_t expected = OK;
+	return __atomic_compare_exchange_n(field, &expected, code, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+}
+
 bool Error_IsCritical(int8_t err)
 {
 	for(uint8_t i = 0; i < sizeof(CRITICAL_ERRORS) / sizeof(CRITICAL_ERRORS[0]); i++)

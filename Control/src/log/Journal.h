@@ -69,11 +69,18 @@ public:
   int8_t   get_err(void) { return err; };
   virtual size_t write (uint8_t c);                       // чтобы print работал для это класса
   void Format(void);                           		    // форматирование журнала в еепром
+  void CreateLocks(void);                                 // создать замки журнала, зовётся из setup() до старта шедулера
 private:
   int8_t err;                                             // ошибка журнала
   int32_t bufferHead, bufferTail;                        // Начало и конец
   uint8_t full;                                           // признак полного буфера
   void _write(char *dataPtr);                            // Записать строку в журнал
+  // Замки журнала. L1 (xJournalSemaphore) - короткий, листовой: pbuf, кольцо, dedup, ring.lost.
+  // L2 (xJournalWriteSemaphore) - писатель: Drain, FlushAll и Format на время записи в EEPROM.
+  // Порядок: xWebThread -> L2 -> L1 | xI2C; L1 берётся последним, L2 продюсеры не берут никогда.
+  bool _lock(void);                                      // взять L1; при отказе строка засчитана в потери
+  void _unlock(void);
+  uint16_t _take(uint8_t *chunk, bool housekeeping);     // под L1 забрать кусок из кольца
 
   // Отложенная запись и подавление повторов. Обоснование - в JournalBuf.h.
   void _post(char *line, const char *body);              // Положить строку в кольцо (или записать сразу)

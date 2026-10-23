@@ -123,7 +123,7 @@ void Scheduler::web_get_param(char *param, char *result)
 		} else {
 			uint16_t ptr = Timetable_ptr(cnum);
 			uint16_t max = ptr + sch_data.Timetable[ptr];
-			if(max > TIMETABLES_MAXSIZE) return;
+			if(max >= TIMETABLES_MAXSIZE) return;
 			for(ptr++; ptr <= max; ptr++) {
 				result += m_strlen(result);
 				if(sch_data.Timetable[ptr]) itoa(sch_data.Timetable[ptr], result, 10);
@@ -172,32 +172,12 @@ uint8_t Scheduler::web_set_param(char *param, char *val)
 	} else ifparam("Clear") {
 		memset(&sch_data.Timetable, 0, sizeof(sch_data.Timetable));
 	} else ifparam(WEB_SCH_Calendar) { // CalendarX=str, X - расписание, если пусто, то активное; str = length;{wday+h;profile|-1; wday+h;profile|-1; ...}
-		char *p;
-		uint16_t size, cur_size, cur_ptr = 0xFFFF;
 		if((cnum = param[sizeof(WEB_SCH_Calendar)-1]) == '\0') cnum = sch_data.Active; else cnum -= '0';
 		if(cnum >= MAX_CALENDARS) return 1;
-		while((p = strpbrk(val, ";"))) {
-			p[0] = 0;
-			uint8_t dec = atoi(val);
-			val = p + 1;
-			if(cur_ptr == 0xFFFF) {
-				size = Timetable_ptr(MAX_CALENDARS-1);
-				size += 1 + sch_data.Timetable[size];
-				cur_ptr = Timetable_ptr(cnum);
-				cur_size = sch_data.Timetable[cur_ptr];
-				if(size - cur_size + dec > TIMETABLES_MAXSIZE) { // не лезет в память
-					journal.jprintf("Scheduler full: %d - %d + %d > %d\n", size, cur_size, dec, TIMETABLES_MAXSIZE);
-					return 2;
-				}
-				if(cnum < MAX_CALENDARS - 1) {
-					cur_size += cur_ptr + 1;
-					memmove(sch_data.Timetable + cur_ptr + 1 + dec, sch_data.Timetable + cur_size, size - cur_size - 1);
-				}
-				sch_data.Timetable[cur_ptr++] = dec;
-				if(dec == 0) return OK;
-			} else {
-				sch_data.Timetable[cur_ptr++] = dec;
-			}
+		int8_t r = Scheduler_SetCalendar(sch_data.Timetable, TIMETABLES_MAXSIZE, MAX_CALENDARS, cnum, val);
+		if(r == 2) {
+			journal.jprintf("Scheduler full: calendar %d does not fit in %d\n", cnum + 1, TIMETABLES_MAXSIZE);
+			return 2;
 		}
 	}
 	return OK;

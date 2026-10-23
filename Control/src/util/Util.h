@@ -130,6 +130,16 @@ KeyBootMode key_boot_mode(uint32_t held_ms);
 #define REC_HDR_SIZE  4
 
 void     rec_hdr_put(uint8_t *buf, uint16_t tag, uint16_t len);  // положить заголовок
+
+// Записать данные так, чтобы контрольная сумма ВСЕГДА соответствовала записанным байтам, даже если
+// исходная структура меняется другими задачами. CRC считается до записи и после; если она разошлась,
+// структура менялась во время записи, и запись повторяется (до attempts раз). wr - запись одного блока
+// (возврат 0 - успех), ctx передаётся ей как есть. crc на входе - начальное значение, на выходе - CRC
+// записанных данных. Возврат: 0 - записано и CRC стабильна, 1 - запись отказала, 2 - данные менялись все attempts раз.
+// Раньше CRC считалась один раз ПОСЛЕ записи, и изменение структуры между записью и подсчётом давало
+// несовпадение при контрольном чтении (ERR_SETTINGS_VERIFY, останов ТН); от него защищала остановка планировщика.
+typedef int (*RecWriteFn)(void *ctx, const uint8_t *data, uint16_t size);
+int8_t   Record_WriteStable(RecWriteFn wr, void *ctx, const uint8_t *src, uint16_t size, uint16_t *crc, uint8_t attempts);
 uint16_t rec_hdr_tag(const uint8_t *buf);                        // тег записи
 uint16_t rec_hdr_len(const uint8_t *buf);                        // длина данных записи
 

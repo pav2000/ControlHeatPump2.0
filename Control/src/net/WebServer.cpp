@@ -115,6 +115,7 @@ void web_server(uint8_t thread)
 		// Настройка  переменных потока для работы
 		Socket[thread].http_req_type = HTTP_invalid;        // нет полезной инфы
 		SETBIT0(Socket[thread].flags, fABORT_SOCK);          // Сокет сброса нет
+		SETBIT0(Socket[thread].flags, fLOCK_LOST);
 		SETBIT0(Socket[thread].flags, fUser); // Признак идентификации как обычный пользователь (нужно подменить файл меню)
 		Socket[thread].client = server1.available_(sock);  // надо обработать
 		Socket[thread].sock = sock;                           // запомнить сокет с которым работает поток
@@ -128,23 +129,22 @@ void web_server(uint8_t thread)
 					len = Socket[thread].client.get_ReceivedSizeRX();                  // получить длину входного пакета
 					if(len > W5200_MAX_LEN) {
 						journal.jprintf("WEB:Big packet: %d - truncated!\n", (int)(len));
-						journal.jprintf("%s\n\n", Socket[thread].inBuf);
 						len = W5200_MAX_LEN; // Ограничить размером в максимальный размер пакета w5200
 					}
 					if(Socket[thread].client.read(Socket[thread].inBuf, len) != len) {
 						journal.jprintf("WEB:Read error\n");
 						break;
 					}
+					// Терминатор ставится ДО разбора и авторизации. Раньше он ставился после: между запросами
+					// сбрасывался только inBuf[0], и короткий запрос без пароля оставлял за собой хвост прежнего,
+					// более длинного. Поиск заголовка Authorization в GetRequestedHttpResource шёл дальше конца
+					// новых данных, находил в хвосте пароль администратора из прежнего запроса, и новый запрос
+					// выполнялся с правами админа. Массив на байт длиннее W5200_MAX_LEN, поэтому и для полного
+					// пакета терминатор встаёт за данные (inBuf[W5200_MAX_LEN]), а не поверх последнего байта.
+					Socket[thread].inBuf[len] = 0;
 					// Ищем в запросе полезную информацию (имя файла или запрос ajax)
 					// пройти авторизацию и разобрать заголовок -  получить имя файла, тип, тип запроса, и признак меню пользователя
 					Socket[thread].http_req_type = GetRequestedHttpResource(thread);
-					if(Socket[thread].http_req_type != HTTP_POST || len < W5200_MAX_LEN) {
-						// Данные занимают inBuf[0..len-1], терминатор ставим сразу за ними.
-						// Не inBuf[len+1]: при len == W5200_MAX_LEN это запись за границу
-						// массива (в следующий член структуры, char *inPtr), а при меньшем len
-						// в inBuf[len] остался бы мусор от предыдущего запроса.
-						Socket[thread].inBuf[len < W5200_MAX_LEN ? len : W5200_MAX_LEN - 1] = 0;
-					}
 					if(DBG_ON(DBG_HTTP)) {
 						journal.jprintf("$QUERY: %s\n",Socket[thread].inPtr);
 						journal.jprintf("$INPUT: %s\n",(char*)Socket[thread].inBuf);
@@ -249,6 +249,11 @@ xUNAUTHORIZED:
 						journal.jprintf("$Unknow  %s\n", (char*) Socket[thread].inBuf);
 					}
 
+					// Обработчик потерял замок сети (отпустил на время ожидания и не взял обратно): шина SPI сейчас у другой
+					// задачи, поэтому ни SPI_switchW5200, ни client.stop, ни отдача замка нам не принадлежат. Раньше здесь
+					// всё это выполнялось: assert ядра при отдаче чужого мьютекса либо обмен по SPI без замка. Незакрытый
+					// сокет подберёт checkSockStatus.
+					if(GETBIT(Socket[thread].flags, fLOCK_LOST)) { Socket[thread].sock = -1; return; } // SEM-OK: замка нет, отдавать нечего
 					SPI_switchW5200();
 					Socket[thread].inBuf[0] = 0;
 					break;   // Подготовить к следующей итерации
@@ -497,12 +502,17 @@ x_ok:
 	// Идентификация пройдена
 	char *str_token, *tmpptr;
 	str_token = strtok_r((char*) Socket[thread].inBuf, " ", &tmpptr);    // Обрезаем по пробелам
+	if(!str_token) return HTTP_invalid;     // пакет из одних пробелов или нулей: токенов нет, в strcmp NULL нельзя
 	if(strcmp(str_token, "GET") == 0)   // Ищем GET
 	{
 		str_token = strtok_r(NULL, " ", &tmpptr);                       // get the file name
+		if(!str_token) return HTTP_invalid;   // "GET" без имени
 		if(strcmp(str_token, "/") == 0)                   // Имени файла нет, берем файл по умолчанию
 		{
-			Socket[thread].inPtr = (char*) INDEX_FILE;      // Указатель на имя файла по умолчанию
+			// Имя файла по умолчанию копируем в буфер запроса: дальше его декодируют НА МЕСТЕ (urldecode(inPtr, inPtr)),
+			// а запись в строковый литерал - это запись во flash. Токены разбора в этом буфере уже не нужны.
+			strcpy((char*) Socket[thread].inBuf, INDEX_FILE);
+			Socket[thread].inPtr = (char*) Socket[thread].inBuf;   // Указатель на имя файла по умолчанию
 			return HTTP_GET;
 		} else if(strcmp(str_token, (char*) MOB_PATH) == 0) // Имени файла нет, но указан путь до мобильной морды
 		{
@@ -704,6 +714,7 @@ xLenErr:
 				xSemaphoreGive(xWebThreadSemaphore); // отдать семафор вебморды, что бы обработались другие потоки веб морды
 				vTaskDelay(1000 / portTICK_PERIOD_MS);
 				if(SemaphoreTake(xWebThreadSemaphore, (3 * W5200_TIME_WAIT / portTICK_PERIOD_MS)) == pdFALSE) { // получить семафор веб морды
+					SETBIT1(Socket[thread].flags, fLOCK_LOST);
 					journal.jprintf("%s: Socket %d %s\n", (char*) __FUNCTION__, Socket[thread].sock, MutexWebThreadBusy);
 					return pLOAD_ERR;
 				} // если не удается захватить мютекс, то ошибка и выход

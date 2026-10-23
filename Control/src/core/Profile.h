@@ -96,7 +96,7 @@ class Profile                         // Класс профиль
     char*   get_boiler(char *var, char *ret);               // Получить параметр из строки по имени var, результат ДОБАВЛЯЕТСЯ в строку ret
     int32_t load_from_EEPROM_SaveON_mode(int8_t id);	    // Прочитать из EEPROM режим работы ТН (SaveON)
  
-    char list[I2C_PROFIL_NUM*(LEN_PROFILE_NAME+2)+1];         // текущий список конфигураций, не забывем про :1 (список)
+    char list[I2C_PROFIL_NUM*(LEN_PROFILE_NAME+6)+1];         // текущий список: на профиль "N. " + имя + ":1;" = имя+6 байт (раньше +2, и пять длинных имён выходили за массив)
     inline int32_t get_sizeProfile() { // определить длину данных
     	return sizeof(magic) + sizeof(crc16) +
 				// данные контрольная сумма считается с этого места
