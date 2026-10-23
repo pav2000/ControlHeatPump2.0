@@ -240,9 +240,7 @@ void Watchdog_SleepHere(uint32_t ms)
 }
 
 // Наблюдатель: сбрасывает вачдог только если отметились все незаприостановленные
-// задачи. Вынесен в отдельную функцию потому, что вызывающая vServiceHP
-// объявлена __attribute__((naked)) и не может держать локальные переменные -
-// компилятор выдаёт "local frame unavailable (naked function?)".
+// задачи. Вынесен в отдельную функцию, чтобы тело vServiceHP не росло.
 void Watchdog_Supervise(uint32_t now_ms)
 {
 	uint32_t susp = 0;
@@ -354,6 +352,19 @@ uint8_t TaskSuspendAll(void) {
 	return 0;
 }
 
+// Тела задач - обычные функции, а не __attribute__((naked)): GCC не гарантирует naked для кода на C, а
+// исходящие аргументы вызовов (double в jprintf) писались в верхние слова стека задачи без выделенного кадра -
+// безопасно лишь при чётной глубине стека и выравнивании кучи (шаг 5 разбора, 23.10.2026).
+void vWeb0(void *);
+void vWeb1(void *);
+void vWeb2(void *);
+void vWeb3(void *);
+void vReadSensor(void *);
+void vUpdate( void * );
+void vUpdateEEV(void *);
+void vUpdateStepperEEV(void *);
+void vUpdateCommand(void *);
+void vServiceHP(void *);
 
 // ---------------------------------------------------------------------------
 // Та ли микросхема памяти стоит, что выбрана в Config.h. Различаем по ЧИСЛУ БАНКОВ на шине:
