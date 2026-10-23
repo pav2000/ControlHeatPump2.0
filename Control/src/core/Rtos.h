@@ -64,9 +64,19 @@ struct HeatPumpTasks
 	TaskHandle_t xHandleUpdateWeb2;     // веб-сервер, поток 2
 	TaskHandle_t xHandleUpdateWeb3;     // веб-сервер, поток 3
 	SemaphoreHandle_t xCommandSemaphore;// семафор команды
-	bool Task_vUpdate_run;              // задача vUpdate работает
+	volatile bool Task_vUpdate_run;     // задача vUpdate работает (уровень: проверяется после каждого пробуждения)
+	volatile uint32_t Task_UpdateEEV_gen; // счётчик пусков ЭРВ: растёт при каждом пуске компрессора (фронт)
 };
 extern HeatPumpTasks Tasks;             // создаётся в Control.ino
+
+// Разбудить задачу уведомлением. В отличие от vTaskResume уведомление не теряется, если задача
+// ещё не дошла до ожидания, и ничего не делает с задачей, которая не ждёт. Задачи ждут
+// ulTaskNotifyTake с таймаутом и сами проверяют условие работы, поэтому лишнее уведомление безвредно.
+static inline void WakeTask(TaskHandle_t h) { if(h != NULL) xTaskNotifyGive(h); }
+// Пуск задачи UpdateHP: флаг ставится ДО уведомления, задача проверяет его после каждого пробуждения.
+static inline void Wake_UpdateHP(void) { Tasks.Task_vUpdate_run = true; WakeTask(Tasks.xHandleUpdate); }
+// Пуск задачи UpdateEEV: пуск - событие, а не состояние, поэтому считается. Вызывать ПОСЛЕ включения компрессора.
+static inline void Wake_UpdateEEV(void) { __atomic_add_fetch(&Tasks.Task_UpdateEEV_gen, 1, __ATOMIC_RELEASE); WakeTask(Tasks.xHandleUpdateEEV); }
 
 // Задержка (мсек) в зависимости от того, запущен ли шедулер.
 static inline void _delay(int t)
@@ -89,6 +99,11 @@ static inline void SemaphoreGive(QueueHandle_t xSemaphore)
 	if(xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) xSemaphoreGive(xSemaphore);
 }
 
+
+// Короткая критическая секция: запрет прерываний с сохранением PRIMASK (вложенность допустима).
+// Для нескольких слов, которые должны читаться и меняться вместе; блокировок внутри быть не может.
+static inline uint32_t irqSave(void) { uint32_t p = __get_PRIMASK(); __disable_irq(); return p; }
+static inline void irqRestore(uint32_t p) { __set_PRIMASK(p); }
 
 // Остановить шедулер задач, возврат 1 если получилось. Определена в Control.ino.
 uint8_t TaskSuspendAll(void);

@@ -67,8 +67,7 @@ void Journal::_unlock(void) { lockGive(xJournalSemaphore); }
 
 // Согласованная пара/тройка bufferHead, bufferTail, full: пишет один писатель (под L2), читает кто угодно.
 // Замок не годится: читает и веб-поток, и писатель держит L2 долго, а правится три слова.
-static inline uint32_t irqSave(void) { uint32_t p = __get_PRIMASK(); __disable_irq(); return p; }
-static inline void irqRestore(uint32_t p) { __set_PRIMASK(p); }
+// irqSave/irqRestore - в Rtos.h
 
 // ---------------------------------------------------------------------------
 // ---- Класс системный журнал пишет в консоль и в память ----

@@ -26,6 +26,7 @@
 #include "../net/Message.h"
 #include "Profile.h"
 #include "Rtos.h"       // хендлы задач, семафоры, счётчики состояния контроллера
+#include "CommandQueue.h" // очередь команд управления ТН
 #include "ClimateControl.h" // решение об управлении, мощности и COP
 #include "MotoHour.h"    // счётчики наработки: структуры записи и операции над ними
 #include "SettingsLegacy.h" // чтение старых форматов сохранения, файл целиком к удалению
@@ -289,7 +290,8 @@ class HeatPump
     inline TYPE_COMMAND isCommand()  {return command;}  // Получить текущую команду выполняемую ТН
     int8_t   runCommand();               // Выполнить команду по управлению ТН
     char *get_command_name(TYPE_COMMAND c) { return (char*)hp_commands_names[c < pEND14 ? c : pEND14]; }
-    boolean is_next_command_stop() { return next_command == pSTOP || next_command == pREPEAT; }
+    boolean is_next_command_stop();      // в очереди есть STOP/REPEAT: длинные операции пуска прерываются
+    boolean takeCommand();               // CommandHP: взять следующую команду из очереди, true - есть что выполнять
     uint8_t is_pause();					// Возвращает 1, если ТН в паузе
 	inline boolean is_compressor_on() { return dRelay[RCOMP].get_Relay() || dFC.isfOnOff(); }    // Проверка работает ли компрессор
 
@@ -583,8 +585,8 @@ class HeatPump
     type_motoHour motoHour;               // Структура для хранения счетчиков запись каждый час
     type_motoHour motoHour_saved;
     TEST_MODE testMode;                   // Значение режима тестирования
-    TYPE_COMMAND command;                 // Текущая команда управления ТН
-    TYPE_COMMAND next_command;            // Следующая команда управления ТН
+    volatile TYPE_COMMAND command;        // Текущая команда управления ТН (pEMPTY - ничего не выполняется)
+    CommandQueue cmdq;                    // Очередь команд, см. CommandQueue.h; все обращения под запретом прерываний
     type_status Status;                   // Описание состояния ТН
 
     // Ошибки и описания

@@ -602,7 +602,7 @@ void HeatPump::resetSettingHP()
 	onBoiler = false;                               // Если true то идет нагрев бойлера
 	onSalmonella = false;                           // Если true то идет Обеззараживание
 	command = pEMPTY;                               // Команд на выполнение нет
-	next_command = pEMPTY;
+	CommandQueue_Init(&cmdq);
 	PauseStart = 0;                                 // начать отсчет задержки пред стартом с начала
 	Diag.startRAM = 0;                                   // Свободная память при старте FREE Rtos - пытаемся определить свободную память при работе
 	lastEEV = -1;                                   // значение шагов ЭРВ перед выключением  -1 - первое включение

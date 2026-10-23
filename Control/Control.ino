@@ -354,16 +354,6 @@ uint8_t TaskSuspendAll(void) {
 	return 0;
 }
 
-void vWeb0(void *) __attribute__((naked));
-void vWeb1(void *) __attribute__((naked));
-void vWeb2(void *) __attribute__((naked));
-void vWeb3(void *) __attribute__((naked));
-void vReadSensor(void *) __attribute__((naked));
-void vUpdate( void * ) __attribute__((naked));
-void vUpdateEEV(void *) __attribute__((naked));
-void vUpdateStepperEEV(void *) __attribute__((naked));
-void vUpdateCommand(void *) __attribute__((naked));
-void vServiceHP(void *) __attribute__((naked));
 
 // ---------------------------------------------------------------------------
 // Та ли микросхема памяти стоит, что выбрана в Config.h. Различаем по ЧИСЛУ БАНКОВ на шине:
@@ -835,14 +825,12 @@ x_I2C_init_std_message:
 #ifdef EEV_DEF
 	if (xTaskCreate(vUpdateStepperEEV,"StepperEEV",STACK_vUpdateStepperEEV,NULL,4,&HP.dEEV.stepperEEV.xHandleStepperEEV)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY)  set_Error(ERR_MEM_FREERTOS,(char*)nameFREERTOS);
 	Diag.mRTOS=Diag.mRTOS+64+4*STACK_vUpdateStepperEEV; // 50, 100, 150
-	vTaskSuspend(HP.dEEV.stepperEEV.xHandleStepperEEV);                                 // Остановить задачу
 	HP.dEEV.stepperEEV.xCommandQueue = xQueueCreate( EEV_QUEUE, sizeof( int ) );  // Создать очередь комманд для ЭРВ
 #endif
 
 	// ПРИОРИТЕТ 3 Очень высокий приоритет Выполнение команд управления (разбор очереди комманд) - должен быть выше чем задачи обновления ТН и ЭРВ
 	if(xTaskCreate(vUpdateCommand,"CommandHP", STACK_vUpdateCommand,NULL,3,&Tasks.xHandleUpdateCommand)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY)     set_Error(ERR_MEM_FREERTOS,(char*)nameFREERTOS);
 	Diag.mRTOS=Diag.mRTOS+64+4*STACK_vUpdateCommand;// 200
-	vTaskSuspend(Tasks.xHandleUpdateCommand);      // Остановить задачу разбор очереди команд
 
 
 	// ПРИОРИТЕТ 2 высокий - это управление ТН управление ЭРВ, сервис
@@ -854,13 +842,11 @@ x_I2C_init_std_message:
 
 	if (xTaskCreate(vUpdate,"UpdateHP",STACK_vUpdate,NULL,2,&Tasks.xHandleUpdate)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY)    set_Error(ERR_MEM_FREERTOS,(char*)nameFREERTOS);
 	Diag.mRTOS=Diag.mRTOS+64+4*STACK_vUpdate;// см. STACK_vUpdate в Config.h
-	vTaskSuspend(Tasks.xHandleUpdate);                                 // Остановить задачу обновление ТН
 	Tasks.Task_vUpdate_run = false;
 
 #ifdef EEV_DEF
 	if (xTaskCreate(vUpdateEEV,"UpdateEEV",STACK_vUpdateEEV,NULL,2,&Tasks.xHandleUpdateEEV)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY)     set_Error(ERR_MEM_FREERTOS,(char*)nameFREERTOS);
 	Diag.mRTOS=Diag.mRTOS+64+4*STACK_vUpdateEEV;
-	vTaskSuspend(Tasks.xHandleUpdateEEV);                              // Остановить задачу обновление EEV
 #endif  
 
 	// ПРИОРИТЕТ 1 средний - обслуживание вебморды в несколько потоков и дисплея Nextion
@@ -1444,7 +1430,9 @@ void vReadSensor_delay1ms(int32_t ms)
 	{
 		Watchdog_Beat(WDT_UpdateHP);   // отметка живости для наблюдателя
 		if(!Tasks.Task_vUpdate_run) {
-			vTaskSuspend(NULL);				// Stop vUpdate, Tasks.xHandleUpdate
+			// Стоим, пока ТН не работает. Пуск ставит флаг и шлёт уведомление (Wake_UpdateHP); флаг проверяется
+			// после каждого пробуждения, а таймаут в секунду держит отметку в наблюдателе и страхует от потери уведомления.
+			ulTaskNotifyTake(pdTRUE, 1000 / portTICK_PERIOD_MS);
 			continue;
 		}
 		if (HP.get_State()==pWORK_HP){ //Код обслуживания работы ТН выполняется только если состяние ТН - работа а вот расписание всегда выполняется
@@ -1594,8 +1582,21 @@ delayTask:	// чтобы задача отдавала часть времени
 
 // Задача Управление ЭРВ, "UpdateEEV"
 #ifdef EEV_DEF
+// Ожидание пуска ЭРВ. Счётчик Task_UpdateEEV_gen растёт при каждом пуске компрессора; eevSeen - сколько пусков
+// задача уже учла. Ожидание кончается, когда появился новый пуск; таймаут в секунду даёт отметку в наблюдателе.
+static uint32_t eevSeen = 0;
+static void eevWaitStart(void)
+{
+	while(__atomic_load_n(&Tasks.Task_UpdateEEV_gen, __ATOMIC_ACQUIRE) == eevSeen) {
+		Watchdog_Beat(WDT_UpdateEEV);
+		ulTaskNotifyTake(pdTRUE, 1000 / portTICK_PERIOD_MS);
+	}
+	eevSeen = __atomic_load_n(&Tasks.Task_UpdateEEV_gen, __ATOMIC_ACQUIRE);
+}
+
 void vUpdateEEV(void *)
 {
+	eevWaitStart();   // до первого пуска компрессора ЭРВ не управляется
 	// Отметки живости для наблюдателя стоят в точках блокировки - в каждом
 	// Watchdog_Sleep, - а не в начале for. Начало for рабочий путь задачи
 	// проходит один раз: и ожидание delayOnPid, и цикл ПИД ниже замкнуты
@@ -1637,8 +1638,12 @@ void vUpdateEEV(void *)
 		case pSTOPING_HP:
 		case pWAIT_HP:
 			// Если компрессор не работает, то остановить задачу Обновления ЭРВ
+			// Пуски считает счётчик (Wake_UpdateEEV). Все пуски до этой точки учитывает проверка компрессора ниже:
+			// счётчик растёт только после его включения. Пуск после этой точки изменит счётчик и прервёт ожидание.
+			eevSeen = __atomic_load_n(&Tasks.Task_UpdateEEV_gen, __ATOMIC_ACQUIRE);
+			if(HP.is_compressor_on()) continue;   // компрессор успели включить снова: идём в рабочий цикл
 			journal.jprintf((const char*) " Stop task UpdateEEV\n");
-			vTaskSuspend(NULL);				// Stop vUpdateEEV
+			eevWaitStart();
 			continue; // продолжение задачи работы ЭРВ начинается с этого места, по этому сразу на начало цикла контроля
 		}
 		Watchdog_Sleep(WDT_UpdateEEV, TIME_EEV);
@@ -1655,6 +1660,12 @@ void vUpdateStepperEEV(void *)
 	static int cmd = 0;  // размер элемента очереди - sizeof(int): int16_t затирал бы соседние данные
 	for(;;) {
 		Watchdog_Beat(WDT_StepperEEV);   // отметка живости для наблюдателя
+		// Команд нет - ждём уведомление от StepMotor::step. Очередь проверяется до ожидания и после каждого
+		// пробуждения, поэтому команда не теряется, а таймаут в секунду держит отметку в наблюдателе.
+		if(xQueuePeek(HP.dEEV.stepperEEV.xCommandQueue, &cmd, 0) == errQUEUE_EMPTY) {
+			ulTaskNotifyTake(pdTRUE, 1000 / portTICK_PERIOD_MS);
+			continue;
+		}
 		// Полный цикл движения шаговика с разгребанием очереди команд,
 		// В очереди лежат АБСОЛЮТНЫЕ координаты
 		// При этом если очередь содержит более одной команды - просто суммируем все команды и двигаемся по итоговой сумме
@@ -1709,7 +1720,6 @@ void vUpdateStepperEEV(void *)
 		if(xQueuePeek(HP.dEEV.stepperEEV.xCommandQueue,&cmd,0) == errQUEUE_EMPTY) {
 			if(!HP.dEEV.get_HoldMotor()) HP.dEEV.stepperEEV.off();                                   // выключить двигатель если нет удержания
 			HP.dEEV.stepperEEV.offBusy();                                                            // признак Мотор остановлен
-			vTaskSuspend(NULL);               // Приостановить задачу vUpdateStepperEEV
 		}
 		// Дошли до сюда новая, очередь не пуста и новая итерация по разбору очереди
 	} // for
@@ -1723,8 +1733,10 @@ void vUpdateCommand(void *)
 {
 	for(;;) {
 		Watchdog_Beat(WDT_CommandHP);   // отметка живости для наблюдателя
-		HP.runCommand();       // Выполнение команд управления ТН
-		vTaskSuspend(NULL);    // Команды выполнены, остановить задачу vUpdateCommand, пуск осуществляется при посылке команды
+		// Ждём уведомление от sendCommand, но не дольше секунды: задача отмечается в наблюдателе и не спит вечно.
+		// Уведомление, пришедшее до ожидания, не теряется - ожидание завершится сразу.
+		ulTaskNotifyTake(pdTRUE, 1000 / portTICK_PERIOD_MS);
+		if(HP.takeCommand()) HP.runCommand();      // runCommand сама выбирает остальные команды из очереди
 	}
 	vTaskDelete( NULL);
 }

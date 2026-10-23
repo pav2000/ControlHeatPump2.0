@@ -58,7 +58,7 @@ bool StepMotor::step(int steps_to_move)
 		return false;
 	}
 	busy = true;                      // флаг начало движения
-	vTaskResume(xHandleStepperEEV);   // Запустить движение если его еще нет
+	if(xHandleStepperEEV != NULL) xTaskNotifyGive(xHandleStepperEEV);   // Разбудить задачу: уведомление не теряется, даже если она ещё не ждёт
 	return true;
 }
 

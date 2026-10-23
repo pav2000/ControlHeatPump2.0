@@ -38,21 +38,53 @@ const boolean _wait =  false;  // Команда перевода в режим 
 const boolean _start = true;   // Команда запуска ТН
 const boolean _resume = false; // Команда возобновления работы ТН
 
+// Флаги команды для очереди: останов не теряется при переполнении, а длинный пуск смотрит, нет ли его в очереди
+static uint8_t commandFlags(TYPE_COMMAND c)
+{
+	if(c == pSTOP || c == pREPEAT) return CQ_STOP | CQ_CRITICAL;
+	if(c == pRESET) return CQ_CRITICAL;
+	return 0;
+}
+
+// Поставить команду в очередь и разбудить CommandHP. Выбор "выполняется / в очереди" и постановка идут
+// под одним запретом прерываний: иначе две команды, пришедшие вместе, затирали друг друга. Пробуждение -
+// уведомление задачи: оно не теряется, даже если CommandHP ещё не дошла до ожидания.
 void HeatPump::sendCommand(TYPE_COMMAND c)
 {
-	if (c == command) return;      // Игнорируем повторы
-	if (command != pEMPTY) // Если команда выполняется (не pEMPTY), то следующую в очередь, если есть место
-	{
-		if(next_command != c){
-			next_command = c;
-			journal.jprintf("Active command: %s, next: %s\n", get_command_name(command), get_command_name(next_command));
-		}
-		return;
+	uint32_t pm = irqSave();
+	TYPE_COMMAND running = command;
+	bool idle = (running == pEMPTY && cmdq.count == 0);
+	CqResult r = CQ_DUPLICATE;
+	// Пришла команда на старт, а насос останавливается и ничего не выполняется: игнорируем
+	if(!(idle && c == pSTART && get_State() == pSTOPING_HP)) r = CommandQueue_Push(&cmdq, running, c, commandFlags(c));
+	irqRestore(pm);
+	if(r == CQ_DUPLICATE) return;
+	if(!idle) {
+		if(r == CQ_FULL) journal.jprintf("Command queue FULL, dropped: %s\n", get_command_name(c));
+		else journal.jprintf("Active command: %s, queued: %s\n", get_command_name(running), get_command_name(c));
 	}
-	if ((c==pSTART)&&(get_State()==pSTOPING_HP)) return;    // Пришла команда на старт а насос останавливается ничего не делаем игнорируем
-	command=c;
-	vTaskResume(Tasks.xHandleUpdateCommand);                   	// Запустить выполнение команды
-}  
+	if(Tasks.xHandleUpdateCommand != NULL) xTaskNotifyGive(Tasks.xHandleUpdateCommand);
+}
+
+// В очереди есть STOP/REPEAT
+boolean HeatPump::is_next_command_stop()
+{
+	uint32_t pm = irqSave();
+	boolean r = CommandQueue_Has(&cmdq, CQ_STOP);
+	irqRestore(pm);
+	return r;
+}
+
+// CommandHP: перейти к следующей команде. Взятие и запись в command - одной операцией: пока очередь
+// непуста или команда выполняется, command != pEMPTY, и sendCommand не видит "пустого окна".
+boolean HeatPump::takeCommand()
+{
+	uint32_t pm = irqSave();
+	uint8_t c = pEMPTY;
+	command = CommandQueue_Pop(&cmdq, &c) ? (TYPE_COMMAND) c : pEMPTY;
+	irqRestore(pm);
+	return command != pEMPTY;
+}
 // Выполнить команду по управлению ТН true-команда выполнена
 int8_t HeatPump::runCommand()
 {
@@ -100,7 +132,7 @@ int8_t HeatPump::runCommand()
 			break;
 		case pNETWORK:
 			_delay(1000);               						// задержка что бы вывести сообщение в консоль и на веб морду
-			if(SemaphoreTake(xWebThreadSemaphore,(W5200_TIME_WAIT/portTICK_PERIOD_MS))==pdFALSE) {journal.jprintf((char*)cErrorMutex,__FUNCTION__,MutexWebThreadBusy); command=pEMPTY; return 0;} // Захват мютекса потока или ОЖИДАНИНЕ W5200_TIME_WAIT
+			if(SemaphoreTake(xWebThreadSemaphore,(W5200_TIME_WAIT/portTICK_PERIOD_MS))==pdFALSE) {journal.jprintf((char*)cErrorMutex,__FUNCTION__,MutexWebThreadBusy); break;} // Захват мютекса потока или ОЖИДАНИНЕ W5200_TIME_WAIT
 			initW5200(true);                                  // Инициализация сети с выводом инфы в консоль
 			for (i=0;i<W5200_THREAD;i++) SETBIT1(Socket[i].flags,fABORT_SOCK);                                 // Признак инициализации сокета, надо прерывать передачу в сервере
 			SemaphoreGive(xWebThreadSemaphore);                                                                // Мютекс потока отдать
@@ -121,8 +153,7 @@ xWait:
 				Tasks.Task_vUpdate_run = false;					      // Остановить задачу обновления ТН vUpdate (Tasks.xHandleUpdate)
 				StopWait(_wait);                                  // Ожидание
 				SemaphoreGive(Tasks.xCommandSemaphore);                 // Семафор отдать
-				Tasks.Task_vUpdate_run = true;
-				vTaskResume(Tasks.xHandleUpdate);
+				Wake_UpdateHP();
 			}
 			else  journal.jprintf((char*)cErrorMutex,__FUNCTION__,MutexCommandBusy);
 			break;
@@ -132,8 +163,7 @@ xWait:
 				Tasks.Task_vUpdate_run = false;					      // Остановить задачу обновления ТН vUpdate (Tasks.xHandleUpdate)
 				StartResume(_resume);                             // восстановление ТН
 				SemaphoreGive(Tasks.xCommandSemaphore);                 // Семафор отдать
-				Tasks.Task_vUpdate_run = true;
-				vTaskResume(Tasks.xHandleUpdate);
+				Wake_UpdateHP();
 			}
 			else  journal.jprintf((char*)cErrorMutex,__FUNCTION__,MutexCommandBusy);
 			break;
@@ -143,14 +173,8 @@ xWait:
 			break;
 		}
 		if(command != pSFORMAT && command != pSAVE && command != pNETWORK) command_completed = rtcSAM3X8.unixtime();
-		if(next_command != pEMPTY) { // следующая команда
-			command = next_command;
-			next_command = pEMPTY;
-			_delay(1);
-		} else {
-			command=pEMPTY;   // Сбросить команду
-			break;
-		}
+		if(!takeCommand()) break;   // очередь пуста, command сброшен в pEMPTY
+		_delay(1);
 	}
 	return error;
 }

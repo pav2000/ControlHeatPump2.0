@@ -642,8 +642,7 @@ xGoWait:
 		journal.jprintf_time("%s WAIT . . .\n", (char*) nameHeatPump);
 		startWait = true;                    // Начало работы с ожидания=true;
 		setState(pWAIT_HP);
-		Tasks.Task_vUpdate_run = true;
-		vTaskResume(Tasks.xHandleUpdate);
+		Wake_UpdateHP();
 		return;
 	}
 #endif
@@ -659,8 +658,7 @@ xGoWait:
 		journal.jprintf_time("%s WAIT . . .\n", (char*) nameHeatPump);
 		startWait = true;                    // Начало работы с ожидания=true;
 		setState(pWAIT_HP);
-		Tasks.Task_vUpdate_run = true;
-		vTaskResume(Tasks.xHandleUpdate);
+		Wake_UpdateHP();
 		return;
 #endif			
 		} else if(profile != Prof.get_idProfile()) {
@@ -824,8 +822,7 @@ xGoWait:
 	// ---- 11. Запуск задачи обновления ТН ----
 	if(start) {
 		journal.jprintf(" Start task UpdateHP\n");
-		Tasks.Task_vUpdate_run = true;
-		vTaskResume(Tasks.xHandleUpdate);                                       // Запустить задачу Обновления ТН, дальше она все доделает
+		Wake_UpdateHP();                                                        // Запустить задачу Обновления ТН, дальше она все доделает
 	}
 
 	// ---- 12. насос запущен ----
@@ -1644,7 +1641,7 @@ void HeatPump::compressorON()
 	if(is_compressor_on()) return;                                  // Компрессор уже работает
 	if(is_next_command_stop()) {
 xNextStop:
-		journal.jprintf(" Next command stop(%d), skip start", next_command);
+		journal.jprintf(" Next command stop in queue, skip start");
 		return;
 	}
 
@@ -1800,7 +1797,7 @@ xNextStop:
 	if (lastEEV>0)                                            // НЕ первое включение компрессора после старта ТН
 	{
 		dEEV.Resume();
-		vTaskResume(Tasks.xHandleUpdateEEV);                               // Запустить задачу Обновления ЭРВ
+		Wake_UpdateEEV();                                                  // Запустить задачу Обновления ЭРВ
 		journal.jprintf(" Resume task UpdateEEV\n");
 		#ifdef DEFROST
 		 if(!(get_modWork() & pDEFROST)) journal.jprintf_time("%s WORK . . .\n",(char*)nameHeatPump);     // Сообщение о работе
@@ -1814,7 +1811,7 @@ xNextStop:
 		set_startTime(rtcSAM3X8.unixtime());                         // Запомнить время старта ТН
 		lastEEV = dEEV.get_EEV();                                 // ЭРВ работает запомнить
 		dEEV.Resume();
-		vTaskResume(Tasks.xHandleUpdateEEV);                               // Запустить задачу Обновления ЭРВ
+		Wake_UpdateEEV();                                                  // Запустить задачу Обновления ЭРВ
 		journal.jprintf(" Start task UpdateEEV\n");
 	}
 #else
