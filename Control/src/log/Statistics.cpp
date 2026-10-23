@@ -417,7 +417,6 @@ void Statistics::Update()
 	int32_t newval = 0;
 	if(HP.is_compressor_on()) {
 		compressor_on_timer += tm;
-		if(compressor_on_timer >= STATS_WORKD_TIME) counts_work++;
 	} else compressor_on_timer = 0;
 	for(uint8_t i = 0; i < sizeof(Stats_data) / sizeof(Stats_data[0]); i++) {
 		if(Stats_data[i].when == STATS_WHEN_WORKD && compressor_on_timer < STATS_WORKD_TIME) continue;
@@ -505,7 +504,7 @@ void Statistics::Update()
 		}
 	}
 	counts++;
-	if(compressor_on_timer >= STATS_WORKD_TIME) counts_work++;
+	if(compressor_on_timer >= STATS_WORKD_TIME) counts_work++;   // один инкремент за вызов, симметрично counts
 }
 
 // Заголовок колонки истории: либо литерал из таблицы, либо имя самого датчика.

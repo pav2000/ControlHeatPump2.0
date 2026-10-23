@@ -393,14 +393,14 @@ xErr:
 
 // Сделать слот кеша текущим профилем. Заменяет чтение из EEPROM: после
 // шага 4 все профили и так лежат в оперативной памяти.
-int8_t Profile::cache_activate(int8_t num)
+//
+// Само копирование (cache_copy) идёт одним блоком при остановленных задачах: UpdateHP, UpdateEEV и ReadSensor читают
+// те же Heat/Cool/Boiler/SaveON и иначе увидели бы наполовину смену профиля. В блоке нет журнала и замков -
+// при остановленном планировщике строка журнала теряется, - поэтому сообщения идут уже после него.
+uint8_t Profile::cache_copy(int8_t num)
 {
-	if(num < 0 || num >= I2C_PROFIL_NUM) return err = ERR_LOAD_PROFILE;
-	if(cache_magic[num] != 0xaa) { journal.jprintf(" Profile #%d is empty\n", num); return OK; }
-	if(cache_crc_of(cache[num]) != cache_crc[num]) {
-		journal.jprintf(" Profile #%d: RAM corrupted!\n", num);
-		return err = ERR_CRC16_PROFILE;
-	}
+	if(cache_magic[num] != 0xaa) return 1;
+	if(cache_crc_of(cache[num]) != cache_crc[num]) return 2;
 	const ProfileSlot &sl = cache[num];
 	memcpy(&dataProfile, &sl.dataProfile, sizeof(dataProfile));
 	memcpy(&SaveON, &sl.SaveON, sizeof(SaveON));
@@ -411,11 +411,22 @@ int8_t Profile::cache_activate(int8_t num)
 	memcpy(&DailySwitch, &sl.DailySwitch, sizeof(DailySwitch));
 	magic = 0xaa;
 	crc16 = cache_crc[num];
-	update_list(num);
 #ifdef TBOILER   // сальмонелла меняет верхнюю границу датчика бойлера
 	if(GETBIT(HP.Prof.Boiler.flags, fSalmonella)) HP.sTemp[TBOILER].set_maxTemp(SALMONELLA_TEMP + 300);
 	else HP.sTemp[TBOILER].set_maxTemp(TempSetup[TBOILER].max);
 #endif
+	return 0;
+}
+
+int8_t Profile::cache_activate(int8_t num)
+{
+	if(num < 0 || num >= I2C_PROFIL_NUM) return err = ERR_LOAD_PROFILE;
+	uint8_t suspended = TaskSuspendAll();   // 1, только если планировщик работает
+	uint8_t r = cache_copy(num);
+	if(suspended) xTaskResumeAll();
+	if(r == 1) { journal.jprintf(" Profile #%d is empty\n", num); return OK; }
+	if(r == 2) { journal.jprintf(" Profile #%d: RAM corrupted!\n", num); return err = ERR_CRC16_PROFILE; }
+	update_list(num);
 	journal.jprintf(" Profile #%d activated\n", num);
 	return OK;
 }

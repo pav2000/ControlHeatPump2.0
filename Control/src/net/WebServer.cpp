@@ -80,7 +80,8 @@ const char *postRet[]            = {"Настройки из файла восс
 									"Ошибка загрузки файла, подробности в журнале\r\n\r\n",
 									"Внутренняя ошибка парсера POST запросов\r\n\r\n",
 									"Флеш диск не найден, загружать файлы некуда\r\n\r\n",
-									"Размер файла настроек превышает 6144 байт!\r\n\r\n"
+									"Размер файла настроек превышает 6144 байт!\r\n\r\n",
+									"Настройки можно загружать только при остановленном ТН\r\n\r\n"
 									};
 
 SdFile wFile;
@@ -549,6 +550,36 @@ const char LOAD_SD_END[]     = "*SD_CARD_END*";   // Идентификатор 
 
 uint16_t numFilesWeb = 0;                   // Число загруженных файлов
 
+// Область профилей в файле настроек: длина вместе с END и контрольной суммой или -1, если область негодна. Проверка
+// ничего не записывает, поэтому идёт до применения настроек и до записи в EEPROM: испорченная область (чужая раскладка
+// слота, обрубленный файл, неверная сумма) на носителе сломала бы профили при ближайшей загрузке.
+static int32_t fileProfilesLen(const uint8_t *ptr, const uint8_t *file_end)
+{
+	int32_t len;
+	if(rec_hdr_tag(ptr) == NTAG_Profile) {
+		ProfileScan ps;
+		profile_scan(ptr, file_end, NTAG_Profile, NTAG_END, 1 + sizeof(ProfileSlot), I2C_PROFIL_NUM, &ps);
+		len = ps.bytes + sizeof(uint16_t);               // плюс END (уже в bytes) и контрольная сумма
+		if(ps.bad_len || ps.bad_slot || ps.bad_tag || ps.truncated || !ps.end_seen || ptr + len > file_end) {
+			journal.jprintf("Profiles in file rejected: len %d, slot %d, tag %d, cut %d, end %d (code %d)\n",
+			                ps.bad_len, ps.bad_slot, ps.bad_tag, ps.truncated, ps.end_seen, ps.bad_len ? ERR_BAD_LEN_PROFILE : ERR_LOAD_PROFILE);
+			return -1;
+		}
+		// Контрольная сумма области: по всем байтам записей и заголовку END, как при записи в save_region
+		uint16_t crc_stored;
+		memcpy(&crc_stored, ptr + ps.bytes, sizeof(crc_stored));
+		uint16_t crc_file = calc_crc16((unsigned char*) ptr, ps.bytes, 0xFFFF);
+		if(crc_file != crc_stored) {
+			journal.jprintf("Profiles in file rejected: crc %04x != %04x\n", crc_file, crc_stored);
+			return -1;
+		}
+	} else {
+		len = HP.Prof.get_sizeProfile() * I2C_PROFIL_NUM_LEGACY;  // старый файл - массив из десяти слотов
+		if(ptr + len > file_end) { journal.jprintf("Profiles in file rejected: file too short\n"); return -1; }
+	}
+	return len;
+}
+
 // Разбор и обработка POST запроса inPtr входная строка использует outBuf для хранения файла настроек!
 // Сейчас реализована загрузка настроек и загрузка веб морды в спи диск
 // Возврат тип ответа (потом берется из массива строк)
@@ -603,6 +634,12 @@ xLenErr:
 	// В зависимости от имени файла (Title)
 	if(strcmp(nameFile, SETTINGS) == 0) {  // Чтение настроек
 		if(lenFile <= 0) goto xLenErr;
+		// Файл заменяет настройки, профили и расписание целиком: на пускающемся, работающем или останавливающемся ТН
+		// это меняло бы предел частоты инвертора, параметры ЭРВ и профиль посреди процесса. Кнопка в морде тоже заблокирована.
+		if(HP.IsWorkingNow()) {
+			journal.jprintf("Upload: settings refused, HP is working\n");
+			return pSETTINGS_BUSY;
+		}
 		WEB_STORE_DEBUG_INFO(52);
 		int32_t len;
 		// Тело файла может прийти НЕ в первом пакете: при xhr.send(file) браузер отправляет
@@ -646,6 +683,16 @@ xLenErr:
 		// на смещении 3 от начала блока, что и при чтении из EEPROM.
 		// Без этого файл, скачанный после конверсии, разобрался бы старым
 		// читателем и разложился не туда с правильной контрольной суммой.
+		const uint8_t *file_end = (byte*) Socket[thread].outBuf + buf_len;
+		// Весь файл проверяется ДО применения чего-либо: иначе отказ по профилям оставлял бы уже применённые настройки.
+		// В новом формате за блоком настроек (поле длины + длина) сразу идёт область профилей.
+		if(ptr[NEW_OFS_VER] >= SETTINGS_VER_NEW) {
+			uint32_t blk = *((uint16_t*) ptr) + sizeof(uint16_t);
+			if(buf_len < (int32_t) (blk + REC_HDR_SIZE) || fileProfilesLen(ptr + blk, file_end) < 0) {
+				journal.jprintf("Upload: file rejected before applying\n");
+				return pSETTINGS_ERR;
+			}
+		}
 		len = ptr[NEW_OFS_VER] >= SETTINGS_VER_NEW ? HP.load_new(ptr, 1) : HP.load(ptr, 1);
 		if(len <= 0) return pSETTINGS_ERR; // ошибка загрузки настроек
 		boolean ret = true;
@@ -653,22 +700,8 @@ xLenErr:
 		// Чтение профилей
 		// Длина области профилей в файле: в новом формате это поток записей,
 		// и он короче десяти слотов ровно на незаписанные.
-		const uint8_t *file_end = (byte*) Socket[thread].outBuf + buf_len;
-		if(rec_hdr_tag(ptr) == NTAG_Profile) {
-			// Область проверяется ДО записи: испорченная (чужая раскладка слота, обрубленный
-			// файл) на носителе сломала бы профили при ближайшей загрузке.
-			ProfileScan ps;
-			profile_scan(ptr, file_end, NTAG_Profile, NTAG_END, 1 + sizeof(ProfileSlot), I2C_PROFIL_NUM, &ps);
-			len = ps.bytes + sizeof(uint16_t);               // плюс END (уже в bytes) и контрольная сумма
-			if(ps.bad_len || ps.bad_slot || ps.bad_tag || ps.truncated || !ps.end_seen || ptr + len > file_end) {
-				journal.jprintf("Profiles in file rejected: len %d, slot %d, tag %d, cut %d, end %d (code %d)\n",
-				                ps.bad_len, ps.bad_slot, ps.bad_tag, ps.truncated, ps.end_seen, ps.bad_len ? ERR_BAD_LEN_PROFILE : ERR_LOAD_PROFILE);
-				return pSETTINGS_ERR;
-			}
-		} else {
-			len = HP.Prof.get_sizeProfile() * I2C_PROFIL_NUM_LEGACY;  // старый файл - массив из десяти слотов
-			if(ptr + len > file_end) { journal.jprintf("Profiles in file rejected: file too short\n"); return pSETTINGS_ERR; }
-		}
+		len = fileProfilesLen(ptr, file_end);
+		if(len < 0) return pSETTINGS_ERR;
 		if(writeEEPROM_I2C(I2C_PROFILE_EEPROM, ptr, len)) {
 			journal.jprintf("Error write EEPROM at 0x%X\n", I2C_PROFILE_EEPROM);
 			ret = false;

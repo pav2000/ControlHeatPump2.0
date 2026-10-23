@@ -1047,7 +1047,7 @@ static int apiAct_profile_load(ApiOut *o, const char *p)
 {
 	int n = api_slot_arg(p);
 	if(n < 0) return AE_BAD_VALUE;
-	int32_t r = HP.Prof.load(n);
+	int32_t r = HP.switch_profile(n);      // тот же путь, что у расписания: ещё и Option.numProf
 	if(r < 0) return AE_FAIL;
 	api_put_int(o, r);
 	return AE_OK;

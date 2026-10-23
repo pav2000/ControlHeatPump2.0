@@ -27,6 +27,23 @@
 #include "../net/Network.h"      // check_address, Udp, сокет W5200_SOCK_SYS
 #include "../core/Rtos.h"         // семафор сети, Watchdog_AliveHere
 
+// Установить внутренние часы с коррекцией рабочих времён. Времена пуска и останова компрессора, старта
+// обеззараживания и т.п. хранятся абсолютными секундами: после скачка часов их надо сдвинуть на тот же интервал,
+// иначе защита "минимальная пауза компрессора" считает неверный интервал (как и при синхронизации с часами I2C).
+static void setClockShifted(uint32_t secs)
+{
+	uint32_t oldTime = rtcSAM3X8.unixtime();
+	rtcSAM3X8.set_clock(secs, TIME_ZONE);
+	// Только при работающем планировщике. При старте синхронизация идёт раньше загрузки часов: внутренний счётчик там
+	// около нуля, а времена из настроек (Prof.SaveON.startTime) уже настоящие - сдвиг на 20 лет испортил бы их
+	// (замечено на стенде: "последнее включение ТН" уехало в 2046 год).
+	if(xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) {
+		int32_t dTime = (int32_t)(rtcSAM3X8.unixtime() - oldTime);
+		HP.updateDateTime(dTime);
+		if(dTime) journal.jprintf(" Clock corrected by %d s\n", (int) dTime);
+	}
+}
+
 
 // Объявление функций 
 // ---- NTP ----
@@ -166,7 +183,7 @@ boolean set_time_NTP(void)
 	if(flag > 0) {  // Обновление времени если оно получено
 		unsigned long lt = rtcSAM3X8.unixtime();
 		if(lt != secs) {
-			rtcSAM3X8.set_clock(secs, TIME_ZONE);    // обновить внутренние часы
+			setClockShifted(secs);                   // обновить внутренние часы
 		}
 		// обновились, можно и часы i2c обновить
 		setTime_RtcI2C(rtcSAM3X8.get_hours(), rtcSAM3X8.get_minutes(), rtcSAM3X8.get_seconds());
@@ -271,7 +288,7 @@ boolean set_time_NTP(void)
 	} // for
 	Udp.stop();
 	if(flag) {  // Обновление времени если оно получено
-		rtcSAM3X8.set_clock(secs, TIME_ZONE);    // обновить внутренние часы
+		setClockShifted(secs);                   // обновить внутренние часы
 		// обновились, можно и часы i2c обновить
 		setTime_RtcI2C(rtcSAM3X8.get_hours(), rtcSAM3X8.get_minutes(), rtcSAM3X8.get_seconds());
 		setDate_RtcI2C(rtcSAM3X8.get_days(), rtcSAM3X8.get_months(), rtcSAM3X8.get_years());

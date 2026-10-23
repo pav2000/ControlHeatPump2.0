@@ -1538,10 +1538,7 @@ void vReadSensor_delay1ms(int32_t ms)
 								while(HP.isCommand()) {	_delay(1000); if(!--i) break; } // ждем отработки команды
 								if(!Tasks.Task_vUpdate_run) continue;
 							}
-							vTaskSuspendAll();	// без проверки
-							HP.Prof.load(_profile);
-							HP.set_profile();
-							xTaskResumeAll();
+							HP.switch_profile(_profile);   // слот копируется одним блоком внутри, журнал - после него
 							journal.jprintf_time("Profile changed to #%d\n", _profile);
 							if(frestart) HP.sendCommand(pRESUME);
 						}
@@ -1570,7 +1567,7 @@ delayTask:	// чтобы задача отдавала часть времени
 				if(HP.get_ruleCool()==pHYSTERESIS)  Watchdog_Sleep(WDT_UpdateHP, TIME_CONTROL);    // Гистерезис
 				else
 					Watchdog_Sleep(WDT_UpdateHP, (uint32_t) HP.dFC.get_Uptime() * 1000);             // Время интегрирования ПИД секунды
-			} else if((HP.get_modWork() & pCOOL)) { // бойлер
+			} else if((HP.get_modWork() & pBOILER)) { // бойлер
 				Watchdog_Sleep(WDT_UpdateHP, (uint32_t) HP.dFC.get_Uptime() * 1000);                 // Время интегрирования ПИД секунды
 			} else { // Пауза
 				Watchdog_Sleep(WDT_UpdateHP, TIME_CONTROL);                                         // Гистерезис

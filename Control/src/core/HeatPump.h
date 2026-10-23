@@ -403,6 +403,7 @@ class HeatPump
    void set_mode(MODE_HP b) {Prof.SaveON.mode=HouseModeAllowed(b, HouseOnlyHeat);}           // Установить режим работы отопления
    void set_nextMode();                                     // Переключение на следующий режим работы отопления (последовательный перебор режимов)
    void set_profile();										// Установить рабочий профиль по текущему Prof
+   int32_t switch_profile(int8_t num);                      // Сменить рабочий профиль: общий путь для расписания и веба (загрузка слота + set_profile)
 
    RULE_HP get_ruleCool(){return Prof.Cool.Rule;}           // Получить алгоритм охлаждения
    RULE_HP get_ruleHeat(){return Prof.Heat.Rule;}           // Получить алгоритм отопления

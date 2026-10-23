@@ -439,6 +439,11 @@ uint8_t HouseModeNext(uint8_t mode, bool only_heat)
 	}
 }
 
+bool TargetIsTemp1(uint8_t rule, bool target_flag_return)
+{
+	return rule == pHYBRID || !target_flag_return;
+}
+
 void PowerCalculate(const PowerIn &in, const PowerRules &r, PowerOut &out)
 {
 	// Мощности контуров. В охлаждении дельта берётся с обратным знаком.

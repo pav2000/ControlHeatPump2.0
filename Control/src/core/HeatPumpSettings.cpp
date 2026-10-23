@@ -60,7 +60,7 @@ x_ReadError:
 			error = ERR_CRC16_EEPROM;
 x_Error:
 			journal.jprintf(" - read error %d!\n", error);
-			return error;
+			return error;      // этот путь только при чтении из I2C (from_RAM == 0)
 		}
 		if(size > I2C_PROFILE_EEPROM - I2C_SETTING_EEPROM) { error = ERR_BAD_LEN_EEPROM; goto x_Error; }
 		if(readEEPROM_I2C(I2C_SETTING_EEPROM + sizeof(size), buffer, size)) goto x_ReadError;
@@ -77,7 +77,7 @@ x_Error:
 	crc = calc_crc16(buffer, size, crc);
 	if(crc != *((uint16_t *)(buffer + size))) {
 		journal.jprintf("Error: %04x != %04x!\n", crc, *((uint16_t *)(buffer + size)));
-		return error = ERR_CRC16_EEPROM;
+		return from_RAM ? ERR_CRC16_EEPROM : (error = ERR_CRC16_EEPROM);   // отказ файла не должен менять код ошибки ТН
 	}
 	journal.jprintf("%04x", crc);
 #else
@@ -301,11 +301,12 @@ int32_t HeatPump::save_new(void)
 
 // Ошибка загрузки настроек. При чтении из I2C (старт ТН) она идёт в журнал
 // ошибок и уведомление: при выключенном ТН set_Error ничего не останавливает,
-// а пуск ошибку сбрасывает. При загрузке файла из веба ТН может работать, и
-// set_Error его остановил бы - там только код возврата.
+// а пуск ошибку сбрасывает. При загрузке файла из веба - ТОЛЬКО код возврата:
+// запись в HP.error останавливала регулирование (vUpdate выходит при error != OK)
+// и скрывала настоящие ошибки (Error_Claim не занимает занятое поле) до сброса.
 int32_t HeatPump::load_fail(int8_t code, uint8_t from_RAM)
 {
-	if(from_RAM) error = code; else set_Error(code, (char*)nameHeatPump);
+	if(!from_RAM) set_Error(code, (char*)nameHeatPump);
 	return code;
 }
 
@@ -389,6 +390,13 @@ xReadError:
 
 	uint8_t *p = buffer + (NEW_HDR_SIZE - 2);    // пролог уже разобран
 	uint8_t *p_max = buffer + size;
+	// Проверка закончена, дальше только копирование в живые структуры. Оно идёт одним блоком при остановленных
+	// задачах (ReadSensor, ServiceHP и веб читают те же поля), без журнала, замков и обращений к железу.
+	// Обработчики after_load (шаговик, шина 1-Wire) запоминаются и вызываются уже после блока.
+	// static_assert ниже: маски по одному биту на датчик.
+	static_assert(TNUMBER <= 32 && ANUMBER <= 32 && IPNUMBER <= 32, "маски after_load рассчитаны на 32 датчика");
+	uint32_t afterT = 0, afterA = 0, afterIP = 0;
+	bool afterEEV = false;
 	// Контрольная сумма сошлась, но каркас записей может быть нарушен (обрубленная
 	// запись, нет END, лишний тег). Из файла такой блок не принимаем, из I2C
 	// читаем что получится: ТН должен стартовать.
@@ -399,6 +407,7 @@ xReadError:
 		journal.jprintf("structure: records %d, truncated %d, unknown %d, end %d! ", sc.records, sc.truncated, sc.unknown, sc.end_seen);
 		if(from_RAM) return load_fail(ERR_SETTINGS_STRUCT, from_RAM);
 	}
+	uint8_t suspended = TaskSuspendAll();         // 1, только если планировщик работает (при старте задач ещё нет)
 	while(p + REC_HDR_SIZE <= p_max) {
 		uint16_t tag = rec_hdr_tag(p);
 		uint16_t len = rec_hdr_len(p);
@@ -414,10 +423,10 @@ xReadError:
 		case NTAG_Message:  copy_min(message.get_save_addr(), data, len, message.get_save_size()); break;
 		case NTAG_FC:       copy_min(dFC.get_save_addr(),     data, len, dFC.get_save_size());     break;
 		case NTAG_sTemp:
-			if(n < TNUMBER) { copy_min(sTemp[n].get_save_addr(), data, len, sTemp[n].get_save_size()); sTemp[n].after_load(); }
+			if(n < TNUMBER) { copy_min(sTemp[n].get_save_addr(), data, len, sTemp[n].get_save_size()); afterT |= 1UL << n; }
 			break;
 		case NTAG_sADC:
-			if(n < ANUMBER) { copy_min(sADC[n].get_save_addr(), data, len, sADC[n].get_save_size()); sADC[n].after_load(); }
+			if(n < ANUMBER) { copy_min(sADC[n].get_save_addr(), data, len, sADC[n].get_save_size()); afterA |= 1UL << n; }
 			break;
 		case NTAG_sInput:
 			if(n < INUMBER) copy_min(sInput[n].get_save_addr(), data, len, sInput[n].get_save_size());
@@ -427,11 +436,11 @@ xReadError:
 			break;
 #ifdef SENSOR_IP
 		case NTAG_sIP:
-			if(n < IPNUMBER) { copy_min(sIP[n].get_save_addr(), data, len, sIP[n].get_save_size()); sIP[n].after_load(); }
+			if(n < IPNUMBER) { copy_min(sIP[n].get_save_addr(), data, len, sIP[n].get_save_size()); afterIP |= 1UL << n; }
 			break;
 #endif
 #ifdef EEV_DEF
-		case NTAG_dEEV:     copy_min(dEEV.get_save_addr(), data, len, dEEV.get_save_size()); dEEV.after_load(); break;
+		case NTAG_dEEV:     copy_min(dEEV.get_save_addr(), data, len, dEEV.get_save_size()); afterEEV = true; break;
 #endif
 #ifdef USE_ELECTROMETER_SDM
 		case NTAG_dSDM:     copy_min(dSDM.get_save_addr(), data, len, dSDM.get_save_size()); break;
@@ -442,6 +451,16 @@ xReadError:
 		default: break;                          // незнакомый тег пропускается, сдвиг уже сделан
 		}
 	}
+	if(suspended) xTaskResumeAll();
+	// после блока: обработчики, которым нужно железо или журнал
+	for(uint8_t i = 0; i < TNUMBER; i++) if(afterT & (1UL << i)) sTemp[i].after_load();
+	for(uint8_t i = 0; i < ANUMBER; i++) if(afterA & (1UL << i)) sADC[i].after_load();
+#ifdef SENSOR_IP
+	for(uint8_t i = 0; i < IPNUMBER; i++) if(afterIP & (1UL << i)) sIP[i].after_load();
+#endif
+#ifdef EEV_DEF
+	if(afterEEV) dEEV.after_load();
+#endif
 #ifdef SENSOR_IP
 	updateLinkIP();
 #endif

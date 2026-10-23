@@ -81,7 +81,8 @@ class Profile                         // Класс профиль
     int16_t  save_region(void);                             // записать ВСЮ область профилей новым форматом
     int8_t   load_region(void);                             // прочитать область нового формата в кеш
     int8_t   cache_load_legacy(const LegacyProfileSizes &sz); // прочитать профили старых эпох в кеш
-    int8_t   cache_activate(int8_t num);                    // сделать слот кеша текущим профилем
+    int8_t   cache_activate(int8_t num);                    // сделать слот кеша текущим профилем (копирование одним блоком, журнал после него)
+    uint8_t  cache_copy(int8_t num);                        // само копирование слота в текущие структуры: 0 ок, 1 пуст, 2 повреждён; без журнала и замков
     bool     region_is_new(void);                           // область в новом формате?
     uint16_t region_len(void);                              // длина области профилей на носителе, байт
     inline boolean cache_used(int8_t num) { return cache_magic[num] == 0xaa; } // слот записан?

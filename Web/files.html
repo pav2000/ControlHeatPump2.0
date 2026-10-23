@@ -68,7 +68,20 @@ function pickSetup(inp) {
 	setupFile = inp.files[0] || null;
 	put('rf-name', setupFile ? setupFile.name + ' · ' + Math.round(setupFile.size / 1024 * 10) / 10 + ' КБ' : 'settings.bin — файл не выбран');
 }
+// Восстановление заменяет настройки, профили и расписание целиком, поэтому доступно только при остановленном ТН
+// (прошивка тоже откажет). Состояние - из опроса state.work: «включён» это пуск, работа, останов, ожидание и ошибка.
+var hpWorking = false;
+function restoreGate(working) {
+	hpWorking = working;
+	var b = $('btn-restore');
+	if(!b) return;
+	b.disabled = working;
+	b.title = working ? 'Остановите ТН: настройки можно восстановить только при остановленном ТН' : '';
+	put('rf-sub', working ? 'ТН включён: остановите его, чтобы восстановить настройки' : 'профили, расписание и настройки заменяются содержимым файла');
+	$('rf-sub').style.color = working ? 'var(--bad)' : '';
+}
 function restore() {
+	if(hpWorking) { stToast('Остановите ТН: настройки можно восстановить только при остановленном ТН.', true); return; }
 	if(!setupFile) { stToast('Выберите файл settings.bin.', true); return; }
 	if(!confirm('Восстановить настройки из файла «' + setupFile.name + '»? Профили, расписание и настройки будут заменены содержимым файла.')) return;
 	pausePoll(true);
@@ -180,6 +193,7 @@ window.onload = function() {
 	yearList('hist', 'sys.list_hist');
 	yearList('histold', 'sys.list_hist_old');
 	api.get({k: ['ohp.wspif']}, function(D) { showSource(D['ohp.wspif'] === true); });
+	api.poll({k: ['state.work']}, function(D) { if('state.work' in D) restoreGate(D['state.work'] === true); });
 	var d = $('drop');
 	['dragenter', 'dragover'].forEach(function(e) { d.addEventListener(e, function(ev) { ev.preventDefault(); d.classList.add('over'); }); });
 	['dragleave', 'drop'].forEach(function(e) { d.addEventListener(e, function(ev) { ev.preventDefault(); d.classList.remove('over'); }); });
@@ -193,8 +207,8 @@ window.onload = function() {
 <div class="content">
 <div class="grid">
 	<section class="card c6"><h3>Настройки и состояние</h3><div id="dl1"></div>
-		<div class="dl" style="display:block"><div class="l"><b>Восстановить настройки из бинарного файла</b><span class="hint" tabindex="0" data-tip="Если при восстановлении настроек возникает ошибка, обновите страницу (Ctrl+F5).">1</span><small>профили, расписание и настройки заменяются содержимым файла</small></div>
-			<div class="rfile"><span class="nm" id="rf-name">settings.bin — файл не выбран</span><input type="file" id="Setup" hidden onchange="pickSetup(this)"><button class="btn2" onclick="$('Setup').click()">Выбрать…</button><button class="btn2 bad" onclick="restore()">Восстановить…</button></div></div></section>
+		<div class="dl" style="display:block"><div class="l"><b>Восстановить настройки из бинарного файла</b><span class="hint" tabindex="0" data-tip="Если при восстановлении настроек возникает ошибка, обновите страницу (Ctrl+F5).">1</span><small id="rf-sub">профили, расписание и настройки заменяются содержимым файла</small></div>
+			<div class="rfile"><span class="nm" id="rf-name">settings.bin — файл не выбран</span><input type="file" id="Setup" hidden onchange="pickSetup(this)"><button class="btn2" onclick="$('Setup').click()">Выбрать…</button><button class="btn2 bad" id="btn-restore" onclick="restore()">Восстановить…</button></div></div></section>
 	<section class="card c6"><h3>Веб-интерфейс контроллера</h3>
 		<div class="dl"><div class="l"><b>Откуда контроллер берёт страницы</b><small>переключение действует до перезагрузки; сохраняется записью в EEPROM</small></div><span class="seg2" id="src"><a onclick="setSource(1)">SPI Flash</a><a onclick="setSource(0)">SD-карта</a></span></div>
 		<div class="drop" id="drop"><b>Перетащите файлы сюда</b> или выберите<div id="drop-sel" style="font-size:12px;margin-top:4px"></div><input type="file" id="Files" multiple hidden onchange="addFiles(this.files)"></div>

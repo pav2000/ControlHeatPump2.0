@@ -290,6 +290,15 @@ void HeatPump::set_profile()
 	Option.numProf = Prof.get_idProfile();
 }
 
+// Сменить рабочий профиль. Одна точка входа для расписания (UpdateHP) и веб-действия profile.load: копирование
+// слота идёт одним блоком внутри Prof.load, номер профиля запоминается после него.
+int32_t HeatPump::switch_profile(int8_t num)
+{
+	int32_t r = Prof.load(num);
+	if(r >= 0) set_profile();
+	return r;
+}
+
 // ---------------------------------------------------------------------------
 // ---- ФУНКЦИИ РАБОТЫ С ГРАФИКАМИ ТН ----
 // ---------------------------------------------------------------------------
@@ -355,7 +364,7 @@ int16_t HeatPump::setTargetTemp(int16_t dt)
 	case pOFF:
 		break;
 	case pHEAT:
-		if(GETBIT(Prof.Heat.flags,fTarget) == 0 || get_ruleHeat() == pHYBRID) {
+		if(TargetIsTemp1(get_ruleHeat(), GETBIT(Prof.Heat.flags, fTarget))) {
 			if((Prof.Heat.Temp1 + dt >= 0) && (Prof.Heat.Temp1 + dt <= 4000)) Prof.Heat.Temp1 = Prof.Heat.Temp1 + dt;
 			return Prof.Heat.Temp1;
 		} else {
@@ -364,7 +373,7 @@ int16_t HeatPump::setTargetTemp(int16_t dt)
 		}
 		break;
 	case pCOOL:
-		if(GETBIT(Prof.Cool.flags, fTarget) || get_ruleCool() == pHYBRID) {
+		if(TargetIsTemp1(get_ruleCool(), GETBIT(Prof.Cool.flags, fTarget))) {
 			if((Prof.Cool.Temp1 + dt >= 0) && (Prof.Cool.Temp1 + dt <= 3000)) Prof.Cool.Temp1 = Prof.Cool.Temp1 + dt;
 			return Prof.Cool.Temp1;
 		} else {
@@ -379,9 +388,7 @@ int16_t HeatPump::setTargetTemp(int16_t dt)
 int16_t HeatPump::get_targetTempCool()
 {
 	int16_t T;
-	if(get_ruleCool() == pHYBRID) T = Prof.Cool.Temp1;
-	else if(!(GETBIT(Prof.Cool.flags, fTarget))) T = Prof.Cool.Temp1;
-	else T = Prof.Cool.Temp2;
+	T = TargetIsTemp1(get_ruleCool(), GETBIT(Prof.Cool.flags, fTarget)) ? Prof.Cool.Temp1 : Prof.Cool.Temp2;
 	T += Schdlr.get_temp_change();
 	return T;
 }
@@ -389,9 +396,7 @@ int16_t HeatPump::get_targetTempCool()
 int16_t HeatPump::get_targetTempHeat()
 {
 	int16_t T;
-	if(get_ruleHeat() == pHYBRID) T = Prof.Heat.Temp1;
-	else if(!(GETBIT(Prof.Heat.flags, fTarget))) T = Prof.Heat.Temp1;
-	else T = Prof.Heat.Temp2;
+	T = TargetIsTemp1(get_ruleHeat(), GETBIT(Prof.Heat.flags, fTarget)) ? Prof.Heat.Temp1 : Prof.Heat.Temp2;
 	if(Prof.Heat.add_delta_temp != 0) {
 		int8_t h = rtcSAM3X8.get_hours();
 		if((Prof.Heat.add_delta_end_hour >= Prof.Heat.add_delta_hour && h >= Prof.Heat.add_delta_hour && h <= Prof.Heat.add_delta_end_hour)
@@ -616,7 +621,7 @@ sensorTemp *HeatPump::CheckSensors()
 	type_settingHP *st = get_modeHouseSettings();
 	bool house_on = get_modeHouse() != pOFF;
 	uint8_t need = SensorsNeeded(house_on,
-	                             !GETBIT(st->flags, fTarget) || st->Rule == pHYBRID,
+	                             TargetIsTemp1(st->Rule, GETBIT(st->flags, fTarget)),
 	                             GETBIT(st->flags, fWeather),
 	                             get_BoilerON());
 	static const struct { uint8_t bit, num; } map[] = {
