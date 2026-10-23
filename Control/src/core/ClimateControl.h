@@ -305,4 +305,42 @@ bool TargetIsTemp1(uint8_t rule, bool target_flag_return);
 // алгоритм; weather - включена погодозависимость; boiler_on - ГВС включён.
 uint8_t SensorsNeeded(bool house_on, bool tin_used, bool weather, bool boiler_on);
 
+
+// ---------------------------------------------------------------------------
+// Насосы в паузе ТН и циркуляция ГВС. Решение здесь, реле переключает вызывающий:
+// vServiceHP (раз в секунду) и vUpdate (раз в период управления).
+// ---------------------------------------------------------------------------
+
+// Что сделать с реле. _PLAN - плановое переключение (в журнал только при флаге RELP):
+// это set_ON(true)/set_OFF(true), без _PLAN - set_ON()/set_OFF().
+enum CLIMATE_RELAY_ACT {
+	RELAY_KEEP = 0,
+	RELAY_ON,
+	RELAY_OFF,
+	RELAY_ON_PLAN,
+	RELAY_OFF_PLAN
+};
+
+// Шаг автомата "насосы в паузе ТН", вызывается раз в секунду. start_pump - HP.startPump:
+// 0 - автомат стоит, 1 - запуск, 2 - насосы выключены, 3 - включены (0 и 1 ставит HeatPump).
+// timer - счётчик секунд до переключения, хранится у вызывающего. work/pause - Option.workPump/
+// pausePump, секунды; work = 0 - функция выключена, pause = 0 - насосы включены всё время паузы ТН.
+// Запуск начинается с паузы насосов (pause секунд выключены), затем work включены и так далее. Возврат: RELAY_KEEP, RELAY_ON_PLAN или
+// RELAY_OFF_PLAN - для насоса отопления и насоса ТП вместе.
+uint8_t ClimatePumpPauseStep(uint8_t *start_pump, uint16_t *timer, uint16_t work, uint16_t pause);
+
+// Циркуляция ГВС (реле RPUMPB) при работающем ТН.
+struct CirculIn {
+	bool     allowed;            // бойлер включён и расписание бойлера разрешает (scheduleBoiler && get_BoilerON)
+	bool     boiler_mode;        // в modWork есть pBOILER
+	bool     circulation;        // управление циркуляцией включено (fCirculation)
+	bool     heating_boiler;     // компрессор (реле или инвертор) работает на бойлер
+	bool     relay_on;           // RPUMPB сейчас включено
+	uint32_t work_ticks;         // время работы, тики (Circul_Work * configTICK_RATE_HZ)
+	uint32_t pause_ticks;        // время паузы, тики
+	uint32_t now;                // xTaskGetTickCount()
+};
+// Возврат - CLIMATE_RELAY_ACT. tick - момент последнего планового переключения.
+uint8_t ClimateCirculStep(const CirculIn &in, uint32_t *tick);
+
 #endif

@@ -80,6 +80,8 @@ CHECK_SAVE_SIZE(type_dataProfile,120);
 // Расписание: 5 календарей. Новый тег не заводился осознанно:
 // запись опознаётся по длине в заголовке, читаются обе (Scheduler::region_len).
 CHECK_SAVE_SIZE(Scheduler_Data,  667);
+// SchedulerCalc не видит Constant.h, биты режима у него свои
+static_assert(SCHDLR_MODE_OFF == pOFF && SCHDLR_MODE_HEAT == pHEAT && SCHDLR_MODE_COOL == pCOOL, "SCHDLR_MODE_* разошлись с pOFF/pHEAT/pCOOL");
 CHECK_SAVE_SIZE(type_messageHP,  276);
 CHECK_SAVE_SIZE(type_mqtt,       196);
 
@@ -1429,6 +1431,17 @@ void vReadSensor_delay1ms(int32_t ms)
 	} while(true);
 }
 
+// Исполнить решение ClimateControl о реле (CLIMATE_RELAY_ACT)
+static void relayAct(devRelay &r, uint8_t act)
+{
+	switch(act) {
+	case RELAY_ON:       r.set_ON(); break;
+	case RELAY_OFF:      r.set_OFF(); break;
+	case RELAY_ON_PLAN:  r.set_ON(true); break;
+	case RELAY_OFF_PLAN: r.set_OFF(true); break;
+	}
+}
+
 //////////////////////////////////////////////////////////////////////////
 // Задача Управление тепловым насосом (Tasks.xHandleUpdate) "UpdateHP"
  void vUpdate( void * )
@@ -1455,37 +1468,18 @@ void vReadSensor_delay1ms(int32_t ms)
 			}
 			// 2. Управление циркуляционным насосом ГВС
 #ifdef RPUMPB
-				if ((HP.scheduleBoiler())&&(HP.get_BoilerON()))  // если бойлер разрешен и разрешено греть бойлер согласно расписания или расписание выключено
-				{
-					if ((HP.get_modWork() & pBOILER))           // Если включен нагрев ГВС всегда включать насос циркуляции ЕСЛИ НЕ СУПЕРБОЙЛЕР
-					{ HP.dRelay[RPUMPB].set_ON(); }
-					else
-						if (HP.get_Circulation())                                               // Циркуляция разрешена
-						{
-							if((HP.dRelay[RCOMP].get_Relay()||HP.dFC.isfOnOff())&&(HP.get_onBoiler())) { // идет нагрев ГВС
-                               HP.dRelay[RPUMPB].set_ON();
-                               goto delayTask; // идет нагрев ГВС включаем насос циркуляции ВСЕГДА - улучшаем перемешивание
-			                }
-			                if (HP.get_CirculWork()==0) { HP.dRelay[RPUMPB].set_OFF(); goto delayTask;/* continue;*/}   // В условиях стоит время работы 0 - выключаем насос ГВС
-							if (HP.get_CirculPause()==0) { HP.dRelay[RPUMPB].set_ON(); goto delayTask;/* continue;*/}  // В условиях стоит время паузы 0 - включаем насос ГВС
-							if(HP.dRelay[RPUMPB].get_Relay())                                       // Насос включен Смотрим времена
-							{
-								if(((long)xTaskGetTickCount()-RPUMPBTick ) > HP.get_CirculWork()*configTICK_RATE_HZ)   // ждем время мсек
-								{
-									RPUMPBTick=xTaskGetTickCount();
-									HP.dRelay[RPUMPB].set_OFF(true);                              // выключить насос (плановое, циркуляция ГВС)
-								}
-							} else {                                                                // Насос выключен
-								if(((long)xTaskGetTickCount()-RPUMPBTick ) >  HP.get_CirculPause()*configTICK_RATE_HZ)   // ждем время мсек
-								{
-									RPUMPBTick=xTaskGetTickCount();
-									HP.dRelay[RPUMPB].set_ON(true);                                // включить насос (плановое, циркуляция ГВС)
-								}
-							} // if(HP.dRealay[RPUMPB].get_Relay())
-						}  //  if (HP.get_Circulation())
-						else HP.dRelay[RPUMPB].set_OFF() ;                                      // if (HP.get_Circulation())        выключить насос если его управление запрещено
-				} //  if (HP.scheduleBoiler())
-				else  HP.dRelay[RPUMPB].set_OFF() ;                                       // По расписанию выключено или бойлер запрещен,  насос выключаем
+			{
+				CirculIn ci;
+				ci.allowed        = HP.scheduleBoiler() && HP.get_BoilerON();  // бойлер разрешён и разрешено греть по расписанию (или оно выключено)
+				ci.boiler_mode    = HP.get_modWork() & pBOILER;
+				ci.circulation    = HP.get_Circulation();
+				ci.heating_boiler = (HP.dRelay[RCOMP].get_Relay() || HP.dFC.isfOnOff()) && HP.get_onBoiler();
+				ci.relay_on       = HP.dRelay[RPUMPB].get_Relay();
+				ci.work_ticks     = HP.get_CirculWork() * configTICK_RATE_HZ;
+				ci.pause_ticks    = HP.get_CirculPause() * configTICK_RATE_HZ;
+				ci.now            = xTaskGetTickCount();
+				relayAct(HP.dRelay[RPUMPB], ClimateCirculStep(ci, &RPUMPBTick));   // решение - в ClimateControl
+			}
 #endif // #ifdef RPUMPB
 		} // НЕ РЕЖИМ ОЖИДАНИЕ if HP.get_State()==pWORK_HP)
 	
@@ -1499,53 +1493,41 @@ void vReadSensor_delay1ms(int32_t ms)
 				uint8_t d = rtcSAM3X8.get_days();
 				if(Scheduler_check_day != d) {
 					Scheduler_check_day = d;
-					d /= 10;
-					if(d > 2) d = 2;
-					bool need_save = false;
-					for(uint8_t i = 0; i < MAX_CALENDARS; i++) {
-						if(HP.Schdlr.sch_data.AutoSelectMonthWeek[i]) {
-							if((HP.Schdlr.sch_data.AutoSelectMonthWeek[i] & ~0x80) == ((rtcSAM3X8.get_months() << 3) | d)) {
-								if(HP.Schdlr.sch_data.Active != i && !(HP.Schdlr.sch_data.AutoSelectMonthWeek[i] & 0x80)) {
-									journal.jprintf_time("Schedule %d selected\n", i + 1);
-									HP.Schdlr.sch_data.Active = i;
-									HP.Schdlr.sch_data.AutoSelectMonthWeek[i] |= 0x80;
-									need_save = true;
-									break;
-								}
-							} else if(HP.Schdlr.sch_data.AutoSelectMonthWeek[i] & 0x80) {
-								HP.Schdlr.sch_data.AutoSelectMonthWeek[i] &= ~0x80;
-								need_save = true;
-							}
-						}
+					uint8_t was = HP.Schdlr.sch_data.Active;
+					if(Scheduler_AutoSelect(HP.Schdlr.sch_data.AutoSelectMonthWeek, MAX_CALENDARS, &HP.Schdlr.sch_data.Active, rtcSAM3X8.get_months(), d)) {
+						if(HP.Schdlr.sch_data.Active != was) journal.jprintf_time("Schedule %d selected\n", HP.Schdlr.sch_data.Active + 1);
+						HP.Schdlr.save();
 					}
-					if(need_save) HP.Schdlr.save();
 				}
 			}
-			int8_t _profile = HP.Schdlr.calc_active_profile(); // Какой профиль ДОЛЖЕН быть сейчас активен
-			if(_profile != SCHDLR_NotActive) {                 // Расписание активно
-				int8_t _curr_profile = HP.get_State() == pWORK_HP ? HP.Prof.get_idProfile() : SCHDLR_Profile_off;
-				if(_profile != _curr_profile && HP.isCommand() == pEMPTY) { // новый режим и ни чего не выполняется?
-					if(_profile == SCHDLR_Profile_off) {
+			// Какой профиль ДОЛЖЕН быть сейчас активен и что для этого сделать - решение в SchedulerCalc
+			int8_t _profile = HP.Schdlr.calc_active_profile();
+			uint8_t _state = HP.get_State();
+			switch(Scheduler_ProfileStep(_profile, HP.Prof.get_idProfile(), _state == pWORK_HP, _state == pWAIT_HP, HP.isCommand() == pEMPTY, HP.NO_Power)) {
+			case SCHDLR_DoWait:
+				HP.sendCommand(pWAIT);
+				break;
+			case SCHDLR_DoResume:
+				HP.sendCommand(pRESUME);
+				break;
+			case SCHDLR_DoSwitch: {
+				int32_t _mode;
+				if((_mode = HP.Prof.load_from_EEPROM_SaveON_mode(_profile)) >= 0) {
+					bool frestart = Scheduler_NeedRestart(_mode, HP.get_modWork()); // Если направление работы ТН разное
+					if(frestart) {
 						HP.sendCommand(pWAIT);
-					} else if(HP.Prof.get_idProfile() != _profile) {
-						int32_t _mode;
-						if((_mode = HP.Prof.load_from_EEPROM_SaveON_mode(_profile)) >= 0) {
-							MODE_HP currmode = HP.get_modWork();
-							uint8_t frestart = _mode != pOFF && currmode != pOFF && (currmode & (pHEAT | pCOOL)) && (currmode & (pHEAT | pCOOL)) != (_mode & (pHEAT | pCOOL)); // Если направление работы ТН разное
-							if(frestart) {
-								HP.sendCommand(pWAIT);
-								uint8_t i = DELAY_BEFORE_STOP_IN_PUMP + HP.Option.delayOffPump + 1;
-								while(HP.isCommand()) {	_delay(1000); if(!--i) break; } // ждем отработки команды
-								if(!Tasks.Task_vUpdate_run) continue;
-							}
-							HP.switch_profile(_profile);   // слот копируется одним блоком внутри, журнал - после него
-							journal.jprintf_time("Profile changed to #%d\n", _profile);
-							if(frestart) HP.sendCommand(pRESUME);
-						}
-					} else if(HP.get_State() == pWAIT_HP && !HP.NO_Power) {
-						HP.sendCommand(pRESUME);
+						uint16_t i = DELAY_BEFORE_STOP_IN_PUMP + HP.Option.delayOffPump + 1;   // до 911 с: в uint8_t усекалось
+						// Ждём отработки команды. Ожидание длиной до delayOffPump (до 900 с) - отмечаемся в наблюдателе
+						// на каждом шаге, иначе предел UpdateHP в 120 с перезагружал контроллер посреди смены профиля.
+						while(HP.isCommand()) { Watchdog_Sleep(WDT_UpdateHP, 1000); if(!--i) break; }
+						if(!Tasks.Task_vUpdate_run) continue;
 					}
+					HP.switch_profile(_profile);   // слот копируется одним блоком внутри, журнал - после него
+					journal.jprintf_time("Profile changed to #%d\n", _profile);
+					if(frestart) HP.sendCommand(pRESUME);
 				}
+				break;
+			}
 			}
 		}
 		// 4. Отработка пауз всегда они разные в зависимости от состояния ТН!!
@@ -1829,23 +1811,13 @@ void vServiceHP(void *)
 					HP.sendCommand(pAUTOSTART);
 				}
 			}
-			if(HP.startPump) {  // Если разрешена работа насоса( 0 - останов задачи, 1 - запуск, 2 - в работе (выкл), 3 - в работе (вкл))
-				if(HP.startPump == 1 && HP.get_pausePump() == 0 && HP.get_workPump()) { // Постоянно работают
-					goto xPumpsOn;
-				} else if(HP.get_workPump()) {
-					if(pump_in_pause_timer <= 1) {
-						if(HP.startPump <= 2) { // включить
-							pump_in_pause_timer = HP.get_workPump();
-xPumpsOn:					HP.dRelay[PUMP_OUT].set_ON(true);              	// включить насос отопления (плановое, пауза ТН)
-							HP.Pump_HeatFloor(true);						// включить насос ТП
-							HP.startPump = 3;
-						} else { // выключить
-							HP.dRelay[PUMP_OUT].set_OFF(true);             	// выключить насос отопления (плановое, пауза ТН)
-							HP.Pump_HeatFloor(false);						// выключить насос ТП
-							pump_in_pause_timer = HP.get_pausePump();
-							HP.startPump = 2;
-						}
-					} else pump_in_pause_timer--;
+			if(HP.startPump) {  // Насосы в паузе ТН (0 - автомат стоит, 1 - запуск, 2 - насосы выключены, 3 - включены), решение - в ClimateControl
+				uint8_t sp = HP.startPump;
+				uint8_t act = ClimatePumpPauseStep(&sp, &pump_in_pause_timer, HP.get_workPump(), HP.get_pausePump());
+				if(act != RELAY_KEEP) {
+					relayAct(HP.dRelay[PUMP_OUT], act);              // насос отопления (плановое, пауза ТН)
+					HP.Pump_HeatFloor(act == RELAY_ON_PLAN);         // насос ТП
+					HP.startPump = sp;
 				}
 			}
 			STORE_DEBUG_INFO(76);

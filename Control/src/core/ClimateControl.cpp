@@ -485,3 +485,58 @@ uint8_t SensorsNeeded(bool house_on, bool tin_used, bool weather, bool boiler_on
 	if(boiler_on)            m |= NEED_TBOILER;
 	return m;
 }
+
+// Автомат из vServiceHP (Control.ino). Два отличия от прежнего кода:
+// - при pause = 0 насосы включаются и стоят включёнными; прежде их выключало на секунду
+//   каждые work секунд: "постоянно" проверялось только в состоянии 1;
+// - пауза ТН начинается с паузы насосов: таймер взводится на pause. Прежде он оставался от
+//   прошлого цикла, и первое включение ждало случайный остаток от 0 до pause секунд.
+//   Насосы к этому моменту уже выключены остановом компрессора (после delayOffPump).
+uint8_t ClimatePumpPauseStep(uint8_t *start_pump, uint16_t *timer, uint16_t work, uint16_t pause)
+{
+	if(!*start_pump || !work) return RELAY_KEEP;    // автомат стоит или функция выключена
+	if(pause == 0) {                                 // постоянно работают
+		if(*start_pump == 3) return RELAY_KEEP;
+		*start_pump = 3;
+		return RELAY_ON_PLAN;
+	}
+	if(*start_pump == 1) {                           // запуск - с паузы
+		*timer = pause;
+		*start_pump = 2;
+		return RELAY_OFF_PLAN;
+	}
+	if(*timer <= 1) {
+		if(*start_pump <= 2) {                       // включить
+			*timer = work;
+			*start_pump = 3;
+			return RELAY_ON_PLAN;
+		}
+		*timer = pause;                              // выключить
+		*start_pump = 2;
+		return RELAY_OFF_PLAN;
+	}
+	(*timer)--;
+	return RELAY_KEEP;
+}
+
+// Перенос из vUpdate (Control.ino). Прежний код в трёх ветках уходил goto delayTask мимо проверки
+// расписания: при включённой циркуляции с временем работы или паузы 0 расписание не отрабатывало.
+uint8_t ClimateCirculStep(const CirculIn &in, uint32_t *tick)
+{
+	if(!in.allowed) return RELAY_OFF;                            // по расписанию выключено или бойлер запрещён
+	if(in.boiler_mode) return RELAY_ON;                          // нагрев ГВС - насос циркуляции всегда
+	if(!in.circulation) return RELAY_OFF;                        // управление запрещено
+	if(in.heating_boiler) return RELAY_ON;                       // идёт нагрев ГВС - улучшаем перемешивание
+	if(in.work_ticks == 0) return RELAY_OFF;                     // время работы 0 - выключить
+	if(in.pause_ticks == 0) return RELAY_ON;                     // время паузы 0 - включить
+	if(in.relay_on) {
+		if(in.now - *tick > in.work_ticks) {
+			*tick = in.now;
+			return RELAY_OFF_PLAN;
+		}
+	} else if(in.now - *tick > in.pause_ticks) {
+		*tick = in.now;
+		return RELAY_ON_PLAN;
+	}
+	return RELAY_KEEP;
+}

@@ -132,3 +132,47 @@ int8_t Scheduler_SetCalendar(uint8_t *tt, uint16_t cap, uint8_t calendars, uint8
 	}
 	return 0;
 }
+
+// Цикл автовыбора из vUpdate (Control.ino). Цикл кончается на первом выбранном календаре.
+// Флаг 0x80 ставится и тогда, когда календарь уже активен: иначе ручной перевыбор в его
+// декаду на следующий день отменялся бы автовыбором (прежний код так и делал).
+bool Scheduler_AutoSelect(uint8_t *asmw, uint8_t calendars, uint8_t *active, uint8_t month, uint8_t mday)
+{
+	// Декады 1-10, 11-20, 21-31 число. Прежний код делил mday / 10, и границы были 1-9, 10-19, 20-31.
+	uint8_t d = mday ? (mday - 1) / 10 : 0;
+	if(d > 2) d = 2;
+	bool need_save = false;
+	for(uint8_t i = 0; i < calendars; i++) {
+		if(asmw[i]) {
+			if((asmw[i] & ~0x80) == ((month << 3) | d)) {
+				if(!(asmw[i] & 0x80)) {
+					*active = i;
+					asmw[i] |= 0x80;
+					need_save = true;
+					break;
+				}
+			} else if(asmw[i] & 0x80) {
+				asmw[i] &= ~0x80;
+				need_save = true;
+			}
+		}
+	}
+	return need_save;
+}
+
+uint8_t Scheduler_ProfileStep(int8_t target, int8_t id_profile, bool working, bool waiting, bool cmd_idle, bool no_power)
+{
+	if(target == SCHDLR_NotActive) return SCHDLR_DoNothing;
+	int8_t curr = working ? id_profile : SCHDLR_Profile_off;
+	if(target == curr || !cmd_idle) return SCHDLR_DoNothing;      // новый режим и ничего не выполняется?
+	if(target == SCHDLR_Profile_off) return SCHDLR_DoWait;
+	if(id_profile != target) return SCHDLR_DoSwitch;
+	if(waiting && !no_power) return SCHDLR_DoResume;
+	return SCHDLR_DoNothing;
+}
+
+bool Scheduler_NeedRestart(int32_t new_mode, uint8_t cur_mode)
+{
+	return new_mode != SCHDLR_MODE_OFF && cur_mode != SCHDLR_MODE_OFF && (cur_mode & (SCHDLR_MODE_HEAT | SCHDLR_MODE_COOL))
+			&& (cur_mode & (SCHDLR_MODE_HEAT | SCHDLR_MODE_COOL)) != (new_mode & (SCHDLR_MODE_HEAT | SCHDLR_MODE_COOL));
+}
