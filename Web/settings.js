@@ -45,10 +45,9 @@ function stShow(val, el) {		// число в поле: знаков стольк
 }
 function stSetK(el, key, val) {
 	var m = stKMeta(key), i;
-	// точное значение: по нему проверяется if. при записи. Вычисляемые ключи (группа fc и др.) прошивка сверяет ПО ТЕКСТУ своего ответа
-	// («110.00»), а JSON-число теряет хвостовые нули (String(110.00) = «110») - запись давала conflict. Поэтому число с dec из meta
-	// записывается с тем же числом знаков.
-	el.dataset.x = val === null || val === undefined ? '' : typeof val == 'number' && m && m.dec > 0 ? val.toFixed(m.dec) : String(val);
+	// точное значение: по нему проверяется if. при записи. Вычисляемые ключи прошивка сверяет ПО ТЕКСТУ своего ответа, а JSON-число
+	// теряет запись («110.00» -> 110, «0.5» -> 0.5): берём текст числа, как он пришёл (api.raw, scripts.js), а не строим его по числу или dec.
+	el.dataset.x = val === null || val === undefined ? '' : typeof val == 'number' && api.raw[key] !== undefined && Number(api.raw[key]) === val ? api.raw[key] : String(val);
 	if(el.hasAttribute('data-kr')) {		// только чтение: числа с тем числом знаков, что задаёт meta (сотые - две цифры), как показывали прежние геттеры
 		el.textContent = val === null || val === undefined ? '–' : typeof val == 'boolean' ? (val ? 'да' : 'нет') : typeof val == 'number' && m && m.dec ? val.toFixed(m.dec) : val;
 		return;
@@ -79,7 +78,11 @@ function stLimits(el, m) {
 	if(!m || el.dataset.ml) return;
 	el.dataset.ml = 1;
 	var re = null, fix = null;
+	// data-wide - страница объявила границу ШИРЕ прошивочной (границу, которой нет, не считаем): рантайм сужает поле, но объявление
+	// надо поправить; tools/check_web_pages.py читает эту метку из DOM и сообщает о ней.
 	if(el.type == 'number' && m.max > m.min) {
+		if((el.min !== '' && +el.min < m.min) || (el.max !== '' && +el.max > m.max))
+			el.dataset.wide = 'страница ' + (el.min === '' ? 'без нижней' : el.min) + ' … ' + (el.max === '' ? 'без верхней' : el.max) + ', прошивка ' + m.min + ' … ' + m.max;
 		var lo = el.min === '' ? m.min : Math.max(+el.min, m.min), hi = el.max === '' ? m.max : Math.min(+el.max, m.max), st = parseFloat(el.step);
 		el.max = hi;
 		// min - начало отсчёта шага в браузере: граница прошивки −327,68 при шаге 0,1 браковала бы любое «1,0». Тогда min не ставим, а проверяет stValid
@@ -87,6 +90,7 @@ function stLimits(el, m) {
 		re = ST_RANGE;
 		fix = function(a, x, s, y) { return stNumTxt(lo) + s + stNumTxt(hi, y.charAt(0) == '+'); };
 	} else if((el.type == 'text' || el.type == 'password') && m.t == 'str' && m.max) {
+		if(el.maxLength > 0 && el.maxLength > m.max) el.dataset.wide = 'страница ' + el.maxLength + ' знаков, прошивка ' + m.max;
 		var n = el.maxLength > 0 ? Math.min(el.maxLength, m.max) : m.max;
 		el.maxLength = n;
 		el.dataset.bytes = m.max;
@@ -203,8 +207,11 @@ function stState(el) {
 	if(el.tagName == 'SELECT') return el.dataset.sv !== undefined ? el.value : String(el.selectedIndex);		// data-sv: значение - value пункта (имя, номер из скана)
 	return el.value;
 }
+// Пункт «---» (не менять) списка привязки датчика (data-sv + data-noecho, значение «») - не правка: при отправке такое поле пропускается,
+// и раньше оно считалось изменённым, а пустое значение давало «Проверьте значения, выделенные красным».
+function stKeep(el) { return el.dataset.sv !== undefined && el.hasAttribute('data-noecho') && stState(el) === ''; }
 function stMark(el) {
-	var d = el.dataset.o !== undefined && stState(el) !== el.dataset.o;
+	var d = el.dataset.o !== undefined && stState(el) !== el.dataset.o && !stKeep(el);
 	el.classList.toggle('chg', d);
 	if(el.parentNode.classList.contains('inp') || el.parentNode.classList.contains('tg')) el.parentNode.classList.toggle('chg', d);
 	return d;
@@ -212,7 +219,7 @@ function stMark(el) {
 function stBase(el) { el.dataset.o = stState(el); el.classList.remove('err'); stMark(el); }
 // Изменённые поля. По умолчанию только доступные: серое (disabled) поле не уходит на контроллер и не считается правкой к применению;
 // all=true - и серые тоже (для «Отмены» и предупреждения о несохранённых правках: пользователь их менял, они вернутся при включении поля).
-function stDirtyList(all) { return [].slice.call(document.querySelectorAll('[data-k]')).filter(function(e) { return (all || !e.disabled) && !e.hasAttribute('data-act') && e.dataset.o !== undefined && stState(e) !== e.dataset.o; }); }
+function stDirtyList(all) { return [].slice.call(document.querySelectorAll('[data-k]')).filter(function(e) { return (all || !e.disabled) && !e.hasAttribute('data-act') && e.dataset.o !== undefined && stState(e) !== e.dataset.o && !stKeep(e); }); }
 
 document.addEventListener('input', function(e) { stEdited(e.target, e.type); });
 document.addEventListener('change', function(e) { stEdited(e.target, e.type); });

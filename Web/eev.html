@@ -37,7 +37,7 @@ function pbox(key, t, o) {
 function params() {
 	var h = '';
 	h += pbox('eev.time', 'Период расчёта', {min: 1, max: 1000, step: 1, u: 'с', h: '1…1000 с'});
-	h += '<span class="dirx">' + pbox('eev.trg', 'Целевой перегрев', {min: 0, max: 50, step: 0.01, u: 'K', n: 'Перегрев, к которому будет стремиться ПИД регулирование.', h: 'К этому значению стремится ПИД'}) + '</span>';
+	h += '<span class="dirx">' + pbox('eev.trg', 'Целевой перегрев', {min: 0.01, max: 50, step: 0.01, u: 'K', n: 'Перегрев, к которому будет стремиться ПИД регулирование.', h: 'К этому значению стремится ПИД'}) + '</span>';
 	h += pbox('eev.p2d', 'Δ', {step: 0.01, u: 'K', n: 'Зона около целевого перегрева, где будет уменьшаться пропорциональная составляющая ПИДа.', h: 'зона вокруг цели, где уменьшается пропорциональная составляющая'});
 	h += pbox('eev.kp', 'Пропорциональная', {min: 0, max: 32, step: 0.001, n: 'Коэффициент усиления. Чем больше значение параметра, тем быстрее и оперативнее изменяется положение вентиля. Чем меньше значение параметра, тем медленнее реагирует вентиль.', h: '0…32. Больше — быстрее и резче реагирует вентиль'});
 	h += '<span class="pidx">' + pbox('eev.ki', 'Интегральная', {min: 0, max: 32, step: 0.001, n: 'Интегрирующая составляющая пропорциональна интегралу по времени от отклонения регулируемой величины. Её используют для устранения статической ошибки. Она позволяет регулятору со временем учесть статическую ошибку.', h: '0…32. Устраняет статическую ошибку со временем'}) + '</span>';
@@ -118,7 +118,9 @@ function setRange(m, e) {
 	[].forEach.call(e.parentNode.children, function(c) { c.classList.toggle('on', c == e); });
 	draw();
 }
-function autoToggle(b) { clearInterval(auto); if(b) auto = setInterval(refresh, 2000); }
+// Новая точка графика появляется раз в step секунд, а refresh грузит 3-4 ряда по 400 точек: опрашиваем втрое чаще шага, но не чаще раза в 5 с
+function autoMs() { return Math.max(5000, Math.round(step * 1000 / 3)); }
+function autoToggle(b) { clearInterval(auto); if(b) auto = setInterval(refresh, autoMs()); }
 
 // ---- положение вручную ----
 // Прошивка двигает вентиль, только если формула перегрева - MANUAL (EEV.cpp, E_MANUAL); при другой формуле значение лишь
@@ -173,7 +175,7 @@ window.onload = function() {
 <div class="grid">
 	<section class="card c8">
 		<h3>Перегрев и положение ЭРВ <span class="r chips" style="margin-left:auto"><span class="chip" onclick="setRange(60, this)">1 ч</span><span class="chip on" onclick="setRange(180, this)">3 ч</span><span class="chip" onclick="setRange(0, this)">весь буфер</span><span class="chip" onclick="refresh()">Обновить</span>
-			<label class="row" style="gap:8px;color:var(--mute);font-size:12px;font-weight:600">Авто, 2 с<input type="checkbox" class="sw sm" onchange="autoToggle(this.checked)"></label></span></h3>
+			<label class="row" style="gap:8px;color:var(--mute);font-size:12px;font-weight:600">Авто<input type="checkbox" class="sw sm" onchange="autoToggle(this.checked)"></label></span></h3>
 		<div class="legend" id="legend"></div>
 		<div id="ch" style="min-height:260px"></div>
 	</section>

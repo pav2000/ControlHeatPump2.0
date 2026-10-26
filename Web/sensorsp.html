@@ -102,8 +102,16 @@ var calcRes = null;
 function calc() {
 	var a1 = +$('a1').value, a2 = +$('a2').value, p1 = +$('p1').value, p2 = +$('p2').value;
 	if(a1 == a2) { put('k1', '–'); put('k2', '–'); calcRes = null; return; }
-	var k2 = (p2 - p1) * 100 / (a2 - a1), k1 = p1 * 100 - k2 * a1;
-	calcRes = {zero: Math.round(-k1), k: Math.abs(k2).toFixed(3)};
+	var k2 = (p2 - p1) * 100 / (a2 - a1), k1 = p1 * 100 - k2 * a1, zero = Math.round(-k1) + 0;		// + 0: «-0» в «0»
+	// Прошивка хранит коэффициент без знака (uint16, тысячные) и «0» как int16: давление = АЦП × коэффициент − «0». Убывающую
+	// характеристику (давление падает с ростом кода) и значения вне диапазона записать нельзя - раньше знак молча отбрасывался
+	// (Math.abs), и датчик показывал давление наоборот.
+	if(k2 <= 0 || k2 > 65.535 || zero < -32768 || zero > 32767) {
+		calcRes = null; put('k1', '–');
+		put('k2', k2 <= 0 ? '<span style="color:var(--bad)">убывающая характеристика не поддерживается</span>' : '<span style="color:var(--bad)">вне диапазона</span>');
+		return;
+	}
+	calcRes = {zero: zero, k: k2.toFixed(3)};
 	put('k1', calcRes.zero); put('k2', calcRes.k);
 }
 function calcApply() {

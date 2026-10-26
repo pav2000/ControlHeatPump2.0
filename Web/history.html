@@ -142,9 +142,9 @@ function winChanged(w, isAuto) {
 function setRange(m) { range = m; if(chart) chart.win = null; draw(); }
 function resetZoom() { if(chart) chart.setWindow(null); }
 function toggle(k, on, quiet) {
-	if(k === null) { gSave('hist.sel', sel); draw(); return; }
+	if(k === null) { gSelSave('hist.sel', sel, function(k) { return cols[k] && cols[k].name; }); draw(); return; }
 	if(on) sel[k] = true; else delete sel[k];
-	if(!quiet) { gSave('hist.sel', sel); draw(); }
+	if(!quiet) { gSelSave('hist.sel', sel, function(k) { return cols[k] && cols[k].name; }); draw(); }
 }
 function setHist(on, key) {           // key: ohp.hist - запись истории, ohp.histdet - детализация ВКЛ/ВЫКЛ компрессора
 	key = key || 'ohp.hist';
@@ -165,7 +165,7 @@ window.onload = function() {
 	api.get({k: ['ohp.hist', 'ohp.histdet']}, function(D) { $('get_ohp-hist').checked = D['ohp.hist'] === true; $('get_ohp-histdet').checked = D['ohp.histdet'] === true; });
 	gFetch('hist2_head.csv', function(t) {
 		cols = parseCols(t.replace(/[\r\n]+$/, '').split(';').slice(1));
-		sel = gLoad('hist.sel', null);
+		sel = gSelLoad('hist.sel', function(t) { for(var i = 0; i < cols.length; i++) if(cols[i].name == t) return i; });
 		if(!sel) { sel = {}; cols.forEach(function(c, i) { if(DEFAULT_SEL.indexOf(c.name) >= 0) sel[i] = true; }); }
 		var items = cols.map(function(c, i) { return {k: String(i), name: c.name, sub: DESC[c.name] || '', unit: UNIT[c.axis] || '', color: gColor(i)}; });
 		gSide($('side'), [{t: '', items: items}], sel, toggle);

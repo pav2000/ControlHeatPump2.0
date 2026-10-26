@@ -11,6 +11,20 @@ function gLoad(key, def) {
 	try { var v = localStorage.getItem(key); return v ? JSON.parse(v) : def; } catch(e) { return def; }
 }
 function gSave(key, v) { try { localStorage.setItem(key, JSON.stringify(v)); } catch(e) {} }
+// Выбранные ряды хранятся по ИМЕНИ ряда, а не по номеру: после смены «Состава графиков» номера переезжают на другие ряды.
+// nameOf(k) - имя ряда по ключу выбора; indexOf(имя) - ключ выбора по имени (или undefined/-1, если ряда больше нет).
+// Выбор прежней версии (по номерам, ключ key) читается, пока страница не сохранит новый (key + '.n').
+function gSelSave(key, sel, nameOf) {
+	var n = [];
+	Object.keys(sel).forEach(function(k) { var t = nameOf(k); if(t) n.push(t); });
+	gSave(key + '.n', n);
+}
+function gSelLoad(key, indexOf) {
+	var n = gLoad(key + '.n', null), sel = {};
+	if(!n) return gLoad(key, null);
+	n.forEach(function(t) { var i = indexOf(t); if(i !== undefined && i !== null && i >= 0) sel[i] = true; });
+	return n.length && !Object.keys(sel).length ? null : sel;		// ни одного прежнего ряда не осталось - выбор по умолчанию
+}
 
 // Список рядов слева. groups: [{t: 'Температуры', items: [{k, name, sub, unit, color}]}]; sel: {k: true}
 // onToggle(k, включён). Группы сворачиваются; значения справа обновляет gVal(k, текст).

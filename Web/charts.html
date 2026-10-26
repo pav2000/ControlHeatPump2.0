@@ -34,7 +34,7 @@ function init() {
 	api.get({k: ['chart.list', 'ohp.time_chart', 'ohp.cwco']}, function(D, E, err) {
 		if(err) return;
 		names = chartNamesApi(D['chart.list']);
-		sel = gLoad('charts.sel', null);
+		sel = gSelLoad('charts.sel', function(t) { return names.indexOf(t); });
 		if(!sel) { sel = {}; DEFAULT_SEL.forEach(function(re) { var i = chartFind(names, re); if(i) sel[i] = true; }); }
 		var groups = GROUPS.map(function(t) { return {t: t, items: []}; });
 		for(var i = 1; i < names.length; i++) groups[groupOf(names[i])].items.push({k: String(i), name: names[i], color: gColor(i)});
@@ -49,9 +49,9 @@ function init() {
 function showMemory() { var s = step * 400, h = Math.floor(s / 3600), m = Math.round(s % 3600 / 60); put('mem-note', '400 точек = ' + (h ? h + ' ч ' : '') + m + ' мин. Смена интервала очищает графики.'); }
 
 function toggle(k, on) {
-	if(k === null) { gSave('charts.sel', sel); redraw(); return; }
+	if(k === null) { gSelSave('charts.sel', sel, function(k) { return names[k]; }); redraw(); return; }
 	if(on) sel[k] = true; else delete sel[k];
-	gSave('charts.sel', sel);
+	gSelSave('charts.sel', sel, function(k) { return names[k]; });
 	if(on && !data[k]) load(k); else redraw();
 }
 function load(k) {

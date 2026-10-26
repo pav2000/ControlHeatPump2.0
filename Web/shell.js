@@ -57,6 +57,7 @@ var SHELL_ICONS = {
 	phone: 'M8 3h8a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM11 18h2',
 	monitor: 'M3 5h18v11H3zM8 20h8M12 16v4',
 	cal: 'M4 6h16v14H4zM4 10h16M9 3v4M15 3v4',
+	help: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM9.6 9.5a2.5 2.5 0 1 1 3.6 2.2c-.8.4-1.2 1-1.2 1.8M12 17h.01',
 	gear: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19 12a7 7 0 0 0-.1-1.2l2-1.5-2-3.5-2.3 1a7 7 0 0 0-2.1-1.2L14.2 3h-4l-.4 2.6a7 7 0 0 0-2.1 1.2l-2.3-1-2 3.5 2 1.5A7 7 0 0 0 5 12a7 7 0 0 0 .1 1.2l-2 1.5 2 3.5 2.3-1a7 7 0 0 0 2.1 1.2l.4 2.6h4l.4-2.6a7 7 0 0 0 2.1-1.2l2.3 1 2-3.5-2-1.5c.1-.4.1-.8.1-1.2z'
 };
 var SHELL_DAYS = ['Воскресенье', 'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота'];
@@ -221,7 +222,7 @@ function shTabs(cur) {
 	if(cur.s.gear && shAllowed(cur.s.gear[0]))
 		h += '<a class="tab gear' + (cur.t ? '' : ' on') + '" href="' + cur.s.gear[0] + '.html">' + shIcon('gear') + cur.s.gear[1] + '</a>';
 	var help = SHELL_HELP[shPage];
-	if(help && !shellUser) h += '<a class="tab gear" href="' + (help === 1 ? shPage + '-help' : help) + '.html">' + shIcon('gear') + 'Справка</a>';
+	if(help && !shellUser) h += '<a class="tab gear" href="' + (help === 1 ? shPage + '-help' : help) + '.html">' + shIcon('help') + 'Справка</a>';
 	return h + '</nav>';
 }
 

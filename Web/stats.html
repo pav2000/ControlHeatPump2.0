@@ -66,9 +66,9 @@ function winChanged(w, isAuto) {
 function setRange(days) { range = days * 1440; if(chart) chart.win = null; draw(); }
 function resetZoom() { if(chart) chart.setWindow(null); }
 function toggle(k, on, quiet) {
-	if(k === null) { gSave('stats.sel', sel); draw(); return; }
+	if(k === null) { gSelSave('stats.sel', sel, function(k) { return cols[k] && cols[k].name; }); draw(); return; }
 	if(on) sel[k] = true; else delete sel[k];
-	if(!quiet) { gSave('stats.sel', sel); draw(); }
+	if(!quiet) { gSelSave('stats.sel', sel, function(k) { return cols[k] && cols[k].name; }); draw(); }
 }
 
 function loadYear() {
@@ -86,7 +86,7 @@ window.onload = function() {
 		put('files', 'Файлов: ' + years.length + (years.length ? ' (stats_' + years[years.length - 1].y + ' … stats_' + years[0].y + ')' : '') + '. Запись раз в сутки.');
 		gFetch('stats_head.csv', function(t) {
 			cols = gHead(t);
-			sel = gLoad('stats.sel', null);
+			sel = gSelLoad('stats.sel', function(t) { for(var i = 0; i < cols.length; i++) if(cols[i].name == t) return i; });
 			if(!sel) { sel = {}; DEFAULT_SEL.forEach(function(re) { for(var i = 0; i < cols.length; i++) if(re.test(cols[i].name)) { sel[i] = true; break; } }); }
 			var items = cols.map(function(c, i) { baseOf(c.name); return {k: String(i), name: c.name.replace(', м', ', ч'), unit: laneKey(c) == 'E' ? 'кВт·ч' : UNIT[c.axis] || '', color: gColor(baseOf(c.name))}; });
 			gSide($('side'), [{t: '', items: items}], sel, toggle);

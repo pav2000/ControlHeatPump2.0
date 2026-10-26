@@ -76,6 +76,7 @@ function clearLog() {
 	api['do']('reset.journal', function(v, e) { if(e) stFail('Не выполнено', e); else { stToast('Журнал очищен.'); load(); } });
 }
 window.onload = function() {
+	$('dl-log').href = urlcontrol + '/journal.txt';		// морда может открываться не с адреса контроллера (urlcontrol)
 	$('log').addEventListener('click', function(e) {
 		var d = e.target.closest('div');
 		if(!d || d == $('log')) return;
@@ -92,7 +93,7 @@ window.onload = function() {
 <div id="menu" class="menu"><script src="menu.js"></script></div>
 <div class="content">
 <div class="grid">
-	<section class="card c8"><h3>Журнал контроллера <span class="r row" style="gap:8px"><button class="btn2" style="padding:6px 12px" onclick="load()">Обновить</button><a class="btn2" style="padding:6px 12px;text-decoration:none" href="/journal.txt" download>Скачать</a><button class="btn2 bad" style="padding:6px 12px" onclick="clearLog()">Очистить…</button></span></h3>
+	<section class="card c8"><h3>Журнал контроллера <span class="r row" style="gap:8px"><button class="btn2" style="padding:6px 12px" onclick="load()">Обновить</button><a class="btn2" style="padding:6px 12px;text-decoration:none" id="dl-log" href="/journal.txt" download>Скачать</a><button class="btn2 bad" style="padding:6px 12px" onclick="clearLog()">Очистить…</button></span></h3>
 		<div class="logbox" id="log"></div>
 		<div class="fnote" id="state"></div>
 		<div class="fnote">Показывается весь журнал; обновляется кнопкой (автообновления нет, как раньше). Нажатие на строку подсвечивает её и расшифровывает справа.</div></section>

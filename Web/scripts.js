@@ -1,5 +1,5 @@
 // Copyright (c) 2016-2026 by Pavel Panfilov <firstlast2007@gmail.com>
-var VER_WEB = "2.20";
+var VER_WEB = "2.21";
 var urlcontrol = ''; //  автоопределение (если адрес сервера совпадает с адресом контроллера)
 // адрес и порт контроллера, если адрес сервера отличен от адреса контроллера (не рекомендуется)
 //var urlcontrol = 'http://192.168.0.199';
@@ -24,6 +24,17 @@ var api = {
 	metaWait: {}, verWait: null          // запросы meta и ver в пути: очереди ожидающих
 };
 
+// Текст числа так, как он пришёл от контроллера: api.raw['heat.temp1'] = '20.5', api.raw['fc.max'] = '110.00'. Прежнее значение (if.) для
+// вычисляемых ключей прошивка сверяет по ТЕКСТУ своего ответа, а JSON.parse теряет запись числа (110.00 -> 110, «0.5» и «0.500» одно и то же),
+// поэтому формат нельзя угадать по числу и по meta.dec: у fc.* нули на конце есть, у eev.kp/ki/kd нет.
+api.raw = {};
+api.rawOf = function(text, d) {
+	for(var k in d) if(typeof d[k] == 'number') {
+		var m = new RegExp('"' + k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '":(-?[0-9][0-9.eE+-]*)').exec(text);
+		if(m && Number(m[1]) === d[k]) api.raw[k] = m[1];
+	}
+};
+
 // Один запрос. cb(json, err): err = {code, net}, json - разобранное тело. Ошибки по ключам внутри json.e.
 api.call = function(verb, query, cb, tmo) {
 	var r = new XMLHttpRequest(), auth = (typeof NeedLogin != 'undefined' && NeedLogin == 2) ? '&&' + LPString : '';
@@ -34,6 +45,7 @@ api.call = function(verb, query, cb, tmo) {
 		if(window.shLinkState) shLinkState(true);
 		if(r.status == 401) { if(window.shLogin) shLogin(); cb(null, {code: 401}); return; }
 		try { j = JSON.parse(r.responseText); } catch(e) {}
+		if(j && j.d && (verb == 'get' || verb == 'set')) api.rawOf(r.responseText, j.d);
 		if(r.status != 200 || j === null) cb(null, {code: r.status});
 		else cb(j, null);
 	};

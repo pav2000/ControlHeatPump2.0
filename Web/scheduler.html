@@ -85,7 +85,7 @@ function setDirty(d) { S.dirty = d; stRefresh(); }
 function loadCal(i) {
 	var k = function(a) { return 'cal.' + i + '.' + a; };
 	api.get({k: [k('data'), k('asm'), k('asw')]}, function(D, E, err) {
-		if(err) return;
+		if(err || E[k('data')]) { stToast('Не удалось прочитать календарь ' + (i + 1) + ' (' + stErrText(err ? 'net' : E[k('data')]) + ').', true); return; }		// раньше молча оставлял прежнюю сетку
 		var t = schDecode(D[k('data')] || ''), c = document.querySelectorAll('#calendar .clc');
 		for(var n = 0; n < c.length; n++) c[n].innerHTML = t[n];
 		schPaint();
@@ -95,7 +95,6 @@ function loadCal(i) {
 	});
 	$('sch-name').value = S.names[i] || '';
 	put('cal-title', 'Календарь «' + (i + 1) + '. ' + esc(S.names[i] || '') + '»');
-	put('sch-nm-title', i == S.active ? '' : '');
 	$('b-active').hidden = i == S.active;
 }
 // Календарь расписания (7 суток x 24 часа; в ячейке: пусто / номер профиля / ± температура / «-») в строку

@@ -93,10 +93,10 @@ window.onload = function() {
 	stFields('mail', [
 		f('MAIL', {k: 'sw', t: 'Посылать уведомления по почте'}),
 		f('SMTP_SERVER', {k: 'text', max: 31, t: 'Адрес SMTP-сервера', h: 'после записи показывается IP: <span class="mono" id="smtp-ip">–</span>' + stDnsBtn('smtp')}),
-		f('SMTP_PORT', {t: 'Порт SMTP-сервера', h: '1…65534', min: 1, max: 65534, step: 1}),
+		f('SMTP_PORT', {t: 'Порт SMTP-сервера', h: '2…65533', min: 2, max: 65533, step: 1}),
 		f('MAIL_AUTH', {k: 'sw', t: 'Авторизация на сервере'}),
 		f('SMTP_LOGIN', {k: 'text', max: 31, t: 'Логин для входа'}),
-		f('SMTP_PASS', {k: 'text', pw: 1, max: 31, t: 'Пароль для входа', h: 'скрыт, показ по значку'}),
+		f('SMTP_PASS', {k: 'text', pw: 1, max: 15, t: 'Пароль для входа', h: 'скрыт, показ по значку'}),
 		f('MAIL_INFO', {k: 'sw', t: 'Добавлять в письмо состояние ТН'}),
 		f('SMTP_MAILTO', {k: 'text', max: 31, t: 'Адрес отправителя'}),
 		f('SMTP_RCPTTO', {k: 'text', max: 31, t: 'Адрес получателя'})
@@ -104,9 +104,9 @@ window.onload = function() {
 	stFields('sms', [
 		f('SMS', {k: 'sw', t: 'Посылать уведомления по SMS'}),
 		f('SMS_list', {k: 'sel', t: 'Сервис отправки SMS', h: 'после записи показывается IP сервиса: <span class="mono" id="sms-ip">–</span>' + stDnsBtn('sms')}),
-		f('SMS_P1', {k: 'text', max: 100, t: '<span id="sms-n1">API ID</span>', h: 'подпись поля берётся из выбранного сервиса'}),
-		f('SMS_P2', {k: 'text', max: 100, t: '<span id="sms-n2">–</span>', h: 'показывается, только если сервису он нужен'}),
-		f('SMS_PHONE', {k: 'text', max: 20, t: 'Телефон получателя', h: 'формат 79161234567, до 20 знаков'})
+		f('SMS_P1', {k: 'text', max: 39, t: '<span id="sms-n1">API ID</span>', h: 'подпись поля берётся из выбранного сервиса'}),
+		f('SMS_P2', {k: 'text', max: 39, t: '<span id="sms-n2">–</span>', h: 'показывается, только если сервису он нужен'}),
+		f('SMS_PHONE', {k: 'text', max: 15, t: 'Телефон получателя', h: 'формат 79161234567, до 15 знаков'})
 	]);
 	stLoadK();
 	api.poll({k: ['message.smtp_ip', 'message.sms_ip', 'message.sms_namep1', 'message.sms_namep2']}, messPoll);

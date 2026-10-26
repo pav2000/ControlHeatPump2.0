@@ -43,13 +43,13 @@ function cardTarget(P) {
 	var f = [
 		{key: kk(P, 'RULE'), k: 'sel', t: 'Алгоритм работы', n: [1, 'Для ПИДа производится стабилизация заданной температуры подачи.']},
 		{key: kk(P, 'TARGET'), k: 'sel', t: 'Что является целью'},
-		{key: kk(P, 'TEMP1'), t: 'Температура в доме', h: '0…30 °C', u: '°C', min: 0, max: 40, step: 0.1},
+		{key: kk(P, 'TEMP1'), t: 'Температура в доме', h: P == 'Cool' ? '0…30 °C' : '0…40 °C', u: '°C', min: 0, max: P == 'Cool' ? 30 : 40, step: 0.1},
 		{key: kk(P, 'TEMP2'), t: 'Температура обратки', h: '10…50 °C', u: '°C', min: 10, max: 50, step: 0.1},
 		{key: kk(P, 'DTEMP'), t: 'Гистерезис', h: '0…30 °C', u: '°C', min: 0, max: 30, step: 0.1, n: [2, 'Диапазон регулирования равен: целевая температура − гистерезис целевой температуры.']}
 	];
 	if(heat) f.push({key: 'heat.dtg', t: 'Гистерезис при работе от генератора', h: '0…30 °C', u: '°C', min: 0, max: 30, step: 0.1});
 	var pf = [
-		{key: kk(P, 'TEMP_PID'), t: 'Целевая температура подачи', h: '10…50 °C; при погодозависимости — для улицы 0°', u: '°C', min: 5, max: 50, step: 0.1,
+		{key: kk(P, 'TEMP_PID'), t: 'Целевая температура подачи', h: (P == 'Cool' ? '5…30' : '10…50') + ' °C; при погодозависимости — для улицы 0°', u: '°C', min: P == 'Cool' ? 5 : 10, max: P == 'Cool' ? 30 : 50, step: 0.1,
 			n: [4, 'При использовании погодозависимости целевая температура подачи указывается для уличной температуры 0 градусов.']},
 		{key: kk(P, 'HP_TIME'), t: 'Постоянная интегрирования времени', h: '10…600 с', u: 'с', min: 10, max: 600, step: 1},
 		{key: kk(P, 'HP_PRO'), t: 'Пропорциональная составляющая', h: '0…32', min: 0, max: 32, step: 0.001},
@@ -92,7 +92,7 @@ function cardCurve() {
 		'Только для алгоритма ПИД: чем холоднее на улице, тем выше температура теплоносителя. Компрессору выгоднее работать на пониженной подаче.',
 		'подача = цель ПИД + K × (0 − улица), в пределах 7…50 °C и не выше макс. подачи − 0,5', [
 		{key: 'heat.w', k: 'sw', t: 'Использовать кривую'},
-		{key: 'heat.temp_pid', t: 'Цель ПИД при 0 °C на улице', h: 'подача при нулевой улице', u: '°C', min: 5, max: 50, step: 0.1,
+		{key: 'heat.temp_pid', t: 'Цель ПИД при 0 °C на улице', h: 'подача при нулевой улице', u: '°C', min: 10, max: 50, step: 0.1,
 			n: [4, 'При использовании погодозависимости целевая температура подачи указывается для уличной температуры 0 градусов.']},
 		{key: 'heat.kw', t: 'Коэффициент К', h: 'градусов подачи на градус улицы', step: 0.001, n: [6, 'Увеличение температуры подачи при уменьшении уличной температуры на 1 градус.']}
 	]);
@@ -124,6 +124,9 @@ function cardProtect(P) {
 }
 
 // ---- что зависит от чего ----
+// Номера пунктов «Алгоритм» и «Цель» задаёт прошивка (порядок enum): берём их из /api/meta по имени, а не зашиваем.
+// def - запасной номер, если meta не загрузилась.
+function opt(key, name, def) { var m = stKMeta(key), i = m && m.o ? m.o.indexOf(name) : -1; return i < 0 ? def : i; }
 // Алгоритм «гистерезис» не использует ПИД; цель «дом» отключает температуру обратки, и наоборот
 function deps(P) {
 	var q = pid(P), set = function(n, dis, why) {
@@ -136,13 +139,14 @@ function deps(P) {
 	};
 	var rule = $('k-' + q + '-rule'), tg = $('k-' + q + '-target');
 	if(rule && rule.options.length) {
-		var off = rule.selectedIndex == 0;
+		var off = rule.selectedIndex == opt(q + '.rule', 'HYSTERESIS', 0);
 		['hp_pro', 'hp_in', 'hp_dif', 'temp_pid', 'w', 'kw', 'hp_time'].forEach(function(n) { set(n, off, 'недоступно: алгоритм без ПИД'); });
-		if(tg) { tg.disabled = rule.selectedIndex == 2; }
+		if(tg) { tg.disabled = rule.selectedIndex == opt(q + '.rule', 'HYBRID', 2); }
 	}
 	if(tg && tg.options.length) {
-		set('temp2', tg.selectedIndex == 0, 'недоступно: цель — дом');
-		set('temp1', tg.selectedIndex != 0, 'недоступно: цель — обратка');
+		var home = opt(q + '.target', 'Дом', 0);
+		set('temp2', tg.selectedIndex == home, 'недоступно: цель — дом');
+		set('temp1', tg.selectedIndex != home, 'недоступно: цель — обратка');
 	}
 }
 function pidSummary(P) {
@@ -194,8 +198,8 @@ function wstate(key, st, msg, now) {
 function weather() {
 	if(!$('wa')) return;
 	// --- поправка цели: цель помещения от улицы ---
-	var rule = $('k-heat-rule'), tg = $('k-heat-target'), ri = rule ? rule.selectedIndex : 1;
-	var t1 = (tg && tg.selectedIndex != 0 && ri != 2) ? fv('temp2') : fv('temp1');
+	var rule = $('k-heat-rule'), tg = $('k-heat-target'), RPID = opt('heat.rule', 'PID', 1), ri = rule ? rule.selectedIndex : RPID;
+	var t1 = (tg && tg.selectedIndex != opt('heat.target', 'Дом', 0) && ri != opt('heat.rule', 'HYBRID', 2)) ? fv('temp2') : fv('temp1');
 	var kb = fv('kwb'), kt = fv('kwt'), kr = fv('kwr');
 	var fa = function(t) { return t1 + Math.max(-kr, Math.min(kr, (kb - t) * kt)); };
 	if([t1, kb, kt, kr].every(function(x) { return !isNaN(x); })) {
@@ -212,7 +216,7 @@ function weather() {
 		var cap = isNaN(lim) ? 50 : lim - 0.5;
 		var fc = function(t) { var v = tp + kw * (0 - t); v = Math.min(v, cap); v = Math.max(v, 7); return Math.min(v, 50); };
 		drawCurve('wg2', fc, isNaN(lim) ? null : {v: Math.min(cap, 50), text: 'предел подачи'});
-		var pidOn = ri == 1;
+		var pidOn = ri == RPID;
 		if(!pidOn) {
 			var rn = rule && rule.options[ri] ? ({HYSTERESIS: 'Гистерезис', PID: 'ПИД', HYBRID: 'Гибрид'}[rule.options[ri].text] || rule.options[ri].text) : '';
 			wstate('c', 'na', 'Недоступна: сейчас выбран алгоритм «' + rn + '». <b>Чтобы включить</b>, выберите «Алгоритм работы → PID» в карточке «Что поддерживаем».', 'Кривая подачи не применяется при этом алгоритме');
