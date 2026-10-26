@@ -172,7 +172,7 @@ xWait:
 			journal.jprintf("Unknown command: %d !!!", command);
 			break;
 		}
-		if(command != pSFORMAT && command != pSAVE && command != pNETWORK) command_completed = rtcSAM3X8.unixtime();
+		if(command != pSAVE && command != pNETWORK) command_completed = rtcSAM3X8.unixtime();
 		if(!takeCommand()) break;   // очередь пуста, command сброшен в pEMPTY
 		_delay(1);
 	}

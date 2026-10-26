@@ -543,7 +543,7 @@ static const ApiParam apiSdmTab[] = {
 	DA(sdm_NAME,        PF_RO, MK_TEXT, 1,   SD_NAME,     0, 0),
 	DA(sdm_NOTE,        PF_RO, MK_TEXT, 1,   SD_NOTE,     0, 0),
 	DA(sdm_ERRORS,      PF_RO, MK_INT,  1,   SD_ERR,      0, 0),
-	DA(sdm_MAX_POWER,   0,     MK_INT,  1,   SD_MAXP,     0, 65535),   // Вт, контроль мощности
+	DA(sdm_MAX_POWER,   0,     MK_INT,  1,   SD_MAXP,     0, 30000),   // Вт, контроль мощности
 	DA(sdm_VOLTAGE,     PF_RO, MK_NUM,  100, SD_VOLT,     0, 0),
 	DA(sdm_CURRENT,     PF_RO, MK_NUM,  1000, SD_CURRENT, 0, 0),
 	DA(sdm_ACPOWER,     PF_RO, MK_NUM,  100, SD_ACPOWER,  0, 0),

@@ -33,8 +33,14 @@ function row(R) {
 		'<td><div class="row" style="gap:10px">' + stCell(k('on'), {k: 'sw', now: 1, nol: 1}) + '<b id="onoff-' + r + '" style="font-size:12px;color:var(--mute)"></b></div></td>' +
 		'<td><span class="code">D' + stCell(k('pin'), {k: 'ro'}) + '</span></td></tr>';
 }
-var relays = [], working = true;
+var relays = [], working = true, testMode = 0;
+// Реле компрессора и ТЭНа - с подтверждением (stRiskOk в settings.js): по режиму теста видно, включится ли оно по-настоящему
+function stBeforeNow(el) {
+	var m = /^relay\.(\w+)\.on$/.exec(el.dataset.k);
+	return !m || !el.checked || stRiskOk(m[1], testMode, stRelayOn());
+}
 function relayPoll(d) {
+	if('test.mode' in d) testMode = d['test.mode'];
 	if('state.work' in d) {
 		working = d['state.work'];
 		$('lock').hidden = !working;
@@ -115,7 +121,7 @@ window.onload = function() {
 		$('rows').innerHTML = list.map(row).join('');
 		put('rcnt', list.length + ' реле в конфигурации');
 		stLoadK();
-		api.poll({k: ['state.work'].concat(stDevKeys('relay', list, ['on']))}, relayPoll);
+		api.poll({k: ['state.work', 'test.mode'].concat(stDevKeys('relay', list, ['on']))}, relayPoll);
 	});
 };
 </script>

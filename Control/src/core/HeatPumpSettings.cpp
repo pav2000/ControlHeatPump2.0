@@ -930,8 +930,10 @@ static const ApiParam apiOhpTab[] = {
 	PN_U16(option_DELAY_OFF_PUMP, 0, 900,  1,   OO(delayOffPump), 0),
 	PN_U16(option_DELAY_START_RES, 0, 6000, 1,  OO(delayStartRes), 0),
 	PN_U16(option_DELAY_REPEAD_START, 0, 6000, 1, OO(delayRepeadStart), 0),
+#ifdef DEFROST                                                                          // разморозка есть только у воздушного ТН: без неё ключей нет, и морда прячет поля
 	PN_U16(option_DELAY_DEFROST_ON,  0, 600, 1, OO(delayDefrostOn), 0),
 	PN_U16(option_DELAY_DEFROST_OFF, 0, 600, 1, OO(delayDefrostOff), 0),
+#endif
 	PN_U16(option_DELAY_R4WAY,   0, 600,   1,   OO(delayR4WAY),   0),
 	PN_U16(option_DELAY_BOILER_SW,  0, 1200, 1, OO(delayBoilerSW), 0),
 	PN_U16(option_DELAY_BOILER_OFF, 0, 1200, 1, OO(delayBoilerOff), 0),
@@ -1049,7 +1051,7 @@ static const ApiParam apiNetTab[] = {
 	PN_STR(net_PASSADMIN, NO(passAdmin), PASS_LEN + 1, PF_AR, N_HASHA),
 	PN_U16(net_SIZE_PACKET, 64, 2048, 1, NO(sizePacket), 0),
 	PN_BIT(net_INIT_W5200, NO(flags), fInitW5200, PT_B16, 0, 0, 0, 0),
-	PN_U16(net_PORT, 1, 65535, 1, NO(port), 0),
+	PN_U16(net_PORT, 1, 65534, 1, NO(port), 0),
 	PN_BIT(net_NO_ACK, NO(flags), fNoAck, PT_B16, 0, 0, 0, 0),
 	PN_U8 (net_DELAY_ACK, 1, 50, 1, NO(delayAck), 0),
 	PN_STR(net_PING_ADR, NO(pingAdr), 40, 0, 0),

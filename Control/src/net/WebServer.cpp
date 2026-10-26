@@ -548,6 +548,29 @@ const char LOAD_FLASH_END[]  = "*SPI_FLASH_END*"; // Идентификатор 
 const char LOAD_SD_START[]   = "*SD_CARD*";       // Идентификатор начала загрузки веб морды в SD (лежит в Title:)
 const char LOAD_SD_END[]     = "*SD_CARD_END*";   // Идентификатор кольца загрузки веб морды в SD (лежит в Title:)
 
+// Защита заливки веб-морды. Раньше цикл дочитывания файла ждал данные, пока соединение считалось открытым: оборвавшийся клиент
+// держал веб-поток (и общий замок xWebThreadSemaphore) бессрочно, а признак «заливка идёт» (xLoadingWebSemaphore) после сбоя снимался
+// только следующим запросом начала или перезагрузкой.
+#define WEB_UPLOAD_IDLE_MS   10000    // нет ни байта от клиента дольше - файл считается оборванным
+#define WEB_UPLOAD_STALE_MS  30000    // последняя активность заливки старше - признак «заливка идёт» устарел и новое начало его перехватывает
+static uint32_t webUploadTick = 0;    // millis() последней активности заливки (начало, начало файла, принятый пакет)
+
+// SEM-HOLD: xLoadingWebSemaphore
+// Признак нарочно остаётся взятым при выходе true: он живёт между запросами «начало заливки» и «конец заливки» (см. parserPOST).
+// Взять признак «заливка идёт». false - занят свежей заливкой (признак при этом освобождается: повтор начала пройдёт, как и раньше);
+// устаревший признак перехватывается сразу.
+static bool webUploadBegin(void)
+{
+	if(SemaphoreTake(xLoadingWebSemaphore, 10) == pdFALSE) {
+		bool stale = (uint32_t)(millis() - webUploadTick) >= WEB_UPLOAD_STALE_MS;
+		journal.jprintf(stale ? "%s: stale upload dropped\n" : "%s: Upload already started\n", "webUploadBegin");
+		SemaphoreGive(xLoadingWebSemaphore);
+		if(!stale || SemaphoreTake(xLoadingWebSemaphore, 10) == pdFALSE) return false;
+	}
+	webUploadTick = millis();
+	return true;
+}
+
 uint16_t numFilesWeb = 0;                   // Число загруженных файлов
 
 // Область профилей в файле настроек: длина вместе с END и контрольной суммой или -1, если область негодна. Проверка
@@ -735,11 +758,7 @@ xLenErr:
 				return pLOAD_ERR;
 			}
 			fWebUploadingFilesTo = 1;
-			if(SemaphoreTake(xLoadingWebSemaphore, 10) == pdFALSE) {
-				journal.jprintf("%s: Upload already started\n", (char*) __FUNCTION__);
-				SemaphoreGive (xLoadingWebSemaphore);
-				return pLOAD_ERR;
-			}
+			if(!webUploadBegin()) return pLOAD_ERR;
 			numFilesWeb = 0;
 			journal.jprintf_time("Start upload, erase SPI disk ");
 			SerialFlash.eraseAll();
@@ -749,6 +768,7 @@ xLenErr:
 				if(SemaphoreTake(xWebThreadSemaphore, (3 * W5200_TIME_WAIT / portTICK_PERIOD_MS)) == pdFALSE) { // получить семафор веб морды
 					SETBIT1(Socket[thread].flags, fLOCK_LOST);
 					journal.jprintf("%s: Socket %d %s\n", (char*) __FUNCTION__, Socket[thread].sock, MutexWebThreadBusy);
+					SemaphoreGive(xLoadingWebSemaphore);                                       // заливка прервана: признак «идёт» не оставляем
 					return pLOAD_ERR;
 				} // если не удается захватить мютекс, то ошибка и выход
 				journal.jprintf(".");
@@ -762,11 +782,7 @@ xLenErr:
 				return pLOAD_ERR;
 			}
 			fWebUploadingFilesTo = 2;
-			if(SemaphoreTake(xLoadingWebSemaphore, 10) == pdFALSE) {
-				journal.jprintf("%s: Upload already started\n", (char*) __FUNCTION__);
-				SemaphoreGive (xLoadingWebSemaphore);
-				return pLOAD_ERR;
-			}
+			if(!webUploadBegin()) return pLOAD_ERR;
 			numFilesWeb = 0;
 			journal.jprintf_time("Start upload to SD.\n");
 			return pNULL;
@@ -784,6 +800,7 @@ xLenErr:
 			}
 		} else { // загрузка отдельных файлов веб морды
 			if(SemaphoreTake(xLoadingWebSemaphore, 0) == pdFALSE) { // Семафор занят - загрузка файла
+				webUploadTick = millis();
 				if(lenFile == 0) {
 					journal.jprintf("Upload: %s length = %s!\n", nameFile, pStart);
 					return pLOAD_ERR;
@@ -810,13 +827,17 @@ xLenErr:
 							SerialFlashFile ff = SerialFlash.open(nameFile);
 							if(ff) {
 								if(buf_len > 0) loadLen = ff.write(ptr, buf_len); // первый пакет упаковали если он не нулевой
+								uint32_t tIdle = millis();                                 // последний принятый пакет
 								while(loadLen < lenFile)  // Чтение остальных пакетов из сети
 								{
 									_delay(2);                                                 // время на приход данных
 									buf_len = Socket[thread].client.get_ReceivedSizeRX(); // получить длину входного пакета
 									if(buf_len == 0) {
-										if(Socket[thread].client.connected()) continue;	else break;
+										if(!Socket[thread].client.connected()) break;
+										if((uint32_t)(millis() - tIdle) > WEB_UPLOAD_IDLE_MS) { journal.jprintf("idle timeout "); break; }   // клиент замолчал
+										continue;
 									}
+									tIdle = webUploadTick = millis();
 									Socket[thread].client.read(Socket[thread].inBuf, buf_len);        // прочитать буфер
 									loadLen = loadLen + ff.write(Socket[thread].inBuf, buf_len);             // записать
 									numPoint++;
@@ -851,13 +872,17 @@ xLenErr:
 							journal.jprintf("Error write file %s (%d,%d)!\n", nameFile, card.cardErrorCode(), (int)(card.cardErrorData()));
 						} else {
 							uint16_t numPoint = 0;
+							uint32_t tIdle = millis();                                                     // последний принятый пакет
 							while((lenFile -= buf_len) > 0)  // Чтение остальных пакетов из сети
 							{
 								_delay(2);                                                                 // время на приход данных
 								buf_len = Socket[thread].client.get_ReceivedSizeRX();                  // получить длину входного пакета
 								if(buf_len == 0) {
-									if(Socket[thread].client.connected()) continue; else break;
+									if(!Socket[thread].client.connected()) break;
+									if((uint32_t)(millis() - tIdle) > WEB_UPLOAD_IDLE_MS) { journal.jprintf("idle timeout "); break; }   // клиент замолчал
+									continue;
 								}
+								tIdle = webUploadTick = millis();
 								Socket[thread].client.read(Socket[thread].inBuf, buf_len);                      // прочитать буфер
 								WEB_STORE_DEBUG_INFO(56);
 								for(uint16_t _timeout = 0; _timeout < 2000 && card.card()->isBusy(); _timeout++) _delay(1);

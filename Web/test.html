@@ -64,6 +64,7 @@ function testPoll(d) {
 	if('eev.pospp' in d) put('eev-pos', d['eev.pospp']);
 	if('fc.cfc' in d) put('fc-cur', num(d['fc.cfc'], 1));
 	if('fc.info1' in d) put('fc-pw', d['fc.info1']);
+	if('fc.on_off' in d && document.activeElement !== $('get_pfc-on_off')) $('get_pfc-on_off').checked = d['fc.on_off'] === true;		// инвертор мог остановить и сам ТН
 	relays.forEach(function(R) {
 		var key = 'relay.' + R + '.on', el = $(stKid(key));
 		if(el && key in d && document.activeElement !== el) stSetK(el, key, d[key]);
@@ -86,8 +87,19 @@ function eevZero() {
 	if(!confirm('Установить ЭРВ в 0? Шаговый двигатель пройдёт до упора.')) return;
 	api['do']('eev.zero', function(v, e) { stToast(e ? 'ЭРВ: ' + (stErrText(e)) : 'ЭРВ: ' + (v === 0 ? 'выполнено' : 'код ' + v), !!e); }, undefined, 30000);
 }
-function fcOnOff(on) {
-	api.set({'fc.on_off': on ? 1 : 0}, function(D, E, err) { if(err || E['fc.on_off']) stToast('Инвертор не принял команду (' + apiErr(D, E, err, 'fc.on_off') + ').', true); });
+// Пуск инвертора - пуск компрессора: подтверждение (stRiskOk), после ответа тумблер показывает то, что прочитано с контроллера
+function fcOnOff(sw) {
+	var on = sw.checked;
+	if(on && !stRiskOk('FC', cur, stRelayOn())) { sw.checked = false; return; }
+	api.set({'fc.on_off': on ? 1 : 0}, function(D, E, err) {
+		if(err || E['fc.on_off']) stToast('Инвертор не принял команду (' + apiErr(D, E, err, 'fc.on_off') + ').', true);
+		if('fc.on_off' in D) sw.checked = D['fc.on_off'] === true; else sw.checked = !on;
+	});
+}
+// Реле компрессора и ТЭНа на этой странице включаются сразу (data-now) - через то же подтверждение
+function stBeforeNow(el) {
+	var m = /^relay\.(\w+)\.on$/.exec(el.dataset.k);
+	return !m || !el.checked || stRiskOk(m[1], cur, stRelayOn());
 }
 function fcSet() {
 	var v = $('get_pfc-fc').value;
@@ -107,7 +119,7 @@ window.onload = function() {
 		$('rows').innerHTML = list.map(relayRow).join('');
 		stLoadK();
 		lock();
-		api.poll({k: ['state.work', 'test.mode', 'test.remark', 'state.error', 'eev.pospp', 'fc.cfc', 'fc.info1'].concat(stDevKeys('relay', list, ['on']))}, testPoll);
+		api.poll({k: ['state.work', 'test.mode', 'test.remark', 'state.error', 'eev.pospp', 'fc.cfc', 'fc.info1', 'fc.on_off'].concat(stDevKeys('relay', list, ['on']))}, testPoll);
 	});
 	api.get({k: ['fc.on_off', 'fc.name', 'fc.fc', 'eev.pins', 'eev.pos', 'eev.posp']}, function(D) {
 		if('fc.on_off' in D) $('get_pfc-on_off').checked = D['fc.on_off'] === true;
@@ -136,7 +148,7 @@ window.onload = function() {
 		<div class="field"><div class="l">Задать, %</div><label class="inp"><input id="get_peev-posp" type="number" step="1"><u>%</u></label><button class="btn2" id="set-eevp" onclick="eevSet('eev.posp', 'get_peev-posp')">Задать</button></div>
 		<div class="act" style="margin:8px 0 14px"><button class="btn2" id="set_zeroEEV" onclick="eevZero()">Установка в 0</button></div>
 		<h3 style="margin-top:6px">Инвертор · <span id="fc-name">–</span> <span class="r"><button class="btn2 bad" style="padding:6px 12px" onclick="fcReset()">Сброс инвертора</button></span></h3>
-		<div class="field"><div class="l">Включение</div><input type="checkbox" class="sw" id="get_pfc-on_off" onchange="fcOnOff(this.checked)"></div>
+		<div class="field"><div class="l">Включение</div><input type="checkbox" class="sw" id="get_pfc-on_off" onchange="fcOnOff(this)"></div>
 		<div class="field"><div class="l">Целевая частота<small>Гц</small></div><label class="inp"><input id="get_pfc-fc" type="number" step="1"><u>Гц</u></label><button class="btn2" onclick="fcSet()">Задать</button></div>
 		<div class="field"><div class="l">Текущая частота<small>Гц · мощность текущая</small></div><b><span id="fc-cur">–</span> Гц · <span id="fc-pw">–</span></b></div></section>
 </div>

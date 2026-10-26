@@ -1529,9 +1529,9 @@ static const ApiParam apiMessTab[] = {
 	PN_STR(mess_SMS_P2,       MSO(sms_p2),    40, PF_NE | PF_NC, 0),
 	{ mess_SMS_NAMEP1, 0, 0, 0, 0, 1, PT_CALL, PF_RO, MK_TEXT, MS_NAMEP1, 0 },     // подпись первого параметра зависит от сервиса
 	{ mess_SMS_NAMEP2, 0, 0, 0, 0, 1, PT_CALL, PF_RO, MK_TEXT, MS_NAMEP2, 0 },
-	PN_I16(mess_MESS_TIN,     -327, 327, 100, MSO(mTIN),    0),
-	PN_I16(mess_MESS_TBOILER, -327, 327, 100, MSO(mTBOILER), 0),
-	PN_I16(mess_MESS_TCOMP,   -327, 327, 100, MSO(mTCOMP),  0),
+	PN_I16(mess_MESS_TIN,     0,    30,  100, MSO(mTIN),    0),
+	PN_I16(mess_MESS_TBOILER, 0,    70,  100, MSO(mTBOILER), 0),
+	PN_I16(mess_MESS_TCOMP,   0,    80,  100, MSO(mTCOMP),  0),
 	{ mess_MAIL_RET, 0, 0, 0, 0, 1, PT_CALL, PF_RO, MK_TEXT, MS_RET, 0 },            // ответ на тестовое письмо / SMS (единый буфер)
 	{ mess_SMS_RET,  0, 0, 0, 0, 1, PT_CALL, PF_RO, MK_TEXT, MS_RET, 0 },
 };

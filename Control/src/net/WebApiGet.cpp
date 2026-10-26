@@ -717,6 +717,10 @@ static const int FCB = __COUNTER__;
 	#define FB_PIDSTOP 0, 100
 	#define FB_DTC 0, 24.99f
 	#define FB_FREQ 0, 327.67f
+	#define FB_FSTART FB_FREQ
+	#define FB_FSTARTB FB_FREQ
+	#define FB_FMIN FB_FREQ
+	#define FB_FMAX FB_FREQ
 	#define FB_GEN 0, 327.67f
 	#define FB_PIDSTEP 0, 200
 	#define FB_STEP 0, 99.99f
@@ -725,10 +729,13 @@ static const int FCB = __COUNTER__;
 	#define FB_UPTIME 3, 599
 	#define FB_PIDSTOP 50, 100
 	#define FB_DTC 1, 25
-	#define FB_FREQ 20, 240
-	#define FB_GEN 40, 240
+	#define FB_FSTART 20, 120                  // Гц; класс OmronFC допускает 20…240, веб - уже, по разумным для компрессора пределам
+	#define FB_FSTARTB 20, 150
+	#define FB_FMIN 20, 80
+	#define FB_FMAX 40, 200
+	#define FB_GEN 40, 200                     // как у остальных максимумов на странице
 	#define FB_PIDSTEP 0.01f, 5
-	#define FB_STEP 0.2f, 10
+	#define FB_STEP 0.2f, 5
 	#define FB_DT 0.01f, 9.99f
 #endif
 static const ApiParam apiFcTab[] = {
@@ -758,16 +765,16 @@ static const ApiParam apiFcTab[] = {
 	FCKR(fc_PID_STOP, 0, MK_INT, 1, FB_PIDSTOP),
 	FCKR(fc_DT_COMP_TEMP, 0, MK_NUM, 100, FB_DTC),
 	FCKR(fc_PID_FREQ_STEP, 0, MK_NUM, 100, FB_PIDSTEP),
-	FCKR(fc_START_FREQ, 0, MK_NUM, 100, FB_FREQ),
-	FCKR(fc_START_FREQ_BOILER, 0, MK_NUM, 100, FB_FREQ),
-	FCKR(fc_MIN_FREQ, 0, MK_NUM, 100, FB_FREQ),
-	FCKR(fc_MIN_FREQ_COOL, 0, MK_NUM, 100, FB_FREQ),
-	FCKR(fc_MIN_FREQ_BOILER, 0, MK_NUM, 100, FB_FREQ),
-	FCKR(fc_MIN_FREQ_USER, 0, MK_NUM, 100, FB_FREQ),
-	FCKR(fc_MAX_FREQ, 0, MK_NUM, 100, FB_FREQ),
-	FCKR(fc_MAX_FREQ_COOL, 0, MK_NUM, 100, FB_FREQ),
-	FCKR(fc_MAX_FREQ_BOILER, 0, MK_NUM, 100, FB_FREQ),
-	FCKR(fc_MAX_FREQ_USER, 0, MK_NUM, 100, FB_FREQ),
+	FCKR(fc_START_FREQ, 0, MK_NUM, 100, FB_FSTART),
+	FCKR(fc_START_FREQ_BOILER, 0, MK_NUM, 100, FB_FSTARTB),
+	FCKR(fc_MIN_FREQ, 0, MK_NUM, 100, FB_FMIN),
+	FCKR(fc_MIN_FREQ_COOL, 0, MK_NUM, 100, FB_FMIN),
+	FCKR(fc_MIN_FREQ_BOILER, 0, MK_NUM, 100, FB_FMIN),
+	FCKR(fc_MIN_FREQ_USER, 0, MK_NUM, 100, FB_FMIN),
+	FCKR(fc_MAX_FREQ, 0, MK_NUM, 100, FB_FMAX),
+	FCKR(fc_MAX_FREQ_COOL, 0, MK_NUM, 100, FB_FMAX),
+	FCKR(fc_MAX_FREQ_BOILER, 0, MK_NUM, 100, FB_FMAX),
+	FCKR(fc_MAX_FREQ_USER, 0, MK_NUM, 100, FB_FMAX),
 	FCKR(fc_MAX_FREQ_GEN, 0, MK_NUM, 100, FB_GEN),
 	FCKR(fc_STEP_FREQ, 0, MK_NUM, 100, FB_STEP),
 	FCKR(fc_STEP_FREQ_BOILER, 0, MK_NUM, 100, FB_STEP),
@@ -1116,13 +1123,6 @@ static int apiAct_save_prepare_update(ApiOut *o, const char *)
 	if(HP.dEEV.EEV != -1) HP.dEEV.set_EEV(HP.dEEV.get_maxEEV());      // ЭРВ в максимальное положение
 	return api_save_stats(o);
 }
-static int apiAct_reset_stats(ApiOut *o, const char *)
-{
-	if(HP.get_modWork() != pOFF) return AE_BUSY;                        // форматирование статистики - только на выключенном ТН
-	HP.sendCommand(pSFORMAT);
-	api_put(o, "\"ok\"");
-	return AE_OK;
-}
 // Служебные действия страниц «Система», «Задачи», «Журнал», «Modbus»
 static int apiAct_reset_controller(ApiOut *o, const char *) { HP.sendCommand(pRESET); api_put(o, "\"ok\""); return AE_OK; }   // сначала штатный останов ТН: до минуты
 static int apiAct_reset_journal(ApiOut *o, const char *) { journal.Format(); api_put(o, "\"ok\""); return AE_OK; }
@@ -1147,7 +1147,8 @@ static int apiAct_tasks_reset(ApiOut *o, const char *)
 	return AE_NA;
 #endif
 }
-// Регистры Modbus: p = «устройство:тип:адрес» (чтение) или «устройство:тип:адрес=значение» (запись). Типы: w, l, i, h, f, c.
+// Регистры Modbus: p = «устройство:тип:адрес» (чтение) или «устройство:тип:адрес=значение» (запись). Чтение: w, l, i (input),
+// h, f (holding), c (coil); запись: h, f, c. Адрес и значение - десятичные (шестнадцатеричные переводит морда).
 // Ответ - {"v":число} или {"err":код ошибки Modbus} (например -2: нет ответа); неверный p - bad_value.
 static int api_modbus(ApiOut *o, const char *p, bool wr)
 {
@@ -1165,7 +1166,7 @@ static int api_modbus(ApiOut *o, const char *p, bool wr)
 		float x = my_atof(val);
 		if(x == ATOF_ERROR) return AE_BAD_VALUE;
 		if(type == 'h') i = Modbus.writeHoldingRegisters16(id, par, (int32_t) x);
-		else if(type == 'f') i = Modbus.writeHoldingRegistersFloat(id, par, (int32_t) x);
+		else if(type == 'f') i = Modbus.writeHoldingRegistersFloat(id, par, x);            // float целиком: приведение к int32_t теряло дробную часть
 		else if(type == 'c') i = Modbus.writeSingleCoil(id, par, (int) x);
 		else return AE_BAD_VALUE;
 		_delay(MODBUS_TIME_TRANSMISION * 10);                  // пауза перед чтением обратно
@@ -1230,7 +1231,6 @@ static const ApiAction apiActions[] = {
 	{ "save.schedule",  0, apiAct_save_schedule },
 	{ "save.stats",     0, apiAct_save_stats },
 	{ "save.prepare_update", 0, apiAct_save_prepare_update },
-	{ "reset.stats",    0, apiAct_reset_stats },
 	{ "schedule.clear", 0, apiAct_schedule_clear },
 	{ "schedule.load",  0, apiAct_schedule_load },
 	{ "reset.settings", 0, apiAct_reset_settings },
@@ -1300,6 +1300,7 @@ static void api_ver(const ApiCtx *c, ApiOut *o)
 #else
 	api_put(o, ",\"ipsens\":0");
 #endif
+	api_put(o, ",\"scheme\":"); api_put_int(o, HP_SCHEME);            // номер схемы ТН (Config.h): страница «Схема» выбирает по нему раскладку
 	api_put(o, "}}");
 }
 

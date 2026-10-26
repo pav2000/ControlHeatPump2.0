@@ -59,9 +59,12 @@ window.onload = function() {
 	stPanel();
 	stFields('ctl', [{key: 'fc.fc', t: 'Целевая скорость', h: 'Гц', u: 'Гц', step: 1, dec: 2}]);
 	stLoadK();
-	api.get({k: ['fc.name']}, function(D) {
-		var v = D['fc.name'];
-		if(v !== undefined) shSubNote('<b>' + stEsc(v) + '</b> частотный преобразователь компрессора · Modbus <a href="' + encodeURI(v) + '.pdf" target="_blank">Справка ' + stEsc(v) + ' (PDF) ↗</a>');
+	api.init(function(ver) {
+		var doc = stFcDoc(ver && ver.caps && ver.caps.fc_type);
+		api.get({k: ['fc.name']}, function(D) {
+			var v = D['fc.name'];
+			if(v !== undefined) shSubNote('<b>' + stEsc(v) + '</b> частотный преобразователь компрессора · Modbus' + (doc ? ' · ' + doc : ''));
+		});
 	});
 	api.poll({k: ['fc.note', 'fc.block', 'fc.on_off', 'fc.cfc', 'fc.ccurrent', 'fc.mb_err']}, fcPoll);
 	// fc.info - ~17 чтений Modbus (секунды): отдельным запросом и реже, иначе шапка ждёт его в общем опросе и появляется «Нет связи»

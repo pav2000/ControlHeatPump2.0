@@ -168,7 +168,7 @@ function shMore(open) {
 			if(rows) h += '<h4>' + s.t + '</h4><div class="card ml">' + rows + '</div>';
 		}
 		h += '<div class="card ml"><a href="about.html">О контроллере' + shIcon('chev') + '</a>' +
-			'<a href="#" onclick="return shLogin()">' + (shellUser ? 'Войти как администратор' : 'Учётная запись · admin') + shIcon('chev') + '</a></div>' +
+			'<a href="#" onclick="return shLogin(true)">' + (shellUser ? 'Войти как администратор' : 'Учётная запись · admin') + shIcon('chev') + '</a></div>' +
 			'<div class="mv"><span id="sh-fw2"></span><span>web ' + VER_WEB + '</span><span class="sh-up"></span></div>' + shUiSwitch(true);
 		document.body.insertAdjacentHTML('beforeend', '<div id="sh-more" onclick="if(event.target==this)shMore(false)"><div class="sheet">' + h + '</div></div>');
 		d = document.getElementById('sh-more');
@@ -191,7 +191,7 @@ function shRail(cur) {
 		if(!first) continue;
 		h += '<a class="nav' + (cur && cur.s == s ? ' on' : '') + '" href="' + first + '.html">' + shIcon(s.ic) + s.t + '</a>';
 	}
-	h += '<div class="sp"></div><div class="foot"><a class="av" href="#" onclick="return shLogin()" title="' +
+	h += '<div class="sp"></div><div class="foot"><a class="av" href="#" onclick="return shLogin(true)" title="' +
 		(shellUser ? 'Войти как администратор' : 'Учётная запись') + '">' + shIcon('user') + '</a>' +
 		(shellUser ? 'user' : 'admin') +
 		'<a class="abt' + (shPage == 'about' ? ' on' : '') + '" href="about.html">' + shIcon('more') + '<em>О контр.</em></a></div>';
@@ -269,33 +269,66 @@ function shSubNote(html) {
 })();
 
 // ---- вход / выход ----
-function shLogin() {
+// manual - нажатие на значок учётной записи; без него shLogin зовёт клиент api на ответ 401.
+// Пара логин:пароль проверяется запросом /api/ver до сохранения: при неверной прошивка отвечает 401 на каждый запрос,
+// и раньше морда на каждом опросе спрашивала «Выйти из учётной записи?», не говоря, что пароль неверен.
+var shLoginOff = false;		// окно закрыли «Отменой» - опрос больше его не открывает, только значок учётной записи
+function shLogin(manual) {
 	var d = document.getElementById('sh-login');
 	if(!d) {
 		document.body.insertAdjacentHTML('beforeend',
 			'<dialog id="sh-login"><form method="dialog" onsubmit="return shLoginDo(this)"><h3>Вход администратора</h3>' +
+			'<p class="err" id="sh-login-e" style="display:none;color:var(--bad);font-weight:700;margin:0 0 8px"></p>' +
 			'<label>Логин<input name="l" autocomplete="username"></label>' +
 			'<label>Пароль<input name="p" type="password" autocomplete="current-password"></label>' +
-			'<div class="btns"><button type="button" class="btn2" onclick="this.form.parentNode.close()">Отмена</button>' +
-			'<button class="btn2 p">Войти</button></div></form></dialog>');
+			'<div class="btns"><button type="button" class="btn2" onclick="shLoginOff = true; this.form.parentNode.close()">Отмена</button>' +
+			'<button class="btn2 p" id="sh-login-b">Войти</button></div></form></dialog>');
 		d = document.getElementById('sh-login');
 	}
 	if(d.open) return false;
-	if(NeedLogin == 2) {		// уже вошли - выход
-		if(confirm('Выйти из учётной записи?')) {
-			sessionStorage.removeItem('NeedLogin');
-			sessionStorage.removeItem('LPString');
-			location.href = 'index.html';
+	if(NeedLogin == 2) {
+		if(manual) {		// уже вошли - выход
+			if(confirm('Выйти из учётной записи?')) { shLoginClear(); location.href = 'index.html'; }
+			return false;
 		}
-		return false;
-	}
+		shLoginClear();		// сохранённый вход больше не принимается (пароль сменили)
+		shLoginErr('Сохранённый вход не принят контроллером: войдите заново.');
+	} else if(!manual && shLoginOff) return false;
+	else shLoginErr('');
 	d.showModal();
 	return false;
 }
+function shLoginClear() {
+	sessionStorage.removeItem('NeedLogin');
+	sessionStorage.removeItem('LPString');
+	NeedLogin = LPString = null;
+}
+function shLoginErr(t) {
+	var e = document.getElementById('sh-login-e');
+	if(e) { e.textContent = t; e.style.display = t ? '' : 'none'; }
+}
 function shLoginDo(f) {
-	sessionStorage.setItem('NeedLogin', 2);
-	sessionStorage.setItem('LPString', '!Z' + window.btoa(unescape(encodeURIComponent(f.l.value + ':' + f.p.value))));
-	location.href = shellUser ? 'lan.html' : 'index.html';
+	var lp = '!Z' + window.btoa(unescape(encodeURIComponent(f.l.value + ':' + f.p.value))), b = document.getElementById('sh-login-b');
+	var r = new XMLHttpRequest();		// адрес как у api.call: хвост &&!Z... после пути
+	r.open('GET', (typeof urlcontrol == 'string' ? urlcontrol : '') + '/api/ver&&' + lp, true);
+	r.timeout = api.timeout;
+	b.disabled = true;
+	shLoginErr('');
+	r.onload = function() {
+		var j = null;
+		b.disabled = false;
+		try { j = JSON.parse(r.responseText); } catch(e) {}
+		// при пустом пароле пользователя неверный пароль администратора не даёт 401, а впускает с ролью user
+		if(r.status == 401 || (j && j.role != 'admin')) { shLoginErr('Неверный логин или пароль.'); f.p.value = ''; f.p.focus(); return; }
+		if(r.status != 200 || !j) { shLoginErr('Контроллер не ответил (' + r.status + '), повторите.'); return; }
+		sessionStorage.setItem('NeedLogin', 2);
+		sessionStorage.setItem('LPString', lp);
+		// роль user: страницы грузятся с Basic-авторизацией браузера, а не с этим входом. Переход на страницу администратора
+		// вызывает окно входа браузера - без него страница осталась бы с меню роли user
+		location.href = shellUser ? 'lan.html' : location.href;
+	};
+	r.onerror = r.ontimeout = function() { b.disabled = false; shLoginErr('Нет связи с контроллером, повторите.'); };
+	r.send(null);
 	return false;
 }
 
@@ -330,6 +363,29 @@ function shLinkShow(off) {
 	shUpdate();
 }
 function shLinkRetry() { api.pollTick(); }
+
+// ---- сообщения: всплывающее внизу страницы. Элемент создаётся при первом сообщении - работает на любой странице,
+// а не только там, где есть панель «Применить» (stPanel), и до неё: шапка и api.init зовут его раньше window.onload ----
+var stToastTimer = null;
+function stToast(text, bad) {
+	var t = document.getElementById('toast');
+	if(!t) {
+		if(!document.body) return;
+		document.body.insertAdjacentHTML('beforeend', '<div id="toast" class="toast"></div>');
+		t = document.getElementById('toast');
+	}
+	t.className = 'toast show' + (bad ? ' bad' : '');
+	t.innerHTML = text;
+	clearTimeout(stToastTimer);
+	stToastTimer = setTimeout(function() { t.className = 'toast'; }, bad ? 7000 : 3500);
+}
+// Несовпадение версии протокола - постоянная плашка под шапкой: сообщение на 7 с легко пропустить, а сбои из-за него будут на каждой странице
+function shProtoCheck(v) {
+	if(!v || v.proto == API_PROTO || document.getElementById('sh-proto')) return;
+	var top = document.querySelector('.content > .top');
+	if(top) top.insertAdjacentHTML('afterend', '<div class="offl" id="sh-proto"><span>⚠ <b>Версия протокола контроллера (' + esc(v.proto) + ') не совпадает с версией морды (' + API_PROTO + ')</b></span><small>' +
+		(v.proto > API_PROTO ? 'обновите файлы веб-морды' : 'обновите прошивку контроллера') + ', иначе часть настроек может не читаться и не записываться</small></div>');
+}
 
 // ---- верхняя строка: данные приходят из опроса shApi ----
 function shUpdate() {
@@ -403,7 +459,7 @@ function shApi() {
 	var sel = document.getElementById('get_listprof'), sw = document.getElementById('onoffswitch');
 	if(sel) sel.onchange = function() {
 		api.set({'profile.cur': sel.value}, function(D, E) {
-			if(E['profile.cur']) { if(window.stToast) stToast('Профиль не выбран (' + (ST_ERR[E['profile.cur']] || E['profile.cur']) + ').', true); api.pollTick(); }
+			if(E['profile.cur']) { stToast('Профиль не выбран (' + shErr(E['profile.cur']) + ').', true); api.pollTick(); }
 			else location.reload();		// значения страницы относились к прежнему профилю
 		});
 	};
@@ -411,18 +467,20 @@ function shApi() {
 		var on = sw.checked;
 		if(!on && !confirm('Остановить тепловой насос? Компрессор будет остановлен.')) { sw.checked = true; return; }
 		api['do'](on ? 'power.on' : 'power.off', function(v, e) {
-			if(e && window.stToast) stToast('Команда не выполнена (' + (ST_ERR[e] || e) + ').', true);
+			if(e) stToast('Команда не выполнена (' + shErr(e) + ').', true);
 			api.pollTick();
 		});
 	};
 	api.init(function(v) {
 		if(!v) return;
 		['sh-fw', 'sh-fw2'].forEach(function(id) { var el = document.getElementById(id); if(el) el.innerHTML = 'fw ' + v.fw; });
+		shProtoCheck(v);
 	});
 	api.poll({k: ['state.work', 'state.mode', 'state.time', 'state.date', 'state.uptime', 'state.last_cmd', 'state.status',
 		'sched.on', 'sched.active_name', 'profile.list', 'profile.cur']}, shApiValues);
 }
 function shEsc(s) { return esc(s); }
+function shErr(e) { return window.ST_ERR && ST_ERR[e] || e; }		// тексты ошибок - в settings.js, на страницах без него (about, stats) - код
 function shApiValues(d) {
 	var el, k;
 	if('state.work' in d) {

@@ -24,7 +24,7 @@ function cardBoiler() {
 		f('ON', {k: 'sw', now: true, t: 'Нагрев бойлера', h: 'включение нагрева'}),
 		f('URG', {k: 'sw', now: true, t: 'Нагреть срочно', h: 'снимается сама после нагрева',
 			n: [11, 'Принудительно включить нагрев бойлера (отключается расписание и устанавливается гистерезис 0.1°C), после нагрева флаг автоматически снимается. На дисплее Nextion - нажать на ванну.']}),
-		f('TRG', {t: 'Целевая температура', h: '5…90 °C', u: '°C', min: 5, max: 90, step: 0.1}),
+		f('TRG', {t: 'Целевая температура', h: '5…95 °C', u: '°C', min: 5, max: 95, step: 0.1}),
 		f('DTRG', {t: 'Гистерезис', h: '0…30 °C', u: '°C', min: 0, max: 30, step: 0.1, n: [1, 'Диапазон регулирования равен: целевая температура − гистерезис целевой температуры.']})
 	].map(stField).join('') + '<div class="nowline">Сейчас в бойлере <b id="tb">–</b></div>' +
 	'<div class="more"><div><b>ПИД · тонкая настройка</b><small id="pids"></small></div><a onclick="pidToggle(this)">показать ▾</a></div><div id="pidf" hidden>' + [
@@ -173,7 +173,7 @@ window.onload = function() {
 	$('g2').innerHTML = cardCirc() + cardOptions();
 	var cs = $('cal');
 	cs.classList.add('bin');
-	stCalendar(cs, {paint: function(c, erase) { c.innerHTML = erase ? '' : window.calendar_act_chr; }, changed: function() { calMark(true); }});
+	stCalendar(cs, {toggle: true, paint: function(c, erase) { c.innerHTML = erase ? '' : window.calendar_act_chr; }, changed: function() { calMark(true); }});
 	// календарь входит в правки панели: предупреждение при уходе со страницы, «Применить» и «Записать в EEPROM» его учитывают
 	stPanel({extraDirty: function() { return calDirty ? 1 : 0; }, onApply: function(then) { calSave(function() { stApply(then); }); }, onCancel: calReload});
 	stLoadK();
@@ -190,7 +190,7 @@ window.onload = function() {
 	<div class="grid" id="g2" style="padding-top:16px"></div>
 	<div class="grid" style="padding-top:16px"><section class="card c12">
 		<h3>Расписание нагрева <span class="r calsw"><label>По расписанию<input type="checkbox" class="sw sm" id="k-boiler-sch_on" data-k="boiler.sch_on"></label><label>Расписание только для ТЭНа<input type="checkbox" class="sw sm" id="k-boiler-sch_ah" data-k="boiler.sch_ah"></label></span></h3>
-		<div class="calbar"><span class="grow"><b style="color:var(--ink)">Левая кнопка</b> — включить, <b style="color:var(--ink)">Shift</b> или правая — стереть. Протяжкой по нескольким ячейкам. На телефоне — касанием.</span>
+		<div class="calbar"><span class="grow">Касание или щелчок по <b style="color:var(--ink)">пустой</b> ячейке — включить, по <b style="color:var(--ink)">закрашенной</b> — стереть; протяжкой — сразу несколько (действие задаёт первая ячейка). <b style="color:var(--ink)">Shift</b> или правая кнопка — всегда стереть.</span>
 			<button class="btn2" onclick="calCopyMon(5)">Будни как в Пн</button><button class="btn2" onclick="calCopyMon(7)">Все дни как в Пн</button><button class="btn2" onclick="if(confirm('Очистить календарь нагрева?')) calFill(function() { return false; })">Очистить</button>
 			<button class="btn2" id="cal-save" onclick="calSave()">Запомнить расписание</button></div>
 		<div id="cal"></div>

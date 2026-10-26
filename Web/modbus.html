@@ -18,19 +18,40 @@ table.t td .inp input{width:82px}
 .go{width:30px;height:30px;border-radius:50%;border:1px solid var(--line);background:var(--card);cursor:pointer}
 </style>
 <script>
-// Modbus RTU: чтение (W, L, F; адреса с 4...) и запись (H, I, C; адреса с 3...) регистров устройств на шине RS485.
-// Действия modbus.read (p = устройство:тип:адрес) и modbus.write (p = устройство:тип:адрес=значение); ответ {v: число} или {err: код Modbus}. Строки с адресом 0
-// автообновление не опрашивает (как раньше), их читает кнопка «›».
+// Modbus RTU: регистры устройств на шине RS485. Типы - как их понимает прошивка (WebApiGet.cpp, api_modbus):
+// input-регистры (адреса 3…) только читаются - W (16 бит), L (32 бита), I (float); holding-регистры (адреса 4…) - H (16 бит)
+// и F (float), и coil - C, читаются и записываются. Действия modbus.read (p = устройство:тип:адрес) и modbus.write
+// (p = устройство:тип:адрес=значение); ответ {v: число} или {err: код Modbus}. Строки с адресом 0 автообновление не опрашивает
+// (как раньше), их читает кнопка «›». Прошивка разбирает адрес и значение как десятичные: «0x…» переводится здесь.
 var rows = [], seq = 0, auto = null;
-var WRITE = {h: 1, i: 1, c: 1};
+var WRITE = {h: 1, f: 1, c: 1};
 
 function addRow(type) {
 	var dev = parseInt($('device').value);
 	if(isNaN(dev) || dev < 0 || dev > 255) { stToast('Адрес устройства — число 0…255.', true); return; }
-	rows.push({id: ++seq, dev: dev, type: type, addr: '0', val: '', hex: '', err: ''});
+	rows.push({id: ++seq, dev: dev, type: type, addr: '0', reg: 0, val: '', hex: '', err: ''});
 	draw();
 }
-function key(r) { return r.dev + ':' + r.type + ':' + r.addr; }
+function key(r) { return r.dev + ':' + r.type + ':' + r.reg; }
+// Число из поля: десятичное или «0x…». Целое - для адреса и для H, C; для F «0x…» - биты float, как в столбце Hex
+function mbNum(s, type) {
+	s = String(s).trim();
+	if(/^0x[0-9a-f]+$/i.test(s)) {
+		var n = parseInt(s, 16);
+		if(type != 'f') return n;
+		var d = new DataView(new ArrayBuffer(4));
+		d.setUint32(0, n);
+		return d.getFloat32(0);
+	}
+	if(!/^[-+]?(\d+\.?\d*|\.\d+)$/.test(s)) return NaN;
+	return type == 'f' ? parseFloat(s) : Number(s) % 1 ? NaN : Number(s);
+}
+// Значение для прошивки: my_atof понимает только «-», цифры и точку - без «+» и экспоненты. float - 7 значащих цифр
+function mbOut(x, type) {
+	if(!isFinite(x)) return null;
+	var t = type == 'f' ? String(+x.toPrecision(7)) : String(x);
+	return /^-?\d+(\.\d+)?$/.test(t) ? t : null;
+}
 function hexOf(type, v) {
 	var f = parseFloat(v);
 	if(isNaN(f)) return '';
@@ -49,7 +70,11 @@ function draw() {
 }
 function errHtml(r) { return r.err === '' ? '' : r.err == 'OK' ? '<b class="okc">OK</b>' : '<b class="errc">' + r.err + '</b>'; }
 function row(id) { return rows.filter(function(r) { return r.id == id; })[0]; }
-function setAddr(id, v) { var r = row(id); r.addr = v.trim() === '' ? '0' : v.trim(); r.val = ''; r.hex = ''; r.err = ''; draw(); }
+function setAddr(id, v) {
+	var r = row(id), a = v.trim() === '' ? '0' : v.trim(), n = mbNum(a, 'h');
+	if(isNaN(n) || n < 0 || n > 65535) { stToast('Адрес регистра — целое 0…65535, десятичное или 0x….', true); draw(); return; }
+	r.addr = a; r.reg = n; r.val = ''; r.hex = ''; r.err = ''; draw();
+}
 // ответ действия: {v: число} - значение, {err: код} - ошибка Modbus («-2 нет ответа»)
 function apply(r, res, e) {
 	var err = e ? 'E' + e : res && res.err !== undefined ? 'E' + res.err : '';
@@ -61,18 +86,22 @@ function readRow(id) {
 	api['do']('modbus.read', function(v, e) { apply(r, v, e); draw(); }, key(r), 15000);
 }
 function writeRow(id) {
-	var r = row(id), v = $('w-' + id).value.trim();
+	var r = row(id), v = $('w-' + id).value.trim(), x = mbNum(v, r.type), out = mbOut(x, r.type);
 	if(v === '') return;
-	if(!confirm('Записать ' + v + ' в регистр ' + r.addr + ' устройства ' + r.dev + ' (' + r.type.toUpperCase() + ')? Неверная запись может нарушить работу устройства.')) return;
+	if(out === null || (r.type == 'h' && (x < -32768 || x > 65535)) || (r.type == 'c' && x != 0 && x != 1)) {
+		stToast(r.type == 'c' ? 'Coil — 0 или 1.' : r.type == 'h' ? 'Регистр H — целое −32768…65535, десятичное или 0x….' : 'Значение F — число (точка — разделитель) или биты float 0x….', true);
+		return;
+	}
+	if(!confirm('Записать ' + out + ' в регистр ' + r.addr + (r.addr != String(r.reg) ? ' (' + r.reg + ')' : '') + ' устройства ' + r.dev + ' (' + r.type.toUpperCase() + ')? Неверная запись может нарушить работу устройства.')) return;
 	api['do']('modbus.write', function(res, e) {
 		apply(r, res, e);
 		if(r.err !== 'OK') r.val = '';
 		draw();
 		stToast(r.err !== 'OK' ? 'Запись не удалась (' + r.err + ').' : 'Записано: ' + r.val, r.err !== 'OK');
-	}, key(r) + '=' + v, 15000);
+	}, key(r) + '=' + out, 15000);
 }
 function refreshAll() {
-	var list = rows.filter(function(r) { return r.addr != '0'; }), i = 0;
+	var list = rows.filter(function(r) { return r.reg != 0; }), i = 0;
 	var next = function() {        // по одному: регистры читаются по шине последовательно
 		if(i >= list.length) { draw(); return; }
 		var r = list[i++];
@@ -90,15 +119,15 @@ window.onload = function() { draw(); };
 <div class="grid">
 	<section class="card c4"><h3>Устройство на шине RS485</h3>
 		<div class="field"><div class="l">Адрес устройства<small>частотник — 1, счётчик — 2</small></div><label class="inp"><input id="device" type="number" min="0" max="255" step="1" value="1"></label></div>
-		<h3 style="margin-top:14px">Добавить чтение <span class="r" style="color:var(--mute);font-weight:600">адреса 4…</span></h3>
-		<div class="addrow"><button class="btn2" onclick="addRow('w')">+ W (16 бит)</button><button class="btn2" onclick="addRow('l')">+ L (32 бита)</button><button class="btn2" onclick="addRow('f')">+ F (float)</button></div>
-		<h3>Добавить запись <span class="r" style="color:var(--mute);font-weight:600">адреса 3…</span></h3>
-		<div class="addrow"><button class="btn2 wr" onclick="addRow('h')">+ H (16 бит)</button><button class="btn2 wr" onclick="addRow('i')">+ I (float)</button><button class="btn2 wr" onclick="addRow('c')">+ C (coil)</button></div>
+		<h3 style="margin-top:14px">Только чтение <span class="r" style="color:var(--mute);font-weight:600">input, адреса 3…</span></h3>
+		<div class="addrow"><button class="btn2" onclick="addRow('w')">+ W (16 бит)</button><button class="btn2" onclick="addRow('l')">+ L (32 бита)</button><button class="btn2" onclick="addRow('i')">+ I (float)</button></div>
+		<h3>Чтение и запись <span class="r" style="color:var(--mute);font-weight:600">holding 4…, coil</span></h3>
+		<div class="addrow"><button class="btn2 wr" onclick="addRow('h')">+ H (16 бит)</button><button class="btn2 wr" onclick="addRow('f')">+ F (float)</button><button class="btn2 wr" onclick="addRow('c')">+ C (coil)</button></div>
 		<div class="row" style="gap:12px"><button class="btn2 p" onclick="refreshAll()">Обновить</button><label class="row" style="gap:8px;color:var(--mute);font-weight:700">авто<input type="checkbox" class="sw sm" onchange="autoToggle(this.checked)"></label></div>
 		<div class="fnote">Автообновление опрашивает строки по очереди, по одной (шина читает регистры последовательно); строки с адресом 0 не опрашиваются.</div></section>
 	<section class="card c8"><h3>Регистры <span class="r" style="color:var(--mute);font-weight:600">значение и 0x-представление</span></h3>
 		<table class="t"><thead><tr><th>Устр.</th><th>Тип</th><th>Параметр, адрес</th><th>Значение</th><th>Hex</th><th>Статус</th></tr></thead><tbody id="rows"></tbody></table>
-		<div class="fnote"><b>Подсказки.</b> Для корректного отображения информации из регистра необходимо правильно указать формат хранимого значения в регистре (см. документацию на устройство). Нумерация адресов параметров ведётся согласно документации, обычно с нуля, кроме частотника — он с единицы. Для ввода в шестнадцатеричном формате нужно спереди добавить «0x». Например: прочитать напряжение счётчика SDMхxx — установить адрес устройства на шине 2, добавить строку вывода, нажав кнопку I (float), ввести параметр, равный 0, и прочитать регистр, нажав кнопку «›». Запись (строки H, I, C) просит подтверждения.</div></section>
+		<div class="fnote"><b>Подсказки.</b> Для корректного отображения информации из регистра необходимо правильно указать формат хранимого значения в регистре (см. документацию на устройство). Нумерация адресов параметров ведётся согласно документации, обычно с нуля, кроме частотника — он с единицы. Адрес и значение можно вводить в шестнадцатеричном виде, добавив спереди «0x»; для F «0x…» — это биты float, как в столбце Hex. Например: прочитать напряжение счётчика SDMхxx — установить адрес устройства на шине 2, добавить строку, нажав кнопку I (float), ввести параметр, равный 0, и прочитать регистр, нажав кнопку «›». Запись (строки H, F, C) просит подтверждения.</div></section>
 </div>
 </div>
 </body>

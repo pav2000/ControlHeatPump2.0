@@ -107,7 +107,7 @@ window.onPageValue = function(n, v) {
 	case 'get_Temp(TOUT)':  put('v-tout', num(v, 1)); break;
 	case 'get_TrgT(1)':     put('v-trg', num(v, 1)); var nt = parseFloat(v); if(nt !== homeTrg && chData.at) { homeTrg = nt; chartDraw(); } else homeTrg = nt; break;		// перерисовка только при смене цели: иначе график и его подсказка сбрасываются каждый опрос
 	case 'get_Temp(TBOILER)': boilerT = parseFloat(v); drawRing(); break;
-	case 'get_Boiler(TRG)': boilerTrg = parseFloat(v); put('v-btrg', isNaN(boilerTrg) ? '–' : Math.round(boilerTrg)); drawRing(); break;
+	case 'get_Boiler(TRG)': boilerTrg = parseFloat(v); put('v-btrg', btrgTxt(boilerTrg)); drawRing(); break;
 	case 'get_pFC(cFC)':    put('t-fc', num(v, 0)); fcEvent(parseFloat(v)); break;
 	case 'get_OverHeat':    put('t-oh', num(v, 1)); break;
 	case 'get_pEEV(POSpp)': put('t-eev', parseInt(v) >= 0 ? parseInt(v) : '–'); break;
@@ -189,21 +189,30 @@ function showEvents() {
 }
 
 // ---- цель дома: кнопки меняют скрытое поле get_trgt-1 и отправляют ключ state.trg_home ----
+// Границ у ключа нет: цель - температура дома или обратки (разные пределы), смотря по настройке отопления. Прошивка
+// за пределом цель молча не меняет, поэтому показываем значение, прочитанное после записи, и говорим, если оно не сдвинулось.
 function trgStep(d) {
-	var e = $('get_trgt-1'), v = Math.round((parseFloat(e.value) + d) * 10) / 10;
-	if(isNaN(v) || v < 5 || v > 50) return;
+	var e = $('get_trgt-1'), was = parseFloat(e.value), v = Math.round((was + d) * 10) / 10;
+	if(isNaN(v)) return;
 	e.value = v;
 	put('v-trg', v.toFixed(1));
-	setKey('state.trg_home', v);
+	setKey('state.trg_home', v, function(r) {
+		if(r === undefined || r === null) return;
+		e.value = r;
+		put('v-trg', num(r, 1));
+		if(Math.abs(r - was) < 0.01) stToast('Цель не изменилась: ' + num(r, 1) + '° — граница допустимых значений.', true);
+	});
 }
 
 // ---- цель ГВС: шаг 1°, скрытое поле get_boiler-trg, запись - ключ boiler.trg ----
+// Границы - из meta прошивки; дробная часть цели (45,5 на «ГВС») при шаге сохраняется
+function btrgTxt(v) { return isNaN(v) ? '–' : v % 1 ? num(v, 1) : String(v); }
 function btrgStep(d) {
-	var e = $('get_boiler-trg'), v = Math.round(parseFloat(e.value) + d);
-	if(isNaN(v) || v < 5 || v > 90) return;
+	var e = $('get_boiler-trg'), m = stKMeta('boiler.trg'), v = Math.round((parseFloat(e.value) + d) * 10) / 10;
+	if(isNaN(v) || v < (m ? m.min : +e.min) || v > (m ? m.max : +e.max)) return;
 	e.value = v;
 	boilerTrg = v;
-	put('v-btrg', v);
+	put('v-btrg', btrgTxt(v));
 	drawRing();
 	setKey('boiler.trg', v);
 }
@@ -296,6 +305,7 @@ window.onload = function() {
 			if(s && o) s.innerHTML = o.o.map(function(t, i) { return '<option' + ((o.na || []).indexOf(i) >= 0 ? ' disabled' : '') + '>' + stEsc(t) + '</option>'; }).join('');
 				s.selectedIndex = modeNow;
 		});
+		api.metaOf('boiler', function() {});		// границы цели ГВС для кнопок (btrgStep)
 		api.get({k: ['heat.adt', 'heat.adh', 'heat.adeh']}, function(D) {
 			night.t = D['heat.adt']; night.h = D['heat.adh']; night.e = D['heat.adeh']; showNight();
 		});
@@ -326,7 +336,7 @@ window.onload = function() {
 					<b><span id="v-trg">–</span>°</b>
 					<button class="btn p" onclick="trgStep(0.5)" title="Цель выше на 0,5°"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
 				</div>
-				<input id="get_trgt-1" type="number" min="5" max="50" step="0.1" hidden>
+				<input id="get_trgt-1" type="number" step="0.1" hidden>
 			</div>
 		</div>
 		<div class="row" style="justify-content:space-between;margin:8px 0 6px"><span style="color:var(--mute)">На улице <b style="color:var(--ink)"><span id="v-tout">–</span>°</b></span><span class="tag w" id="night" style="display:none"></span></div>
@@ -342,7 +352,7 @@ window.onload = function() {
 					<b><span id="v-btrg">–</span>°</b>
 					<button class="btn p" onclick="btrgStep(1)" title="Цель выше на 1°"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
 				</div>
-				<input id="get_boiler-trg" type="number" min="5" max="90" step="1" hidden>
+				<input id="get_boiler-trg" type="number" min="5" max="95" step="0.1" hidden>
 				<div class="heat"><div class="hi" id="hi-tn" title="Нагрев бойлера тепловым насосом"><span class="b"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="3"/><circle cx="12" cy="12" r="3.6"/><path d="M12 8.4v7.2M8.4 12h7.2"/></svg></span><em>ТН</em></div><div class="hi" id="hi-ten" style="display:none" title="Нагрев бойлера ТЭНом"><span class="b"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h3l2-6 3 12 3-12 2 6h5"/></svg></span><em>ТЭН</em></div></div>
 			</div></div>
 		<div class="sw-row"><span>Срочный нагрев</span><input type="checkbox" class="sw sm" id="get_boiler-urg" onchange="setKey('boiler.urg', this.checked ? 1 : 0)"></div>

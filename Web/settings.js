@@ -45,7 +45,10 @@ function stShow(val, el) {		// число в поле: знаков стольк
 }
 function stSetK(el, key, val) {
 	var m = stKMeta(key), i;
-	el.dataset.x = val === null || val === undefined ? '' : String(val);		// точное значение: по нему проверяется if. при записи
+	// точное значение: по нему проверяется if. при записи. Вычисляемые ключи (группа fc и др.) прошивка сверяет ПО ТЕКСТУ своего ответа
+	// («110.00»), а JSON-число теряет хвостовые нули (String(110.00) = «110») - запись давала conflict. Поэтому число с dec из meta
+	// записывается с тем же числом знаков.
+	el.dataset.x = val === null || val === undefined ? '' : typeof val == 'number' && m && m.dec > 0 ? val.toFixed(m.dec) : String(val);
 	if(el.hasAttribute('data-kr')) {		// только чтение: числа с тем числом знаков, что задаёт meta (сотые - две цифры), как показывали прежние геттеры
 		el.textContent = val === null || val === undefined ? '–' : typeof val == 'boolean' ? (val ? 'да' : 'нет') : typeof val == 'number' && m && m.dec ? val.toFixed(m.dec) : val;
 		return;
@@ -57,9 +60,47 @@ function stSetK(el, key, val) {
 		if(m && m.o && el.options.length != m.o.length) el.innerHTML = m.o.map(function(t) { return '<option>' + stEsc(t) + '</option>'; }).join('');
 		if(m && m.o) for(i = 0; i < el.options.length; i++) el.options[i].disabled = (m.na || []).indexOf(i) >= 0;
 		el.selectedIndex = val;
-	} else el.value = val === null || val === undefined ? '' : stShow(typeof val == 'boolean' ? (val ? 1 : 0) : val, el);		// флаг в числовом поле - 0/1, как в прежних полях
+	} else {
+		stLimits(el, m);
+		el.value = val === null || val === undefined ? '' : stShow(typeof val == 'boolean' ? (val ? 1 : 0) : val, el);		// флаг в числовом поле - 0/1, как в прежних полях
+	}
 	stBase(el);
 }
+
+// ---------- границы полей по meta прошивки ----------
+// Поле не должно пропускать значение, которое прошивка отвергнет (range при «Применить»). Берётся ПЕРЕСЕЧЕНИЕ границ
+// страницы и meta: у части ключей в прошивке стоят пределы типа (пороги уведомлений −327…327 °C), а на странице -
+// разумные 0…30, их терять нельзя. Строки: длина из meta в байтах UTF-8 (data-bytes), в символах - не больше.
+// Числа в подсказке («0…30 °C», «до 20 знаков») переписываются на действующие границы, в том числе в копии
+// подсказки data-h, из которой страница её перерисовывает при погашенном поле.
+function stNumTxt(v, plus) { var s = String(+(+v).toFixed(3)).replace('.', ','); return v < 0 ? '−' + s.slice(1) : (plus && v > 0 ? '+' : '') + s; }
+var ST_RANGE = /([−+-]?\d+(?:,\d+)?)(\s*…\s*)([−+-]?\d+(?:,\d+)?)/, ST_LEN = /(до )(\d+)( (?:знак|символ))/;
+function stLimits(el, m) {
+	if(!m || el.dataset.ml) return;
+	el.dataset.ml = 1;
+	var re = null, fix = null;
+	if(el.type == 'number' && m.max > m.min) {
+		var lo = el.min === '' ? m.min : Math.max(+el.min, m.min), hi = el.max === '' ? m.max : Math.min(+el.max, m.max), st = parseFloat(el.step);
+		el.max = hi;
+		// min - начало отсчёта шага в браузере: граница прошивки −327,68 при шаге 0,1 браковала бы любое «1,0». Тогда min не ставим, а проверяет stValid
+		if(!st || Math.abs(lo / st - Math.round(lo / st)) < 1e-6) el.min = lo; else el.dataset.mn = lo;
+		re = ST_RANGE;
+		fix = function(a, x, s, y) { return stNumTxt(lo) + s + stNumTxt(hi, y.charAt(0) == '+'); };
+	} else if((el.type == 'text' || el.type == 'password') && m.t == 'str' && m.max) {
+		var n = el.maxLength > 0 ? Math.min(el.maxLength, m.max) : m.max;
+		el.maxLength = n;
+		el.dataset.bytes = m.max;
+		re = ST_LEN;
+		fix = function(a, x, y, z) { return x + n + z; };
+	}
+	var f = re && el.closest('.field'), s = f && f.querySelector('.l small');
+	if(!s) return;
+	if(s.dataset.h !== undefined) s.dataset.h = s.dataset.h.replace(re, fix);
+	var w = document.createTreeWalker(s, NodeFilter.SHOW_TEXT), t;		// по текстовым узлам: элементы внутри подсказки (IP сервера, кнопка DNS) остаются теми же
+	while((t = w.nextNode())) if(re.test(t.nodeValue)) { t.nodeValue = t.nodeValue.replace(re, fix); break; }
+}
+// Проверка поля перед отправкой: правила браузера и нижняя граница, которую нельзя было поставить в min (см. stLimits)
+function stValid(el) { return el.checkValidity() && !(el.dataset.mn !== undefined && el.value !== '' && +el.value < +el.dataset.mn); }
 function stLoadK(done, root) {		// root - загрузить только поля внутри элемента (таблица, подгруженная позже), остальные правки не затираются
 	var els = [].slice.call((root || document).querySelectorAll('[data-k],[data-kr]')).filter(function(e) { return !e.hasAttribute('data-nol'); }), keys = [], gs = {};
 	els.forEach(function(e) { var k = e.getAttribute('data-k') || e.getAttribute('data-kr'); keys.push(k); gs[k.split('.')[0]] = 1; });
@@ -118,6 +159,37 @@ function stCell(key, o) {
 	if(o.k == 'text') return '<label class="inp"><input type="text" ' + a + (o.max ? ' maxlength="' + o.max + '"' : '') + '></label>';
 	return '<label class="inp"><input type="number" ' + a + (o.dec != null ? ' data-dec="' + o.dec + '"' : '') + ' step="' + (o.step || 'any') + '"' + (o.min != null ? ' min="' + o.min + '"' : '') + (o.max != null ? ' max="' + o.max + '"' : '') + '>' + (o.u ? '<u>' + o.u + '</u>' : '') + '</label>';
 }
+// ---------- документация инвертора («Инвертор») ----------
+// Файл выбирается по типу инвертора из /api/ver (caps.fc_type), а не по имени: имя «Omron MX2» давало ссылку «Omron%20MX2.pdf»
+// на несуществующий файл. Скачивание - через shDownload: контроллер отдаёт любой файл как text/html, прямая ссылка показала бы
+// двоичный мусор. Для типа без описания в морде (Vacon) - пустая строка.
+var ST_FC_DOC = {omron: ['OmronMX2.pdf', 'Описание настройки Omron MX2']};
+function stFcDoc(fcType) {
+	var d = ST_FC_DOC[fcType];
+	return d ? '<a href="' + (typeof urlcontrol == 'string' ? urlcontrol : '') + '/' + d[0] + '" download="' + d[0] + '" onclick="return shDownload(this, \'application/pdf\')">' + d[1] + ' (PDF)</a>' : '';
+}
+
+// ---------- ручное включение компрессора и ТЭНа («Тест», «Прочее») ----------
+// Компрессор и ТЭН отопления без протока можно повредить, а включаются они одним щелчком. Спрашиваем, только когда прошивка
+// включит устройство по-настоящему (Sensors.cpp set_Relay, OmronFC/VaconFC start_FC): компрессор - в режимах NORMAL и
+// HARD_TEST, ТЭН - во всех, кроме SAFE_TEST. В тексте - какие насосы сейчас выключены. what: 'FC' (команда «Ход» инвертору)
+// или имя реле; mode - test.mode (0 NORMAL, 1 SAFE_TEST, 2 TEST, 3 HARD_TEST); on - {имя реле: включено}.
+var ST_RISK = {FC: ['компрессор (команда «Ход» инвертору)', ['RPUMPI', 'RPUMPO'], [0, 3]], RCOMP: ['компрессор (реле RCOMP)', ['RPUMPI', 'RPUMPO'], [0, 3]],
+	RHEAT: ['ТЭН отопления (реле RHEAT)', ['RPUMPO'], [0, 2, 3]]};
+function stRiskOk(what, mode, on) {
+	var r = ST_RISK[what];
+	if(!r || r[2].indexOf(+mode) < 0) return true;
+	var off = r[1].filter(function(p) { return p in on && !on[p]; });
+	return confirm('Включить ' + r[0] + ' вручную?\n' + (off.length ? (off.length > 1 ? 'Насосы ' : 'Насос ') + off.join(', ') + (off.length > 1 ? ' выключены' : ' выключен') + ': без протока оборудование можно повредить.' :
+		'Без протока по контурам оборудование можно повредить.'));
+}
+// Что включено из реле: {имя: true/false} по полям relay.<ИМЯ>.on на странице
+function stRelayOn() {
+	var on = {};
+	[].forEach.call(document.querySelectorAll('[data-k$=".on"][data-k^="relay."]'), function(e) { on[e.dataset.k.split('.')[1]] = e.checked; });
+	return on;
+}
+
 // Все ключи таблицы: devs x attrs
 function stDevKeys(group, devs, attrs) {
 	var out = [];
@@ -142,11 +214,22 @@ function stBase(el) { el.dataset.o = stState(el); el.classList.remove('err'); st
 // all=true - и серые тоже (для «Отмены» и предупреждения о несохранённых правках: пользователь их менял, они вернутся при включении поля).
 function stDirtyList(all) { return [].slice.call(document.querySelectorAll('[data-k]')).filter(function(e) { return (all || !e.disabled) && !e.hasAttribute('data-act') && e.dataset.o !== undefined && stState(e) !== e.dataset.o; }); }
 
-document.addEventListener('input', function(e) { stEdited(e.target); });
-document.addEventListener('change', function(e) { stEdited(e.target); });
-function stEdited(el) {
+document.addEventListener('input', function(e) { stEdited(e.target, e.type); });
+document.addEventListener('change', function(e) { stEdited(e.target, e.type); });
+// Переключатель и список с data-now применяются сразу, но только по change: клик по ним даёт и input, и change,
+// и запись уходила на контроллер дважды. stBeforeNow(el) страницы может отказать (подтверждение опасного включения) -
+// тогда поле возвращается к прежнему значению.
+function stEdited(el, type) {
 	if(!el.dataset || el.dataset.k === undefined || el.hasAttribute('data-act')) return;
-	if(el.hasAttribute('data-now') && (el.type == 'checkbox' || el.tagName == 'SELECT')) { stApply(null, [el]); return; }
+	if(el.hasAttribute('data-now') && (el.type == 'checkbox' || el.tagName == 'SELECT')) {
+		if(type == 'input') return;
+		if(window.stBeforeNow && stBeforeNow(el) === false) {
+			if(el.type == 'checkbox') el.checked = el.dataset.o == '1'; else if(el.dataset.sv === undefined) el.selectedIndex = +el.dataset.o; else el.value = el.dataset.o;
+			return;
+		}
+		stApply(null, [el]);
+		return;
+	}
 	stMark(el);
 	stRefresh();
 	if(window.stChanged) stChanged(el);
@@ -173,7 +256,6 @@ function stPanel(opt) {
 	c.insertAdjacentHTML('beforeend', '<div class="savebar" id="st-bar"><span class="tag" id="st-tag">Изменений нет</span><span class="note" id="st-note"></span><span class="grow"></span>' +
 		(stOpt.apply === false ? '' : '<button class="btn2" id="st-cancel" onclick="stCancel()">Отмена</button><button class="btn2 p" id="st-apply" onclick="stApply()">' + (stOpt.applyText || 'Применить') + '</button>') +
 		'<button class="btn2" onclick="stSave()"><svg class="ic" style="width:16px;height:16px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h12l3 3v13H5zM8 4v5h8V4M8 20v-6h8v6"/></svg> Записать в EEPROM</button></div>');
-	document.body.insertAdjacentHTML('beforeend', '<div id="toast" class="toast"></div>');
 	stBar = true;
 	stRefresh();
 }
@@ -192,16 +274,6 @@ function stRefresh() {
 	var cn = document.getElementById('st-cancel');
 	if(cn) cn.disabled = !n;
 }
-var stToastTimer = null;
-function stToast(text, bad) {
-	var t = document.getElementById('toast');
-	if(!t) return;
-	t.className = 'toast show' + (bad ? ' bad' : '');
-	t.innerHTML = text;
-	clearTimeout(stToastTimer);
-	stToastTimer = setTimeout(function() { t.className = 'toast'; }, bad ? 7000 : 3500);
-}
-
 // ---------- «Обновить IP» у адреса сервера ----------
 // Любая запись имени сервера поднимает в прошивке флаг «разрешить имя через DNS» (и MQTT.cpp, и Message.cpp), даже если имя то же.
 // Кнопка отправляет текущее имя заново и читает IP каждые 1,5 с (разрешение идёт в веб-потоке контроллера): при неудаче DNS
@@ -310,7 +382,7 @@ function stApply(then, only) {
 	if(!only && stOpt.onApply && stOpt.extraDirty && stOpt.extraDirty()) { stOpt.onApply(then); return; }
 	var els = only || stDirtyList(), bad = [];
 	els.forEach(function(el) {
-		if(!el.checkValidity() || (el.type != 'checkbox' && el.value === '')) { bad.push(el); el.classList.add('err'); }
+		if(!stValid(el) || (el.type != 'checkbox' && el.value === '')) { bad.push(el); el.classList.add('err'); }
 	});
 	if(bad.length) { stToast('Проверьте значения, выделенные красным: ' + bad.map(stLabel).join(', '), true); return; }
 	if(!els.length) { if(then) then(); return; }
@@ -351,7 +423,9 @@ function stSave() {
 // Сетка 7 дней x 24 часа. Ячейки ищутся по id="calendar" и классу clc (непустое содержимое - включено),
 // разметка держит эти имена (scheduler.html кодирует календарь для do-действий по ним же).
 var ST_DAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
-// opt.paint(cell, erase) - записать в ячейку; opt.changed() - после правки
+// opt.paint(cell, erase) - записать в ячейку; opt.changed() - после правки.
+// opt.toggle - протяжка, начатая с закрашенной ячейки, стирает: на телефоне нет ни Shift, ни правой кнопки (календарь ГВС,
+// где одна кисть). В «Расписании» кистей несколько, там протяжка по закрашенному перекрашивает - toggle не включается.
 function stCalendar(el, opt) {
 	var h = '<span></span>';
 	for(var i = 0; i < 24; i++) h += '<b>' + (i < 10 ? '0' : '') + i + '</b>';
@@ -362,7 +436,7 @@ function stCalendar(el, opt) {
 	el.innerHTML = h;
 	el.id = 'calendar';
 	el.classList.add('cal');
-	var start = null, cells = [].slice.call(el.querySelectorAll('.clc'));
+	var start = null, startOn = false, cells = [].slice.call(el.querySelectorAll('.clc'));
 	function box(a, b) {		// прямоугольник между двумя ячейками
 		var x0 = Math.min(a % 24, b % 24), x1 = Math.max(a % 24, b % 24), y0 = Math.min(a / 24 | 0, b / 24 | 0), y1 = Math.max(a / 24 | 0, b / 24 | 0);
 		return cells.filter(function(c) { var n = +c.dataset.n; return n % 24 >= x0 && n % 24 <= x1 && (n / 24 | 0) >= y0 && (n / 24 | 0) <= y1; });
@@ -376,6 +450,7 @@ function stCalendar(el, opt) {
 		var n = under(ev);
 		if(n === null) return;
 		start = n;
+		startOn = cells[n].innerHTML !== '';
 		mark(n);
 		ev.preventDefault();
 	});
@@ -386,7 +461,7 @@ function stCalendar(el, opt) {
 	});
 	document.addEventListener('pointerup', function(ev) {
 		if(start === null) return;
-		var n = under(ev), erase = ev.shiftKey || ev.button == 2;
+		var n = under(ev), erase = ev.shiftKey || ev.button == 2 || (opt.toggle && startOn);
 		if(n === null) n = start;
 		box(start, n).forEach(function(c) { opt.paint(c, erase); });
 		start = null;

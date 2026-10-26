@@ -730,16 +730,16 @@ static const ApiParam apiEevTab[] = {
 	ES(eev_MAX,    0,     MK_INT, 1,   E_MAX,   0, 8192),             // не меньше минимума; смена перенастраивает драйвер
 	ES(eev_TIME,   0,     MK_INT, 1,   E_TIME,  1, 1000),             // с; смена пересчитывает коэффициенты ПИД
 	PN_I16(eev_TARGET,       0.01f, 50, 100, EO(tOverheat), 0),
-	PN_I16(eev_tOverheatTCOMP, -327.68f, 327.67f, 100, EO(tOverheatTCOMP), 0),
-	PN_I16(eev_tOverheat2_low, -327.68f, 327.67f, 100, EO(tOverheat2_low), 0),
-	PN_I16(eev_tOverheat2_low_hyst, -327.68f, 327.67f, 100, EO(tOverheat2_low_hyst), 0),
-	PN_I16(eev_tOverheatTCOMP_delta, -327.68f, 327.67f, 100, EO(tOverheatTCOMP_delta), 0),
-	ES(eev_KP,     0,     MK_NUM, 1000, E_KP,   -32.767f, 32.767f),   // в структуре хранятся отрицательными тысячными
-	ES(eev_KI,     0,     MK_NUM, 1000, E_KI,   -32.767f, 32.767f),
-	ES(eev_KD,     0,     MK_NUM, 1000, E_KD,   -32.767f, 32.767f),
+	PN_I16(eev_tOverheatTCOMP, 0, 327.67f, 100, EO(tOverheatTCOMP), 0),
+	PN_I16(eev_tOverheat2_low, 0, 327.67f, 100, EO(tOverheat2_low), 0),
+	PN_I16(eev_tOverheat2_low_hyst, 0, 327.67f, 100, EO(tOverheat2_low_hyst), 0),
+	PN_I16(eev_tOverheatTCOMP_delta, 0, 327.67f, 100, EO(tOverheatTCOMP_delta), 0),
+	ES(eev_KP,     0,     MK_NUM, 1000, E_KP,   0, 32),   // в структуре хранятся отрицательными тысячными
+	ES(eev_KI,     0,     MK_NUM, 1000, E_KI,   0, 32),
+	ES(eev_KD,     0,     MK_NUM, 1000, E_KD,   0, 32),
 	PN_I16(eev_PID2_delta,   -327.68f, 327.67f, 100, EO(pid2_delta), 0),
-	PN_U16(eev_PID_MAX,      0, 200, 1, EO(pid_max), 0),
-	PN_I16(eev_CONST,        -10, 10, 100, EO(Correction), 0),
+	PN_U16(eev_PID_MAX,      1, 200, 1, EO(pid_max), 0),
+	PN_I16(eev_CONST,        -5, 5, 100, EO(Correction), 0),
 	EPOS(eev_MANUAL, E_MANUAL),
 	{ eev_FREON, 0, 0, 0, 0, 1, PT_CALL, PF_RO, MK_TEXT, E_FREON, 0 },
 	{ eev_RULE, apiLabRuleEEV, 0, 0, (uint16_t)EO(ruleEEV), 1, PT_E8, 0, 0, E_RULE, 0 },
@@ -750,12 +750,12 @@ static const ApiParam apiEevTab[] = {
 	PN_BIT(eev_cCORRECT, EO(flags), fCorrectOverHeat, PT_B16, 0, 0, 0, 0),
 	PN_U16(eev_cDELAY,       0, 10000, 1, EO(OHCor_Delay), 0),
 	PN_U16(eev_cPERIOD,      0, 10000, 1, EO(OHCor_Period), 0),
-	PN_I16(eev_cDELTA,       -10, 50, 100, EO(OHCor_TDIS_TCON), 0),
+	PN_I16(eev_cDELTA,       0, 50, 100, EO(OHCor_TDIS_TCON), 0),
 	PN_I16(eev_cOH_MIN,      0, 50, 100, EO(OverheatMin), 0),
 	PN_I16(eev_cOH_MAX,      0, 50, 100, EO(OverheatMax), 0),
 	PN_I16(eev_cOH_START,    0, 50, 100, EO(OverHeatStart), 0),
 	ES(eev_cOH_TDELTA, PF_RO, MK_NUM, 100, E_CTDELTA, 0, 0),           // null - целевая дельта не рассчитана
-	PN_I16(eev_cDELTA_Thr,   -327.68f, 327.67f, 100, EO(OHCor_TDIS_TCON_Thr), 0),
+	PN_I16(eev_cDELTA_Thr,   0, 327.67f, 100, EO(OHCor_TDIS_TCON_Thr), 0),
 	PN_U8 (eev_cOH_cDELTA_MAX, 0, 255, 1, EO(OHCor_TDIS_TCON_MAX), 0),
 	PNH_U8(eev_SPEED,        5, 120, 1, EO(speedEEV), 0, E_SPEED),      // шагов в секунду
 	PN_BIT(eev_CLOSE,        EO(flags), fEevClose,       PT_B16, 0, 0, 0, 0),

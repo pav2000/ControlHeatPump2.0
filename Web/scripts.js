@@ -1,5 +1,5 @@
 // Copyright (c) 2016-2026 by Pavel Panfilov <firstlast2007@gmail.com>
-var VER_WEB = "2.18";
+var VER_WEB = "2.20";
 var urlcontrol = ''; //  автоопределение (если адрес сервера совпадает с адресом контроллера)
 // адрес и порт контроллера, если адрес сервера отличен от адреса контроллера (не рекомендуется)
 //var urlcontrol = 'http://192.168.0.199';
@@ -45,24 +45,36 @@ api.call = function(verb, query, cb, tmo) {
 api.enc = function(v) { return encodeURIComponent(v === true ? 1 : v === false ? 0 : v == null ? '' : v); };
 
 // Чтение: o.k - массив ключей, o.g - группа (необязательно), o.a - атрибуты группы устройств.
-// Длинный список режется на запросы по 40 ключей / 1200 знаков. cb(d, e, err).
+// Длинный список режется на запросы по 40 ключей / 1200 знаков. cb(d, e, err): значения тех пачек, что пришли, приходят и при сбое другой
+// (err - последний сбой). Ответ «не поместилось» (прошивка: e["*"] = too_big, весь ответ; e[ключ] = too_big, один ключ) не теряется:
+// пачка делится пополам, а ключ из пачки повторяется один; когда делить уже нечего, ошибка остаётся в e.
 api.get = function(o, cb) {
-	var parts = [], cur = [], len = 0, D = {}, E = {}, fail = null, left;
+	var parts = [], cur = [], len = 0, D = {}, E = {}, fail = null, left = 0;
 	(o.k || []).forEach(function(k) {
 		if(cur.length && (cur.length >= 40 || len + k.length > 1200)) { parts.push(cur); cur = []; len = 0; }
 		cur.push(k); len += k.length + 1;
 	});
 	if(cur.length) parts.push(cur);
 	if(o.g && !parts.length) parts.push([]);
-	if(!(left = parts.length)) { cb(D, E, null); return; }
-	parts.forEach(function(ks, i) {
-		var q = (ks.length ? 'k=' + ks.join(',') : '') + (o.g && i == 0 ? (ks.length ? '&' : '') + 'g=' + o.g + (o.a ? '&a=' + o.a : '') : '');
+	if(!parts.length) { cb(D, E, null); return; }
+	function run(ks, withG) {		// withG - пачка несёт группу (g, a): только первая
+		var q = (ks.length ? 'k=' + ks.join(',') : '') + (withG ? (ks.length ? '&' : '') + 'g=' + o.g + (o.a ? '&a=' + o.a : '') : '');
+		left++;
 		api.call('get', q, function(j, err) {
+			var x, big = [];
 			if(err) fail = err;
-			else { var x; for(x in j.d) D[x] = j.d[x]; for(x in j.e) E[x] = j.e[x]; }
+			else if(j.e && j.e['*'] == 'too_big' && ks.length > 1) {
+				var h = ks.length >> 1;
+				run(ks.slice(0, h), withG); run(ks.slice(h), false);
+			} else {
+				for(x in j.d) D[x] = j.d[x];
+				for(x in j.e) { if(j.e[x] == 'too_big' && x != '*' && ks.length > 1) big.push(x); else E[x] = j.e[x]; }
+				big.forEach(function(k) { run([k], false); });
+			}
 			if(--left == 0) cb(D, E, fail);
 		});
-	});
+	}
+	parts.forEach(function(ks, i) { run(ks, !!o.g && i == 0); });
 };
 
 // Запись: pairs - {ключ: значение}, olds - {ключ: ожидаемое прежнее значение} (E3: при расхождении ключ даст conflict).
@@ -147,7 +159,7 @@ api.pollTick = function() {
 	api.pollBusy = 1;
 	api.get({k: keys}, function(D, E, err) {
 		api.pollBusy = 0;
-		if(!err) api.pollers.forEach(function(p) {
+		if(!err || Object.keys(D).length) api.pollers.forEach(function(p) {		// сбой одной пачки не отбрасывает значения остальных (шапка, страница)
 			var d = {}, e = {};
 			p.k.forEach(function(k) { if(k in D) d[k] = D[k]; if(k in E) e[k] = E[k]; });
 			try { p.cb(d, e); } catch(x) { if(window.console) console.error(x); }		// сбой одной страницы не должен обрывать шапку и остальных

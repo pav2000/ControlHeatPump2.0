@@ -120,20 +120,28 @@ function setRange(m, e) {
 }
 function autoToggle(b) { clearInterval(auto); if(b) auto = setInterval(refresh, 2000); }
 
-// ---- положение вручную: подтверждаем один раз, пока формула не MANUAL ----
-var allowMove = false;
+// ---- положение вручную ----
+// Прошивка двигает вентиль, только если формула перегрева - MANUAL (EEV.cpp, E_MANUAL); при другой формуле значение лишь
+// запоминается. Поэтому при другой формуле предлагаем переключить её на MANUAL и поставить вентиль одним пакетом: ключи
+// пишутся по порядку, сначала формула, потом положение. Формула - та, что на контроллере (data-o), а не неприменённая правка списка.
 function manual() {
-	var r = $('k-eev-rule'), v = $('k-eev-manual').value;
-	if(v === '') return;
-	if(!allowMove && r && r.options[r.selectedIndex] && r.options[r.selectedIndex].text != 'MANUAL') {
-		if(!confirm('Вы уверены, что хотите управлять ЭРВ вручную?')) return;
-		allowMove = true;
+	var r = $('k-eev-rule'), v = $('k-eev-manual').value, m = stKMeta('eev.rule'), mi = m && m.o ? m.o.indexOf('MANUAL') : -1;
+	if(v === '' || !r || mi < 0) return;
+	var cur = r.options[+r.dataset.o], p = {};
+	if(+r.dataset.o != mi) {
+		if(!confirm('Формула перегрева сейчас — ' + (cur ? cur.text : '?') + ': в ней положение «вручную» только запоминается, вентиль не сдвинется.\n' +
+			'Переключить формулу на MANUAL и поставить ЭРВ в положение ' + v + ' (' + unit + ')? Регулирование перегрева будет выключено, пока формулу не вернут.')) return;
+		p['eev.rule'] = mi;
 	}
-	api.set({'eev.manual': v}, function(D, E, err) {
-		if(err || E['eev.manual']) stFail('ЭРВ не принял положение', err ? 'net' : E['eev.manual']);
-		else { stToast('Положение ЭРВ задано вручную: ' + D['eev.manual'] + '.'); stBase($('k-eev-manual')); }
-		api.get({k: ['eev.rule']}, function(D2) { if('eev.rule' in D2) stSetK($('k-eev-rule'), 'eev.rule', D2['eev.rule']); });
-	});
+	p['eev.manual'] = v;
+	api.set(p, function(D, E, err) {
+		var bad = err ? 'net' : E['eev.rule'] || E['eev.manual'];
+		if('eev.rule' in D) stSetK(r, 'eev.rule', D['eev.rule']);
+		if(bad) { stFail(E['eev.rule'] ? 'Формула не переключена, ЭРВ не сдвинут' : 'ЭРВ не принял положение', bad); return; }
+		stBase($('k-eev-manual'));
+		if(p['eev.rule'] !== undefined) { stUnsaved(true); stRefresh(); }		// формула сменилась в ОЗУ - «Не записано в EEPROM»
+		stToast((p['eev.rule'] !== undefined ? 'Формула переключена на MANUAL, ' : '') + 'ЭРВ поставлен в положение ' + D['eev.manual'] + ' (' + unit + ').');
+	}, p['eev.rule'] !== undefined && r.dataset.x ? {'eev.rule': r.dataset.x} : undefined);
 }
 
 window.onload = function() {
@@ -177,7 +185,7 @@ window.onload = function() {
 			<div class="tile"><i>Разница: цель</i><b id="t-dl">–</b><u>K</u></div><div class="tile"><i>Код ошибки</i><b id="t-er">–</b></div>
 		</div>
 		<div id="rule" style="margin-top:6px"></div>
-		<div class="field"><div class="l">Положение вручную<small><span id="u-man">шаги</span> · спросит подтверждение</small></div><label class="inp"><input type="number" id="k-eev-manual" data-k="eev.manual" data-act step="1"></label><button class="btn2" onclick="manual()" style="padding:7px 12px">Задать</button></div>
+		<div class="field"><div class="l">Положение вручную<small><span id="u-man">шаги</span> · при формуле не MANUAL предложит переключить</small></div><label class="inp"><input type="number" id="k-eev-manual" data-k="eev.manual" data-act step="1"></label><button class="btn2" onclick="manual()" style="padding:7px 12px">Задать</button></div>
 	</section>
 	<section class="card c12">
 		<h3>Регулирование <span class="r"><span class="mode" id="mode"><a class="on" onclick="setMode(false)">ПИД</a><a onclick="setMode(true)">Прямое управление</a></span></span></h3>

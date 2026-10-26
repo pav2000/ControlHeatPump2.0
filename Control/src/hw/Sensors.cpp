@@ -673,8 +673,8 @@ enum { F_VALUE = 1, F_FREQ, F_MIN, F_KF, F_CAP, F_TEST, F_PIN, F_ECODE, F_NOTE, 
 static const ApiParam apiFlowTab[] = {
 	SA("value",   PF_RO, MK_NUM, 1000, F_VALUE),                  // м³/ч
 	SA("freq",    PF_RO, MK_NUM, 1000, F_FREQ),                   // Гц
-	SR("min",     0,     MK_NUM, 10,   F_MIN, 0, 25.5f),          // м³/ч, контроль минимума
-	SR("kf",      0,     MK_NUM, 100,  F_KF,  0, 327.67f),        // коэффициент пересчёта частоты
+	SR("min",     0,     MK_NUM, 10,   F_MIN, 0.1f, 25.5f),          // м³/ч, контроль минимума
+	SR("kf",      0,     MK_NUM, 100,  F_KF,  0.01f, 327.67f),    // коэффициент пересчёта частоты; 0 - деление на ноль в расчёте расхода
 	SR("cap",     0,     MK_INT, 1,    F_CAP, 0, 5000),           // теплоёмкость теплоносителя
 	SR("test",    0,     MK_NUM, 1000, F_TEST, 0, 32.767f),
 	SA("pin",     PF_RO, MK_INT, 1,    F_PIN),

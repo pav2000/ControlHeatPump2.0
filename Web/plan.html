@@ -39,7 +39,8 @@ var BADGES = {
 	peva: ['', 'blue'], pcon: ['', 'red'], fc: ['', 'violet'], eev: ['', 'violet'], floweva: ['вход', 'blue'], flowcon: ['выход', 'amber'],
 	tconout: ['фреон', 'orange']
 };
-// Номер схемы вашего ТН (как HP_SCHEME в Config.h прошивки): 1 - два конденсатора, бойлер с насосом; 2 - один конденсатор, бойлер через трёхходовой клапан
+// Номер схемы ТН (HP_SCHEME в Config.h прошивки) приходит в /api/ver (caps.scheme): 1 - два конденсатора, бойлер с насосом;
+// 2 - один конденсатор, бойлер через трёхходовой клапан. SCHEME - запасной вариант: прошивка без caps.scheme или нет связи.
 var SCHEME = 2;
 var LAYOUT = {
 	1: {img: 'plan1.png', pos: {
@@ -176,9 +177,9 @@ function ohRefresh() {
 }
 
 window.onload = function() {
-	drawScheme(SCHEME);
 	api.init(function(v) {
 		var caps = (v && v.caps) || {};
+		drawScheme(caps.scheme || SCHEME);
 		hidden('tcompin', !caps.tcompin, 'датчики фреона на входе испарителя и компрессора');
 		hidden('cool', !caps.cool, 'охлаждение');
 		api.metaOf('eev', function(m) {
