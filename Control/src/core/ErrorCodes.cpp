@@ -134,6 +134,7 @@ static const char * const noteError[] = {
 	"Ошибка записи на SD карту",  // -90
 	"Невозможно остановить инвертор с помощью RCOMP",  // -91
 	"Нет связи с инвертором по MODBUS",  // -92
+	"Аварии ядра контроллера подряд, автопуск ТН отменён",  // -93
 };
 
 static const char * const codeRet[] ={ "none","MinPause","Bh1","Bh2","Bh3","Bh4","Bh5","Bh22","Bp3","Bp1","Bp2","Bp6","Bp7","Bp8","Bp9","Bp5","Bp10","Bp11","Bp12","Bp14","Bp16","Bp17","Bp18","Bp19","Bp20","Bp21","Bp22", "Bp23","Bp24","Bp25","Bp26","Bp27","Bp28","Bp29","Bdis","Bgen",\
@@ -258,4 +259,37 @@ STOP_CHECK Error_StopCheck(bool running, uint8_t stage, uint32_t since_ms,
 	if(!running) return STOPCHK_DONE;
 	if(stage <= 1) return since_ms > wait_ms ? STOPCHK_FALLBACK : STOPCHK_WAIT;
 	return since_ms > fallback_ms ? STOPCHK_FAIL : STOPCHK_WAIT;
+}
+
+INIT_STOP Error_InitStopWait(bool stopped, bool lost, uint32_t elapsed_ms, uint32_t limit_ms)
+{
+	if(stopped) return INITSTOP_DONE;
+	if(lost || elapsed_ms > limit_ms) return INITSTOP_FAIL;
+	return INITSTOP_WAIT;
+}
+
+uint8_t Fault_Resets(uint32_t gpbr)
+{
+	if((gpbr & 0xFFFF0000UL) != FAULT_MARK) return 0;
+	uint32_t n = gpbr & 0xFFFF;
+	return n > 255 ? 255 : (uint8_t) n;
+}
+
+uint32_t Fault_Count(uint32_t gpbr)
+{
+	uint32_t n = (gpbr & 0xFFFF0000UL) == FAULT_MARK ? (gpbr & 0xFFFF) : 0;
+	if(n < 0xFFFF) n++;
+	return FAULT_MARK | n;
+}
+
+bool Fault_NoAutoStart(uint32_t gpbr)
+{
+	return Fault_Resets(gpbr) >= FAULT_MAX_RESETS;
+}
+
+bool Fault_RelayOffLevel(bool relay_invert, bool r4way_invert, bool is_r4way)
+{
+	bool level = !relay_invert;                // без инверсии реле включается НИЗКИМ уровнем
+	if(r4way_invert && is_r4way) level = !level;
+	return level;
 }

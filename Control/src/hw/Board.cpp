@@ -33,6 +33,7 @@
 #include "Hardware.h"     // объявления этого модуля, eepromI2C, rtcI2C
 #include "../core/HeatPump.h"     // HP - опрос при инициализации карты
 #include "../core/Rtos.h"         // xI2CSemaphore, SemaphoreTake/Give, Watchdog_AliveHere
+#include "../core/ErrorCodes.h"   // Fault_Count, Fault_RelayOffLevel - аварийный хук
 #include "../log/Statistics.h"   // card - карта памяти, cid_t, SD_SCK_MHZ
 #include <SerialFlash.h>  // микросхема flash на шине SPI
 
@@ -130,6 +131,39 @@ extern "C" void __assert_func(const char *file, int line, const char *func, cons
 	delay(2000);                       // дать журналу дописаться в I2C и в консоль
 	Software_Reset();
 	while(1) ;                         // Software_Reset не возвращается, это для noreturn
+}
+
+// ---------------------------------------------------------------------------
+// Авария ядра FreeRTOS: зовётся из errorBlink (Libraries/FreeRTOS_ARM) при assert,
+// нехватке памяти, переполнении стека, HardFault и прочих отказах, прерывания уже
+// запрещены. Прежде выходы оставались как были - компрессор и ТЭНы работали без
+// защит, а контроллер висел (Config.h, STACK_vUpdate). Здесь нельзя ни журнала, ни
+// замков, ни объекта HP: память может быть разрушена. Только регистры и таблица
+// RelaySetup во флеше.
+// ---------------------------------------------------------------------------
+extern "C" void vApplicationFaultHook(int n) __attribute__((noreturn));
+extern "C" void vApplicationFaultHook(int n)
+{
+#ifdef RELAY_INVERT
+	const bool relay_inv = true;
+#else
+	const bool relay_inv = false;
+#endif
+#ifdef R4WAY_INVERT
+	const bool r4way_inv = true;
+#else
+	const bool r4way_inv = false;
+#endif
+	for(uint8_t i = 0; i < RNUMBER; i++)                                 // выходы - первым делом: снять ХОД инвертора (RCOMP), ТЭНы, насосы
+		digitalWriteDirect(RelaySetup[i].pin, Fault_RelayOffLevel(relay_inv, r4way_inv, i == R4WAY));
+	GPBR->SYS_GPBR[7] = Fault_Count(GPBR->SYS_GPBR[7]);                  // аварийных сбросов подряд; причина уже в GPBR[0]
+	pinMode(PIN_LED_ERROR, OUTPUT);                                      // один цикл прежней индикации (n вспышек), затем сброс
+	for(int i = 0; i < n; i++) {
+		digitalWriteDirect(PIN_LED_ERROR, HIGH); delayMicroseconds(100000);
+		digitalWriteDirect(PIN_LED_ERROR, LOW);  delayMicroseconds(600000);
+	}
+	delayMicroseconds(1000000);
+	Software_Reset();
 }
 
 // Получить причину последнего сброса контроллера, wdt_addr=1 - адрес, где сработал watchdog

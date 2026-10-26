@@ -272,6 +272,7 @@ class HeatPump
     void process_error(void);
 
     inline int8_t get_errcode(){return error;} // Получить код последней ошибки
+    inline void   drop_error_at_boot(){error=OK;} // Освободить поле ошибки для более важной. ТОЛЬКО до старта планировщика: иначе гонка с Error_Claim
     char    *get_lastErr(){return note_error;} // Получить описание последней ошибки, которая вызвала останов ТН, при удачном запуске обнуляется
     void     scan_OneWire(char *result_str); // Сканирование шины OneWire на предмет датчиков
     inline TEST_MODE get_testMode(){return testMode;} // Получить текущий режим работы

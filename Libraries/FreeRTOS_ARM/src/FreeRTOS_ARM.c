@@ -22,10 +22,16 @@ static void delayMS(uint32_t millis) {
  *
  * \param[in] n  number of short pulses
  */
+// pav2000: аварийный хук проекта (Board.cpp). Обработчики ниже сильные, проект их перекрыть
+// не может - поэтому точка входа здесь. Хук выключает выходы и перезагружает контроллер,
+// назад не возвращается; без хука (другой проект) остаётся вечное мигание.
+extern void vApplicationFaultHook(int n) __attribute__((weak));
+
 static void errorBlink(int n) {
 
   noInterrupts();
   GPBR->SYS_GPBR[0] |= n; 					    // pav2000  сохранить отладочную информацию
+  if(vApplicationFaultHook) vApplicationFaultHook(n);
   //WDT_Restart(WDT);                            // pav2000
   pinMode(PIN_LED_ERROR, OUTPUT);
   for (;;) {

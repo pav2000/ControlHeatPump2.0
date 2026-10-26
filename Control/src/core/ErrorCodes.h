@@ -160,8 +160,9 @@
 #define ERR_SD_WRITE		-90			// ошибка записи на SD карту
 #define ERR_FC_RCOMP		-91			// Не возможно остановить инвертор с помощью RCOMP
 #define ERR_FC_NO_LINK		-92			// Нет связи с инвертором по MODBUS (молчание шины дольше допустимого)
+#define ERR_KERNEL_FAULT	-93			// Аварии ядра (HardFault, стек, assert) повторяются подряд: автопуск ТН отменён
 
-#define ERR_ERRMAX			-92 		// Последняя ошибка
+#define ERR_ERRMAX			-93 		// Последняя ошибка
 
 // Итог проверки "та ли микросхема памяти стоит" - словами, для get_CONST1.
 // Сама проверка живёт в Control.ino: она делается до инициализации журнала,
@@ -200,6 +201,32 @@ int8_t Error_TempReadCode(int8_t err);
 enum STOP_CHECK : uint8_t { STOPCHK_DONE, STOPCHK_WAIT, STOPCHK_FALLBACK, STOPCHK_FAIL };
 STOP_CHECK Error_StopCheck(bool running, uint8_t stage, uint32_t since_ms,
                            uint32_t wait_ms, uint32_t fallback_ms);
+// Ожидание остановки инвертора при старте контроллера (initFC: после сброса на
+// работающем компрессоре инвертор ещё вращается). Раньше ждали вечно: при обрыве
+// связи get_readState блокирует инвертор и state навсегда ERR_LINK_FC, а аппаратный
+// вачдог уже работает - перезагрузки по кругу. stopped - состояние "остановка" или
+// "остановка с выбегом"; lost - связи нет или инвертор заблокирован; elapsed_ms -
+// с начала ожидания. Остановка важнее предела: инвертор, вставший на последнем
+// опросе, ошибкой не считается.
+enum INIT_STOP : uint8_t { INITSTOP_DONE, INITSTOP_WAIT, INITSTOP_FAIL };
+INIT_STOP Error_InitStopWait(bool stopped, bool lost, uint32_t elapsed_ms, uint32_t limit_ms);
+
+// Аварии ядра FreeRTOS (errorBlink: assert, нехватка памяти, переполнение стека,
+// HardFault и т.п.). Прежде контроллер уходил в вечное мигание с выходами в последнем
+// состоянии: компрессор и ТЭНы оставались включёнными без защит. Теперь аварийный хук
+// (vApplicationFaultHook, Board.cpp) выключает все реле, считает сбросы подряд в
+// GPBR[7] и перезагружает контроллер. После FAULT_MAX_RESETS сбросов подряд ТН сам не
+// запускается (ERR_KERNEL_FAULT), иначе авария по кругу дёргала бы компрессор.
+// Счётчик обнуляется после FAULT_CLEAR_S секунд нормальной работы.
+#define FAULT_MARK        0xFA170000UL   // метка в старшем слове GPBR[7]: без неё значение - мусор после подачи питания
+#define FAULT_MAX_RESETS  3
+#define FAULT_CLEAR_S     600
+uint32_t Fault_Count(uint32_t gpbr);       // новое значение GPBR[7] после ещё одной аварии
+uint8_t  Fault_Resets(uint32_t gpbr);      // аварийных сбросов подряд (0 - метки нет)
+bool     Fault_NoAutoStart(uint32_t gpbr); // отменить автопуск ТН после старта
+// Уровень ноги, выключающий реле, - тот же, что ставят devRelay::initRelay и set_Relay(выкл).
+// Флаги сборки передаются параметрами: ErrorCodes не видит Config.h.
+bool     Fault_RelayOffLevel(bool relay_invert, bool r4way_invert, bool is_r4way);
 bool   Error_IsLinkLoss(int8_t err);          // ERR_MODBUS_0xe0..0xe3
 int8_t Error_LinkCode(int8_t err);            // ERR_FC_NO_LINK вместо транспортного кода, остальные без изменений
 // fails - сбоев подряд, since_ms - с последнего ответа, running - инвертор в работе.

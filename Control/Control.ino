@@ -584,6 +584,11 @@ void setup() {
 	if(GPBR->SYS_GPBR[4]) journal.jprintf(" (%d)", (int)(GPBR->SYS_GPBR[4]));
 	if(GPBR->SYS_GPBR[5]) journal.jprintf(" Web(%d)", (int)(GPBR->SYS_GPBR[5]));
 	journal.jprintf("\n");
+	// Авария ядра (vApplicationFaultHook, Board.cpp): причина в GPBR[0] (ResetCause), счёт сбросов подряд в GPBR[7].
+	// Оба регистра переживают сброс, но не снятие питания.
+	if((lastErrorFreeRtosCode & 0xFF) && Fault_Resets(GPBR->SYS_GPBR[7]))
+		journal.jprintf("$АВАРИЯ ЯДРА: %s; выходы выключены, перезагрузка %d подряд (предел %d)\n",
+		                ResetCause(), Fault_Resets(GPBR->SYS_GPBR[7]), FAULT_MAX_RESETS);
 
 #ifdef PIN_LED1                            // Включение (точнее индикация) питания платы если необходимо
 	pinMode(PIN_LED1,OUTPUT);
@@ -896,7 +901,16 @@ x_I2C_init_std_message:
 
 	journal.jprintf(" Create tasks - OK, size %d bytes\n",(int)(Diag.mRTOS));
 
-	if(HP.get_HP_ON()>0)  HP.sendCommand(pRESTART);  // если надо запустить ТН - отложенный старт
+	if(HP.get_HP_ON()>0) {                           // если надо запустить ТН - отложенный старт
+		if(Fault_NoAutoStart(GPBR->SYS_GPBR[7])) {     // аварии ядра по кругу: не дёргать компрессор, ждать человека
+			journal.jprintf("$Delayed start canceled: %d kernel faults in a row\n", Fault_Resets(GPBR->SYS_GPBR[7]));
+			// Поле ошибки занимает первая (Error_Claim), а при старте его часто уже заняла ошибка инициализации
+			// (на стенде -39 «инвертор не найден»): причину отмены не было бы видно в морде. Она важнее - вытесняем.
+			// Планировщик ещё не запущен, прямая запись безопасна; прежняя ошибка осталась в журнале.
+			HP.drop_error_at_boot();
+			set_Error(ERR_KERNEL_FAULT, (char*)nameFREERTOS);
+		} else HP.sendCommand(pRESTART);
+	}
 
 	journal.jprintf("17. Information:\n");
 	freeRamShow();
@@ -1749,6 +1763,10 @@ void vServiceHP(void *)
 		register uint32_t t = xTaskGetTickCount();
 		if(t - timer_sec >= 1000) { // 1 sec
 			Watchdog_Supervise(t);
+			if(GPBR->SYS_GPBR[7] && t > FAULT_CLEAR_S * 1000UL) GPBR->SYS_GPBR[7] = 0;   // проработали без аварий - счёт сбросов подряд с нуля
+#ifdef TEST_KERNEL_FAULT
+			if(t > 120000UL) configASSERT(0);                                            // стенд: провал configASSERT -> errorBlink -> аварийный хук
+#endif
 			journal.Drain();      // выгрузить пачку журнала в EEPROM, см. JournalBuf.h
 			extern TickType_t xTickCountZero;
 			TickType_t ttmpt = t - xTickCountZero - timer_total;

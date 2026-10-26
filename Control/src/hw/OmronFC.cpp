@@ -112,13 +112,31 @@ int8_t devOmronMX2::initFC()
       {
         case 0:
         case 2: break;                                                         // ОСТАНОВКА ничего не делаем
-        case 3: stop_FC();                                                      // ВРАЩЕНИЕ Послать команду стоп и ждать остановки
-                while ((state!=2)&&(state!=4)) { get_readState();journal.jprintf("Wait stop %s . . .\r\n",name); _delay(3000); } 
-                break;
+        case 3:                                                                // ВРАЩЕНИЕ
+        case 5: {                                                              // ТОЛЧКОВЫЙ ХОД - послать команду стоп и ждать остановки
+                // Ждём с пределом и отметкой вачдога: при обрыве связи get_readState блокирует инвертор и state навсегда
+                // ERR_LINK_FC, а аппаратный вачдог уже работает - прежний вечный цикл давал перезагрузки по кругу.
+                stop_FC();
+                const uint32_t t0 = GetTickCount();
+                for(;;) {
+                    INIT_STOP r = Error_InitStopWait(state == 2 || state == 4, state == ERR_LINK_FC || GETBIT(flags, fErrFC),
+                                                     GetTickCount() - t0, FC_INIT_STOP_WAIT_S * 1000UL);
+                    if(r == INITSTOP_DONE) break;
+                    if(r == INITSTOP_FAIL) {
+                        if(err == OK) err = ERR_MODBUS_STATE;                  // вращается дольше предела; иначе код уже поднял get_readState
+                        SETBIT1(flags, fErrFC);
+                        journal.jprintf("$ERROR: %s did not stop at startup (state %d), the inverter is blocked\n", name, (int)state);
+                        set_Error(err, name);
+                        break;
+                    }
+                    journal.jprintf("Wait stop %s . . .\r\n",name);
+                    Watchdog_AliveHere();
+                    _delay(3000);
+                    Watchdog_AliveHere();
+                    get_readState();
+                }
+                break; }
         case 4:                                                                // ОСТАНОВКА С ВЫБЕГОМ  ждать остановки
-                break;
-        case 5:stop_FC();                                                      // ТОЛЧКОВЫЙ ХОД Послать команду стоп и ждать остановки
-                while ((state!=2)&&(state!=4)) { get_readState();journal.jprintf("Wait stop %s . . .\r\n",name); _delay(3000); } 
                 break;
         case 6:                                                                // ТОРМОЖЕНИЕ ПОСТОЯННЫМ ТОКОМ
         case 7: err=ERR_MODBUS_STATE;set_Error(err,name);  break;             // ВЫПОЛНЕНИЕ ПОВТОРНОЙ ПОПЫТКИ Подъем ошибки на верх и останов ТН
@@ -459,7 +477,7 @@ err=OK;
           {  
           #ifdef FC_USE_RCOMP   // Использовать отдельный провод для команды ход/стоп с проверкой выполнения
               HP.dRelay[RCOMP].set_OFF();            // ПЛОХО через глобальную переменную
-               vTaskDelay(1000/ portTICK_PERIOD_MS); // задержка на прохождение команды
+               _delay(1000);                         // задержка на прохождение команды; _delay сам выбирает задержку: initFC зовёт stop_FC до старта планировщика
                state=read_0x03_16(MX2_STATE);        // 0:Начальное состояние, 2:Остановка 3:Вращение 4:Остановка с выбегом 5:Толчковый ход 6:Торможение  постоянным током 7:Выполнение  повторной попытки 8:Аварийное  отключение 9:Пониженное напряжение -1:Блокировка]
                stopStage = 1;                        // торможение занимает до FC_DEACCEL_TIME: остановку проверит get_readState
                stopTick = GetTickCount();
@@ -557,10 +575,12 @@ void devOmronMX2::get_paramFC(char *var,char *ret)
 
 
 // Установить параметр инвертора из строки
+// Числа сотых (Гц, градусы) переводятся ОКРУГЛЕНИЕМ rd(x, 100), а не усечением x*100: my_atof копит дробь делением на 10 на каждую цифру, поэтому
+// «2.10» приходит как 2.0999999, и усечение давало 2.09 (так же «0.30» -> 0.29, «2.40» -> 2.39); «2.1» при этом разбирается верно.
 boolean devOmronMX2::set_paramFC(char *var, float x)
 {
     if(strcmp(var,fc_ON_OFF)==0)                { if (x==0) stop_FC();else start_FC();return true;  } else 
-    if(strcmp(var,fc_FC)==0)                    { if((x*100>=_data.minFreqUser)&&(x*100<=_data.maxFreqUser)){set_target(x*100,true, _data.minFreqUser, _data.maxFreqUser); return true; }else return false; } else
+    if(strcmp(var,fc_FC)==0)                    { int16_t t = rd(x, 100); if((t>=_data.minFreqUser)&&(t<=_data.maxFreqUser)){set_target(t,true, _data.minFreqUser, _data.maxFreqUser); return true; }else return false; } else
     if(strcmp(var,fc_AUTO_RESET_FAULT)==0)      { if (x==0) SETBIT0(_data.setup_flags,fAutoResetFault);else SETBIT1(_data.setup_flags,fAutoResetFault);return true;  } else // для Омрона код не написан
 
     #ifdef FC_ANALOG_CONTROL
@@ -578,25 +598,25 @@ boolean devOmronMX2::set_paramFC(char *var, float x)
                                                 } else  
     if(strcmp(var,fc_UPTIME)==0)                { if((x>=3)&&(x<600)){_data.Uptime=x;return true; } else return false; } else   // хранение в сек
     if(strcmp(var,fc_PID_STOP)==0)              { if((x>=50)&&(x<=100)){_data.PidStop=x;return true; } else return false;  } else // % от цели
-    if(strcmp(var,fc_DT_COMP_TEMP)==0)          { if((x>=1)&&(x<=25)){_data.dtCompTemp=x*100;return true; } else return false; } else // градусы
+    if(strcmp(var,fc_DT_COMP_TEMP)==0)          { if((x>=1)&&(x<=25)){_data.dtCompTemp=rd(x, 100);return true; } else return false; } else // градусы
 
-	if(strcmp(var,fc_PID_FREQ_STEP)==0)         { if((x>0)&&(x<=5)){_data.PidFreqStep=x*100;return true; } else return false; } else // Гц
-	if(strcmp(var,fc_START_FREQ)==0)            { if((x>=20)&&(x<=120)){_data.startFreq=x*100;return true; } else return false; } else // Гц
-	if(strcmp(var,fc_START_FREQ_BOILER)==0)     { if((x>=20)&&(x<=150)){_data.startFreqBoiler=x*100;return true; } else return false; } else // Гц
-	if(strcmp(var,fc_MIN_FREQ)==0)              { if((x>=20)&&(x<=80)){_data.minFreq=x*100;return true; } else return false; } else // Гц
-	if(strcmp(var,fc_MIN_FREQ_COOL)==0)         { if((x>=20)&&(x<=80)){_data.minFreqCool=x*100;return true; } else return false; } else // Гц
-	if(strcmp(var,fc_MIN_FREQ_BOILER)==0)       { if((x>=20)&&(x<=80)){_data.minFreqBoiler=x*100;return true; } else return false; } else // Гц
-	if(strcmp(var,fc_MIN_FREQ_USER)==0)         { if((x>=20)&&(x<=80)){_data.minFreqUser=x*100;return true; } else return false; } else // Гц
-	if(strcmp(var,fc_MAX_FREQ)==0)              { if((x>=40)&&(x<=240)){_data.maxFreq=x*100;return true; } else return false; } else // Гц
-	if(strcmp(var,fc_MAX_FREQ_COOL)==0)         { if((x>=40)&&(x<=240)){_data.maxFreqCool=x*100;return true; } else return false; } else // Гц
-	if(strcmp(var,fc_MAX_FREQ_BOILER)==0)       { if((x>=40)&&(x<=240)){_data.maxFreqBoiler=x*100;return true; } else return false; } else // Гц
-	if(strcmp(var,fc_MAX_FREQ_USER)==0)         { if((x>=40)&&(x<=240)){_data.maxFreqUser=x*100;return true; } else return false; } else // Гц
-	if(strcmp(var,fc_MAX_FREQ_GEN)==0)          { if((x>=40)&&(x<=240)){_data.maxFreqGen=x*100;return true; } } else
-	if(strcmp(var,fc_STEP_FREQ)==0)             { if((x>=0.2)&&(x<=10)){_data.stepFreq=x*100;return true; } else return false; } else // Гц
-	if(strcmp(var,fc_STEP_FREQ_BOILER)==0)      { if((x>=0.2)&&(x<=10)){_data.stepFreqBoiler=x*100;return true; } else return false; } // Гц
+	if(strcmp(var,fc_PID_FREQ_STEP)==0)         { if((x>0)&&(x<=5)){_data.PidFreqStep=rd(x, 100);return true; } else return false; } else // Гц
+	if(strcmp(var,fc_START_FREQ)==0)            { if((x>=20)&&(x<=120)){_data.startFreq=rd(x, 100);return true; } else return false; } else // Гц
+	if(strcmp(var,fc_START_FREQ_BOILER)==0)     { if((x>=20)&&(x<=150)){_data.startFreqBoiler=rd(x, 100);return true; } else return false; } else // Гц
+	if(strcmp(var,fc_MIN_FREQ)==0)              { if((x>=20)&&(x<=80)){_data.minFreq=rd(x, 100);return true; } else return false; } else // Гц
+	if(strcmp(var,fc_MIN_FREQ_COOL)==0)         { if((x>=20)&&(x<=80)){_data.minFreqCool=rd(x, 100);return true; } else return false; } else // Гц
+	if(strcmp(var,fc_MIN_FREQ_BOILER)==0)       { if((x>=20)&&(x<=80)){_data.minFreqBoiler=rd(x, 100);return true; } else return false; } else // Гц
+	if(strcmp(var,fc_MIN_FREQ_USER)==0)         { if((x>=20)&&(x<=80)){_data.minFreqUser=rd(x, 100);return true; } else return false; } else // Гц
+	if(strcmp(var,fc_MAX_FREQ)==0)              { if((x>=40)&&(x<=240)){_data.maxFreq=rd(x, 100);return true; } else return false; } else // Гц
+	if(strcmp(var,fc_MAX_FREQ_COOL)==0)         { if((x>=40)&&(x<=240)){_data.maxFreqCool=rd(x, 100);return true; } else return false; } else // Гц
+	if(strcmp(var,fc_MAX_FREQ_BOILER)==0)       { if((x>=40)&&(x<=240)){_data.maxFreqBoiler=rd(x, 100);return true; } else return false; } else // Гц
+	if(strcmp(var,fc_MAX_FREQ_USER)==0)         { if((x>=40)&&(x<=240)){_data.maxFreqUser=rd(x, 100);return true; } else return false; } else // Гц
+	if(strcmp(var,fc_MAX_FREQ_GEN)==0)          { if((x>=40)&&(x<=240)){_data.maxFreqGen=rd(x, 100);return true; } } else
+	if(strcmp(var,fc_STEP_FREQ)==0)             { if((x>=0.2)&&(x<=10)){_data.stepFreq=rd(x, 100);return true; } else return false; } else // Гц
+	if(strcmp(var,fc_STEP_FREQ_BOILER)==0)      { if((x>=0.2)&&(x<=10)){_data.stepFreqBoiler=rd(x, 100);return true; } else return false; } // Гц
 
-	if(strcmp(var,fc_DT_TEMP)==0)               { if((x>0)&&(x<10)){_data.dtTemp=x*100;return true; } else return false; } else // градусы
-    if(strcmp(var,fc_DT_TEMP_BOILER)==0)        { if((x>0)&&(x<10)){_data.dtTempBoiler=x*100;return true; } else return false; } else // градусы
+	if(strcmp(var,fc_DT_TEMP)==0)               { if((x>0)&&(x<10)){_data.dtTemp=rd(x, 100);return true; } else return false; } else // градусы
+    if(strcmp(var,fc_DT_TEMP_BOILER)==0)        { if((x>0)&&(x<10)){_data.dtTempBoiler=rd(x, 100);return true; } else return false; } else // градусы
     return false;
 }
 
