@@ -13,6 +13,14 @@ function stEsc(s) { return esc(s); }
 // text: pw - пароль (скрыт точками, показ по значку), pattern - проверка формата до отправки, mono - моноширинный шрифт
 // f: {key: ключ API, t: подпись, h: пояснение под подписью, u: единица, k: 'num'|'sel'|'sw'|'ro'|'text',
 //     min,max,step, n: [номер сноски, текст подсказки], cls: класс строки, now: применять сразу (действие, а не настройка)}
+// Атрибуты числового поля. min - начало отсчёта шага в браузере: при min 0,01 и шаге 0,1 допустимы 1,91 и 2,01, а 2,00 нет (стрелки
+// несимметричны, ввод «2.0» красный). Поэтому min ставится, только если он кратен шагу; иначе граница в data-mn, её проверяет stValid.
+function stMinAligned(mn, st) { return !st || Math.abs(mn / st - Math.round(mn / st)) < 1e-6; }
+function stNumAttrs(o) {
+	var st = parseFloat(o.step), h = (o.dec != null ? ' data-dec="' + o.dec + '"' : '') + ' step="' + (o.step || 'any') + '"';
+	if(o.min != null) h += stMinAligned(+o.min, st) ? ' min="' + o.min + '"' : ' data-mn="' + o.min + '"';
+	return h + (o.max != null ? ' max="' + o.max + '"' : '');
+}
 function stField(f) {
 	var id = stKid(f.key), a = 'id="' + id + '" data-k="' + f.key + '"' + (f.now ? ' data-now' : ''), ctl;
 	if(f.k == 'sw') ctl = '<input type="checkbox" class="sw" ' + a + '>';
@@ -20,8 +28,7 @@ function stField(f) {
 	else if(f.k == 'ro') ctl = '<span class="ro"><b id="' + id + '" data-kr="' + f.key + '">–</b>' + (f.u ? ' <u>' + f.u + '</u>' : '') + '</span>';
 	else if(f.k == 'text') ctl = '<label class="inp wide' + (f.mono ? ' mono' : '') + '"><input type="' + (f.pw ? 'password' : 'text') + '" ' + a + (f.max ? ' maxlength="' + f.max + '"' : '') +
 		(f.pattern ? ' pattern="' + f.pattern + '" title="' + stEsc(f.title || 'Неверный формат') + '"' : '') + ' autocomplete="off">' + (f.pw ? '<button type="button" class="eye" tabindex="-1" title="Показать / скрыть" onclick="stEye(this)">&#128065;</button>' : '') + '</label>';
-	else ctl = '<label class="inp"><input type="number" ' + a + (f.dec != null ? ' data-dec="' + f.dec + '"' : '') + (f.min != null ? ' min="' + f.min + '"' : '') + (f.max != null ? ' max="' + f.max + '"' : '') +
-		' step="' + (f.step || 'any') + '">' + (f.u ? '<u>' + f.u + '</u>' : '') + '</label>';
+	else ctl = '<label class="inp"><input type="number" ' + a + stNumAttrs(f) + '>' + (f.u ? '<u>' + f.u + '</u>' : '') + '</label>';
 	var tip = f.n ? '<span class="hint" tabindex="0" data-tip="' + stEsc(f.n[1]) + '">' + f.n[0] + '</span>' : '';
 	return '<div class="field' + (f.cls ? ' ' + f.cls : '') + '" id="f-' + id + '"><div class="l">' + f.t + tip + (f.h ? '<small>' + f.h + '</small>' : '') + '</div>' + ctl + '</div>';
 }
@@ -62,6 +69,8 @@ function stSetK(el, key, val) {
 	} else {
 		stLimits(el, m);
 		el.value = val === null || val === undefined ? '' : stShow(typeof val == 'boolean' ? (val ? 1 : 0) : val, el);		// флаг в числовом поле - 0/1, как в прежних полях
+		// значение с контроллера, которое поле само считает неверным (шаг грубее точности прошивки, граница): красное поле при открытии; метку читает tools/check_web_pages.py
+		if(el.type == 'number' && el.value !== '' && !stValid(el)) el.dataset.bad = el.value; else delete el.dataset.bad;
 	}
 	stBase(el);
 }
@@ -81,12 +90,13 @@ function stLimits(el, m) {
 	// data-wide - страница объявила границу ШИРЕ прошивочной (границу, которой нет, не считаем): рантайм сужает поле, но объявление
 	// надо поправить; tools/check_web_pages.py читает эту метку из DOM и сообщает о ней.
 	if(el.type == 'number' && m.max > m.min) {
-		if((el.min !== '' && +el.min < m.min) || (el.max !== '' && +el.max > m.max))
-			el.dataset.wide = 'страница ' + (el.min === '' ? 'без нижней' : el.min) + ' … ' + (el.max === '' ? 'без верхней' : el.max) + ', прошивка ' + m.min + ' … ' + m.max;
-		var lo = el.min === '' ? m.min : Math.max(+el.min, m.min), hi = el.max === '' ? m.max : Math.min(+el.max, m.max), st = parseFloat(el.step);
+		var pm = el.min !== '' ? el.min : el.dataset.mn !== undefined ? el.dataset.mn : '';		// нижняя граница страницы: в min или (если не кратна шагу) в data-mn
+		if((pm !== '' && +pm < m.min) || (el.max !== '' && +el.max > m.max))
+			el.dataset.wide = 'страница ' + (pm === '' ? 'без нижней' : pm) + ' … ' + (el.max === '' ? 'без верхней' : el.max) + ', прошивка ' + m.min + ' … ' + m.max;
+		var lo = pm === '' ? m.min : Math.max(+pm, m.min), hi = el.max === '' ? m.max : Math.min(+el.max, m.max), st = parseFloat(el.step);
 		el.max = hi;
-		// min - начало отсчёта шага в браузере: граница прошивки −327,68 при шаге 0,1 браковала бы любое «1,0». Тогда min не ставим, а проверяет stValid
-		if(!st || Math.abs(lo / st - Math.round(lo / st)) < 1e-6) el.min = lo; else el.dataset.mn = lo;
+		// граница прошивки −327,68 при шаге 0,1 браковала бы любое «1,0» (см. stNumAttrs): не кратную шагу в min не ставим, её проверяет stValid
+		if(stMinAligned(lo, st)) { el.min = lo; el.removeAttribute('data-mn'); } else { el.removeAttribute('min'); el.dataset.mn = lo; }
 		re = ST_RANGE;
 		fix = function(a, x, s, y) { return stNumTxt(lo) + s + stNumTxt(hi, y.charAt(0) == '+'); };
 	} else if((el.type == 'text' || el.type == 'password') && m.t == 'str' && m.max) {
@@ -161,7 +171,7 @@ function stCell(key, o) {
 	if(o.k == 'sw') return '<input type="checkbox" class="sw sm" ' + a + '>';
 	if(o.k == 'sel') return '<label class="inp sel"><select ' + a + '>' + (o.opts || '') + '</select></label>';
 	if(o.k == 'text') return '<label class="inp"><input type="text" ' + a + (o.max ? ' maxlength="' + o.max + '"' : '') + '></label>';
-	return '<label class="inp"><input type="number" ' + a + (o.dec != null ? ' data-dec="' + o.dec + '"' : '') + ' step="' + (o.step || 'any') + '"' + (o.min != null ? ' min="' + o.min + '"' : '') + (o.max != null ? ' max="' + o.max + '"' : '') + '>' + (o.u ? '<u>' + o.u + '</u>' : '') + '</label>';
+	return '<label class="inp"><input type="number" ' + a + stNumAttrs(o) + '>' + (o.u ? '<u>' + o.u + '</u>' : '') + '</label>';
 }
 // ---------- документация инвертора («Инвертор») ----------
 // Файл выбирается по типу инвертора из /api/ver (caps.fc_type), а не по имени: имя «Omron MX2» давало ссылку «Omron%20MX2.pdf»
@@ -237,9 +247,26 @@ function stEdited(el, type) {
 		stApply(null, [el]);
 		return;
 	}
+	if(type == 'change') stRound(el); else stRoundNote(el);
 	stMark(el);
 	stRefresh();
 	if(window.stChanged) stChanged(el);
+}
+// Число, введённое мельче шага поля (2,11 при шаге 0,1), браузер считает ошибкой, хотя прошивка десятых и сотых не различает в
+// нужной пользователю точности: при выходе из поля оно округляется до шага, а рядом с полем пишется, до чего. Поля, где сотые нужны, объявляют step 0.01.
+function stRoundNote(el, txt) {
+	var l = el.closest && el.closest('label.inp'), n = l && l.nextElementSibling;
+	if(n && n.classList.contains('rnd')) n.remove();
+	if(txt && l) { n = document.createElement('span'); n.className = 'rnd'; n.textContent = txt; l.parentNode.insertBefore(n, l.nextSibling); }
+}
+function stRound(el) {
+	stRoundNote(el);
+	var st = el.type == 'number' ? parseFloat(el.step) : 0, v = parseFloat(el.value), r;
+	if(!st || isNaN(v)) return;
+	r = +(Math.round(v / st) * st).toFixed(6);
+	if(Math.abs(r - v) < st * 1e-6) return;
+	el.value = stShow(r, el);
+	stRoundNote(el, 'округлено до ' + stNumTxt(st));
 }
 
 // ---------- поля с ограничением в байтах ----------

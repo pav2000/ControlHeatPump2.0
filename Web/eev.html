@@ -31,8 +31,7 @@ var CMD = {oh: 'OH', trg: 'OH2', pos: 'EEV', tt: 'TT'};
 
 function pbox(key, t, o) {
 	var id = stKid(key);
-	return '<div class="pbox" id="b-' + id + '"><b>' + t + (o.n ? '<span class="hint" tabindex="0" data-tip="' + stEsc(o.n) + '">i</span>' : '') + '</b><label class="inp"><input type="number" id="' + id + '" data-k="' + key + '" step="' + (o.step || 'any') + '"' +
-		(o.min != null ? ' min="' + o.min + '"' : '') + (o.max != null ? ' max="' + o.max + '"' : '') + '>' + (o.u ? '<u>' + o.u + '</u>' : '') + '</label>' + (o.h ? '<small>' + o.h + '</small>' : '') + '</div>';
+	return '<div class="pbox" id="b-' + id + '"><b>' + t + (o.n ? '<span class="hint" tabindex="0" data-tip="' + stEsc(o.n) + '">i</span>' : '') + '</b><label class="inp"><input type="number" id="' + id + '" data-k="' + key + '"' + stNumAttrs(o) + '>' + (o.u ? '<u>' + o.u + '</u>' : '') + '</label>' + (o.h ? '<small>' + o.h + '</small>' : '') + '</div>';
 }
 function params() {
 	var h = '';
