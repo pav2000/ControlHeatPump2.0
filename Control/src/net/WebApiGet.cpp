@@ -604,7 +604,7 @@ extern const ApiGroup ApiGrpEev;
 #endif     // у классов-владельцев
 
 // ---- группа sys: служебные данные для страниц системы ----
-enum { Y_SOCKETS = 1, Y_SOCKRES, Y_OWPIN, Y_LSTATS, Y_LHIST, Y_FREERAM, Y_INFO, Y_CONST, Y_CONST1, Y_WDT, Y_TASKS, Y_ERRORS, Y_ERRORS1, Y_LHISTOLD };
+enum { Y_SOCKETS = 1, Y_SOCKRES, Y_OWPIN, Y_LSTATS, Y_LHIST, Y_FREERAM, Y_INFO, Y_CONST, Y_CONST1, Y_WDT, Y_TASKS, Y_ERRORS, Y_ERRORS1, Y_LHISTOLD, Y_WEBSTAT };
 static const ApiParam apiSysTab[] = {
 	{ "sockets",    0, 0, 0, 0, 1, PT_CALL, PF_RO | PF_AR, MK_TABLE, Y_SOCKETS, 0 },    // состояние сокетов сетевого чипа
 	{ "socket_res", 0, 0, 0, 0, 1, PT_CALL, PF_RO | PF_AR, MK_INT,   Y_SOCKRES, 0 },    // сколько зависших сокетов сброшено
@@ -623,6 +623,7 @@ static const ApiParam apiSysTab[] = {
 	// поэтому два ключа по API_ERR_HALF записей: errors - коды 0...-(API_ERR_HALF-1), errors1 - остальные
 	{ "errors",  0, 0, 0, 0, 1, PT_CALL, PF_RO | PF_AR, MK_TABLE, Y_ERRORS,  0 },
 	{ "errors1", 0, 0, 0, 0, 1, PT_CALL, PF_RO | PF_AR, MK_TABLE, Y_ERRORS1, 0 },
+	{ "webstat", 0, 0, 0, 0, 1, PT_CALL, PF_RO,         MK_TABLE, Y_WEBSTAT, 0 },    // метрики веб-сервера (WebShared.h), обнуляются действием reset.webstat
 };
 #define API_ERR_HALF 47
 static_assert(-ERR_ERRMAX + 1 <= 2 * API_ERR_HALF, "справочник ошибок не помещается в два ключа sys.errors/errors1: добавьте ключ");
@@ -660,6 +661,35 @@ static void api_put_year_files(ApiOut *o, uint8_t what)
 }
 // Текстовая таблица в свободную часть выходного буфера и экранирование на месте. Источники старые (пишут strcat без предела),
 // поэтому место проверяется заранее: самая длинная таблица (sysInfo) около 3,5 КБ.
+// Метрики веб-сервера: JSON-объект. Времена в микросекундах (avg - среднее, max - наибольшее). listen[N] - сколько выборок застали N сокетов в
+// LISTEN: listen[0] - моменты, когда любое новое соединение получило бы отказ. zero_max_ms - самый долгий такой период (точность - период выборки)
+static void api_put_acc(ApiOut *o, const char *name, const StatAcc &a)
+{
+	api_put(o, "\""); api_put(o, name); api_put(o, "\":{\"n\":"); api_put_int(o, (int32_t) a.n);
+	api_put(o, ",\"avg\":"); api_put_int(o, (int32_t) StatAcc_Avg(&a));
+	api_put(o, ",\"max\":"); api_put_int(o, (int32_t) a.max); api_putc(o, '}');
+}
+static void api_put_webstat(ApiOut *o)
+{
+	const SockStat &s = webStat.sock;
+	api_putc(o, '{');
+	api_put_acc(o, "req", webStat.req); api_putc(o, ',');
+	api_put_acc(o, "stop", webStat.stop); api_putc(o, ',');
+	api_put_acc(o, "lock", webStat.lockWait); api_putc(o, ',');
+	api_put_acc(o, "file_read", webStat.fileRead); api_putc(o, ',');
+	api_put_acc(o, "file_send", webStat.fileSend);
+	api_put(o, ",\"lock_fail\":"); api_put_int(o, (int32_t) webStat.lockFail);
+	api_put(o, ",\"slow_stop\":"); api_put_int(o, (int32_t) webStat.slowStop);
+	api_put(o, ",\"samples\":"); api_put_int(o, (int32_t) s.samples);
+	api_put(o, ",\"listen\":[");
+	for(uint8_t i = 0; i < 8; i++) { if(i) api_putc(o, ','); api_put_int(o, (int32_t) s.listen[i]); }
+	api_put(o, "],\"states\":[");                                  // сумма по выборкам: порядок SS_* (closed, listen, synrecv, est, finwait, closing, timewait, closewait, lastack, other)
+	for(uint8_t i = 0; i < SS_COUNT; i++) { if(i) api_putc(o, ','); api_put_int(o, (int32_t) s.st[i]); }
+	api_putc(o, ']');
+	api_put(o, ",\"zero_events\":"); api_put_int(o, (int32_t) s.zeroEvents);
+	api_put(o, ",\"zero_max_ms\":"); api_put_int(o, (int32_t) s.zeroMax);
+	api_putc(o, '}');
+}
 static int api_sys_table(uint8_t hook, ApiOut *o)
 {
 	if(o->cap - o->len < 4600) return AE_TOO_BIG;
@@ -683,6 +713,7 @@ static int api_sys_table(uint8_t hook, ApiOut *o)
 static int api_get_sys(uint8_t hook, uint8_t, ApiOut *o)
 {
 	if(hook == Y_SOCKETS) socketInfoApi(o);
+	else if(hook == Y_WEBSTAT) api_put_webstat(o);
 	else if(hook == Y_SOCKRES) api_put_int(o, HP.socketRes());
 	else if(hook == Y_LSTATS) api_put_year_files(o, 0);
 	else if(hook == Y_LHIST) api_put_year_files(o, 1);
@@ -1130,6 +1161,7 @@ static int apiAct_save_prepare_update(ApiOut *o, const char *)
 // Служебные действия страниц «Система», «Задачи», «Журнал», «Modbus»
 static int apiAct_reset_controller(ApiOut *o, const char *) { HP.sendCommand(pRESET); api_put(o, "\"ok\""); return AE_OK; }   // сначала штатный останов ТН: до минуты
 static int apiAct_reset_journal(ApiOut *o, const char *) { journal.Format(); api_put(o, "\"ok\""); return AE_OK; }
+static int apiAct_reset_webstat(ApiOut *o, const char *) { memset(&webStat, 0, sizeof(webStat)); api_put(o, "\"ok\""); return AE_OK; }   // замок сети у web_server
 static int apiAct_reset_counters(ApiOut *o, const char *) { journal.jprintf("$RESET Season Counters. . .\n"); HP.resetCount(false); api_put(o, "\"ok\""); return AE_OK; }
 static int apiAct_reset_counters_all(ApiOut *o, const char *) { journal.jprintf("$RESET All Counters. . .\n"); HP.resetCount(true); api_put(o, "\"ok\""); return AE_OK; }
 static int apiAct_wdt_reset(ApiOut *o, const char *)       // обнулить замеры наблюдателя; таблицу замеров читают отдельно (sys.wdt)
@@ -1203,6 +1235,7 @@ static const ApiAction apiActions[] = {
 	{ "reset.controller", 0, apiAct_reset_controller },
 	{ "reset.journal",  0, apiAct_reset_journal },
 	{ "reset.counters", 0, apiAct_reset_counters },
+	{ "reset.webstat", 0, apiAct_reset_webstat },
 	{ "reset.counters_all", 0, apiAct_reset_counters_all },
 	{ "wdt.reset",      0, apiAct_wdt_reset },
 	{ "tasks.reset",    0, apiAct_tasks_reset },

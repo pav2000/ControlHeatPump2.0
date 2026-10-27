@@ -39,6 +39,7 @@
 // Работа с W5200 c поддержкой многопоточности и Free RTOS
 // по возможности работаем через сокеты
 // ---------------------------------------------------------------------------
+static uint16_t connectPort[MAX_SOCK_NUM];          // порт клиента на сокете при прошлой проверке: смена порта = новое соединение
 static unsigned long connectTime[MAX_SOCK_NUM];    // время соединения сокета, здесь по всем сокетам (и служебному)
 #define W5200_LINK        0x20                     // МАСКА регистра PHYSTATUS(W5200 PHY status Register) при котором считается что связь есть
 #define W5500_LINK        0x01                     // МАСКА регистра PHYCFGR  (W5500 PHY Configuration Register) [R/W] [0x002E] при котором считается что связь есть
@@ -460,27 +461,27 @@ void checkSockStatus()
 {
   unsigned long thisTime = xTaskGetTickCount();
   if(SemaphoreTake(xWebThreadSemaphore,(W5200_TIME_WAIT/portTICK_PERIOD_MS))==pdFALSE) {journal.jprintf((char*)cErrorMutex,__FUNCTION__,MutexWebThreadBusy);return;} // Захват мютекса потока или ОЖИДАНИНЕ W5200_TIME_WAIT
+  int8_t owners[W5200_THREAD];
+  for (uint8_t t = 0; t < W5200_THREAD; t++) owners[t] = Socket[t].sock;   // сокеты, которые сейчас в работе у потоков, НЕ сбрасываются
   for (uint8_t i = 0; i < MAX_SOCK_NUM; i++) {        // По всем сокетам!!
-        // Не сбрасывать сокеты которые используется в потоке ОБЯЗАТЕЛЬНО!!
-        #if    W5200_THREAD < 2
-         if (Socket[0].sock==i)  continue;   
-        #elif  W5200_THREAD < 3
-          if((Socket[0].sock==i)||(Socket[1].sock==i))  continue;    
-        #elif  W5200_THREAD < 4
-          if((Socket[0].sock==i)||(Socket[1].sock==i)||(Socket[2].sock==i))  continue;   
-        #else
-          if((Socket[0].sock==i)||(Socket[1].sock==i)||(Socket[2].sock==i)||(Socket[3].sock==i))  continue;   
-        #endif
-    uint8_t s = W5100.readSnSR(i);                                          // Прочитать статус сокета
-    if((s == SnSR::ESTABLISHED) || (s == SnSR::CLOSE_WAIT) /*|| (s == 0x22)*/ ) { // если он "кандидат"
-        if(thisTime - connectTime[i] > HP.time_socketRes()*1000UL) {        // Время пришло
-          journal.jprintf("%s : Socket frozen: %d\n",NowTimeToStr(),i); 
-          W5100.execCmdSn(i, Sock_CLOSE);
-          W5100.writeSnIR(i, 0xFF);
-          HP.add_socketRes();                                               // добавить счетчик
-        }
-    } // if((s == 0x17) || (s == 0x1C))
-    else connectTime[i] = thisTime;                                         // Обновить время если статус не кандидат
+    const bool inUse = WebSock_Busy(i, owners, W5200_THREAD);
+    bool candidate = false;                                                // "кандидат" на зависший: соединение установлено или клиент уже закрыл свою сторону
+    if(!inUse) {
+      uint8_t s = W5100.readSnSR(i);                                       // Прочитать статус сокета
+      candidate = (s == SnSR::ESTABLISHED) || (s == SnSR::CLOSE_WAIT);
+    }
+    // connectTime - начало НЕПРЕРЫВНОГО простоя кандидата без хозяина (SockJanitor_Step, Util). Прежде оно обновлялось только у сокетов вне
+    // кандидатов и вне занятых, а занятые пропускались: сокет под нагрузкой (87-94 % времени в ESTABLISHED) копил возраст, и свежее
+    // соединение, ждущее обслуживания, закрывалось как зависшее - клиент получал обрыв (1 событие "Socket frozen" = 1 оборванное соединение).
+    if(SockJanitor_Step(&connectTime[i], &connectPort[i], candidate ? W5100.readSnDPORT(i) : connectPort[i], candidate, inUse, thisTime, HP.time_socketRes()*1000UL)) {
+      {   // что именно застряло: состояние, непринятые байты, клиент. Остаточные случаи под нагрузкой надо разбирать по этой строке
+        uint8_t dip[4]; W5100.readSnDIPR(i, dip);
+        journal.jprintf("%s : Socket frozen: %d (state %02X, rx %d, %d.%d.%d.%d:%d)\n", NowTimeToStr(), i, W5100.readSnSR(i), (int) W5100.getRXReceivedSize(i), dip[0], dip[1], dip[2], dip[3], (int) W5100.readSnDPORT(i));
+      }
+      W5100.execCmdSn(i, Sock_CLOSE);
+      W5100.writeSnIR(i, 0xFF);
+      HP.add_socketRes();                                                  // добавить счетчик
+    }
   } // for
   SemaphoreGive(xWebThreadSemaphore);                                      // Отдать мютекс
 }
@@ -496,6 +497,8 @@ uint16_t sendPacketRTOS(uint8_t thread, const uint8_t * buf, uint16_t len, uint1
 	uint8_t status = 0;
 	uint16_t ret = 0;
 	uint16_t freesize = 0;
+	uint16_t lastFree = 0;                      // свободно в буфере передачи при прошлом опросе: рост - клиент подтверждает данные
+	uint32_t tProgress = GetTickCount();        // когда место прибавлялось в последний раз
 
 	if(GETBIT(Socket[thread].flags, fLOCK_LOST)) return 0;   // замок уже потерян раньше в этом запросе: на шину и сокет не лезем
 	SPI_switchW5200();
@@ -518,6 +521,17 @@ uint16_t sendPacketRTOS(uint8_t thread, const uint8_t * buf, uint16_t len, uint1
 			freesize = W5100.getTXFreeSize(Socket[thread].sock);
 			if(freesize >= ret) {
 				break;
+			}
+			// Ожидание места не имело предела: клиент с нулевым окном приёма держал веб-поток вечно, а затянувшаяся выгрузка файла
+			// (история до 30 МБ через медленный канал) молчала дольше лимита потока и перезагружала контроллер. Рост свободного места -
+			// это продвижение: оно отмечается наблюдателю; нет роста дольше W5200_SEND_STALL - клиент застрял, соединение закрывается.
+			switch(Send_StallStep(freesize, &lastFree, GetTickCount(), &tProgress, W5200_SEND_STALL)) {
+			case SW_PROGRESS: Watchdog_AliveHere(); break;
+			case SW_STALLED:
+				journal.jprintf("WEB: client stalled %d s, sock %d - closing\n", (int) (W5200_SEND_STALL / 1000), (int) Socket[thread].sock);
+				close(Socket[thread].sock);
+				return 0;
+			default: break;
 			}
 			status = W5100.readSnSR(Socket[thread].sock);
 			if((status != SnSR::ESTABLISHED) && (status != SnSR::CLOSE_WAIT)) {
@@ -567,6 +581,7 @@ uint16_t sendPacketRTOS(uint8_t thread, const uint8_t * buf, uint16_t len, uint1
 		}
 	}
 	W5100.writeSnIR(Socket[thread].sock, SnIR::SEND_OK);
+	Watchdog_AliveHere();                       // пакет ушёл: поток, отдающий файл, жив, сколько бы ни длилась выгрузка (медленный клиент, VPN)
 	return ret;
 }
 

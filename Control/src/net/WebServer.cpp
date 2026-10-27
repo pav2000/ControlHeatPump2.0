@@ -86,6 +86,18 @@ const char *postRet[]            = {"Настройки из файла восс
 
 SdFile wFile;
 fname_t wfname;
+WebStat webStat;                          // метрики веб-сервера, см. WebShared.h
+
+// Выборка состояний веб-сокетов (0...W5200_SOCK_SYS-1) не чаще раза в WEBSTAT_PERIOD_MS: семь чтений Sn_SR, около 25 мкс. Замок сети держит вызывающий.
+// SEM-BORROW: xWebThreadSemaphore - читает регистры чипа, замок у web_server
+static void webStatSample()
+{
+	const uint32_t now = GetTickCount();
+	if(!SockStat_Due(&webStat.sock, now, WEBSTAT_PERIOD_MS)) return;
+	uint8_t sr[W5200_SOCK_SYS];
+	for(uint8_t i = 0; i < W5200_SOCK_SYS; i++) sr[i] = W5100.readSnSR(i);
+	SockStat_Sample(&webStat.sock, sr, W5200_SOCK_SYS, now);
+}
 
 
 void web_server(uint8_t thread)
@@ -93,25 +105,25 @@ void web_server(uint8_t thread)
 	int32_t len;
 	int8_t sock;
 
+	const uint32_t tLock = micros();
 	if(SemaphoreTake(xWebThreadSemaphore, (W5200_TIME_WAIT / portTICK_PERIOD_MS)) == pdFALSE) {
+		webStat.lockFail++;               // счётчик меняем без замка: ошибка в одну единицу на диагностике не важна
 		return;
 	}          // Захват семафора потока или ОЖИДАНИЕ W5200_TIME_WAIT, если семафор не получен то выходим
+	StatAcc_Add(&webStat.lockWait, micros() - tLock);
 
 	Socket[thread].sock = -1;                      // Сокет свободный
 
 	SPI_switchW5200();                    // Это лишнее но для надежности пусть будет
+	webStatSample();                      // состояния сокетов: сколько слушает, сколько закрыто и ждёт повторного открытия
 	for(sock = 0; sock < W5200_SOCK_SYS; sock++)  // Цикл по сокетам веб сервера!!!! служебный не трогаем!!
 	{
 
-#if    W5200_THREAD < 2
-		if (Socket[0].sock==sock) continue;   // исключение повторного захвата сокетов
-#elif  W5200_THREAD < 3
-		if((Socket[0].sock==sock)||(Socket[1].sock==sock)) continue; // исключение повторного захвата сокетов
-#elif  W5200_THREAD < 4
-		if((Socket[0].sock == sock) || (Socket[1].sock == sock) || (Socket[2].sock == sock)) continue; // исключение повторного захвата сокетов
-#else
-		if((Socket[0].sock==sock)||(Socket[1].sock==sock)||(Socket[2].sock==sock)||(Socket[3].sock==sock)) continue; // исключение повторного захвата сокетов
-#endif
+		{	// исключение повторного захвата сокетов: сокет занят, если какой-то поток (в том числе отпустивший замок на паузе отдачи) работает с ним
+			int8_t owners[W5200_THREAD];
+			for(uint8_t t = 0; t < W5200_THREAD; t++) owners[t] = Socket[t].sock;
+			if(WebSock_Busy(sock, owners, W5200_THREAD)) continue;
+		}
 
 		// Настройка  переменных потока для работы
 		Socket[thread].http_req_type = HTTP_invalid;        // нет полезной инфы
@@ -119,10 +131,13 @@ void web_server(uint8_t thread)
 		SETBIT0(Socket[thread].flags, fLOCK_LOST);
 		SETBIT0(Socket[thread].flags, fUser); // Признак идентификации как обычный пользователь (нужно подменить файл меню)
 		Socket[thread].client = server1.available_(sock);  // надо обработать
-		Socket[thread].sock = sock;                           // запомнить сокет с которым работает поток
+		// Метка "поток работает с сокетом" ставится только когда клиент ВЗЯТ. Прежде она ставилась на каждом шаге, и в простое оставался номер последнего
+		// опрошенного сокета (6): остальные потоки считали его занятым и не опрашивали, один из семи сокетов был для них невидим
+		Socket[thread].sock = WebSock_Owner(Socket[thread].client ? true : false, sock);
 
 		if(Socket[thread].client) // запрос http заканчивается пустой строкой
 		{
+			const uint32_t tReq = micros();
 			while(Socket[thread].client.connected()) {
 				// Ставить вот сюда
 				WEB_STORE_DEBUG_INFO(10);
@@ -260,8 +275,14 @@ xUNAUTHORIZED:
 					break;   // Подготовить к следующей итерации
 				} // end if (client.available())
 			} // end while (client.connected())
+			const uint32_t tStop = micros();
 			Socket[thread].client.stop();   // close the connection
+			const uint32_t dStop = micros() - tStop;
+			StatAcc_Add(&webStat.stop, dStop);
+			if(dStop > 100000UL) webStat.slowStop++;
+			StatAcc_Add(&webStat.req, micros() - tReq);
 			Socket[thread].sock = -1;
+			server1.begin_(sock);           // сразу снова слушать: иначе сокет стоял закрытым до следующего обхода, и новые соединения получали отказ (CLOSED 8-9 % времени под нагрузкой)
 			taskYIELD();
 		} // end if (client)
 	}  // for (int sock = 0; sock < W5200_SOCK_SYS; sock++)
@@ -449,10 +470,17 @@ xFileFound:
 			if(DBG_ON(DBG_HTTP)) { journal.jprintf("$Thread: %d socket: %d read file: %s\n",thread,Socket[thread].sock,filename); }
 			sendConstRTOS(thread, webFileHeader(filename));
 			SPI_switchSD();
-			while((n = webFile.read(Socket[thread].outBuf, sizeof(Socket[thread].outBuf))) > 0) {
-				if(sendBufferRTOS(thread, (byte*) (Socket[thread].outBuf), n) == 0) break;
+			for(;;) {
+				uint32_t t1 = micros();
+				n = webFile.read(Socket[thread].outBuf, sizeof(Socket[thread].outBuf));
+				StatAcc_Add(&webStat.fileRead, micros() - t1);
+				if(n <= 0) break;
+				t1 = micros();
+				const int sent = sendBufferRTOS(thread, (byte*) (Socket[thread].outBuf), n);
+				StatAcc_Add(&webStat.fileSend, micros() - t1);
+				if(sent == 0) break;
 				SPI_switchSD();
-			} // while
+			} // for
 			if(n < 0) journal.jprintf("Read SD error (%d,%d)!\n", card.cardErrorCode(), (int)(card.cardErrorData()));
 			SPI_switchSD();
 			webFile.close();
@@ -467,10 +495,17 @@ xFileFound:
 				if(DBG_ON(DBG_HTTP)) { journal.jprintf("$Thread: %d socket: %d read file: %s\n",thread,Socket[thread].sock,filename); }
 				sendConstRTOS(thread, webFileHeader(filename));
 				SPI_switchFlash();
-				while((n = ff.read(Socket[thread].outBuf, sizeof(Socket[thread].outBuf))) > 0) {
-					if(sendBufferRTOS(thread, (byte*) (Socket[thread].outBuf), n) == 0) break;
+				for(;;) {
+					uint32_t t1 = micros();
+					n = ff.read(Socket[thread].outBuf, sizeof(Socket[thread].outBuf));
+					StatAcc_Add(&webStat.fileRead, micros() - t1);
+					if(n <= 0) break;
+					t1 = micros();
+					const int sent = sendBufferRTOS(thread, (byte*) (Socket[thread].outBuf), n);
+					StatAcc_Add(&webStat.fileSend, micros() - t1);
+					if(sent == 0) break;
 					SPI_switchFlash();                          // после отдачи страницы в сеть (замок отпускался) - снова все CS вверх
-				} // while
+				} // for
 			} else {
 				sendConstRTOS(thread, HEADER_FILE_NOT_FOUND);
 				uint8_t ip[4];

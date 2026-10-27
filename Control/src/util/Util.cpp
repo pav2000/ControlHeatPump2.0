@@ -595,6 +595,89 @@ SettingsHead settings_head_check(uint16_t size, uint8_t ver, uint8_t max_ver, ui
 	return SETHEAD_OK;
 }
 
+bool SockJanitor_Step(uint32_t *since_ms, uint16_t *last_id, uint16_t id, bool candidate, bool in_use, uint32_t now_ms, uint32_t limit_ms)
+{
+	if(id != *last_id) { *last_id = id; *since_ms = now_ms; return false; }      // на сокете уже другой клиент (id - порт клиента): отсчёт заново
+	if(!candidate || in_use) { *since_ms = now_ms; return false; }              // обслуживается или не в подозрительном состоянии: отсчёт заново
+	return (uint32_t)(now_ms - *since_ms) > limit_ms;
+}
+
+int8_t WebSock_Owner(bool have_client, int8_t sock)
+{
+	return have_client ? sock : (int8_t) -1;
+}
+
+bool WebSock_Busy(int8_t sock, const int8_t *owners, uint8_t n)
+{
+	for(uint8_t i = 0; i < n; i++) if(owners[i] == sock) return true;
+	return false;
+}
+
+SendWait Send_StallStep(uint16_t free, uint16_t *last_free, uint32_t now_ms, uint32_t *progress_ms, uint32_t limit_ms)
+{
+	if(free > *last_free) {                        // клиент подтвердил данные: буфер освободился
+		*last_free = free;
+		*progress_ms = now_ms;
+		return SW_PROGRESS;
+	}
+	*last_free = free;                             // не вырос (или даже уменьшился): запоминаем, чтобы следующий рост считался от него
+	return (uint32_t)(now_ms - *progress_ms) >= limit_ms ? SW_STALLED : SW_WAIT;
+}
+
+void StatAcc_Add(StatAcc *a, uint32_t v)
+{
+	a->n++;
+	a->sum += v;
+	if(v > a->max) a->max = v;
+}
+
+uint32_t StatAcc_Avg(const StatAcc *a)
+{
+	return a->n ? (uint32_t)(a->sum / a->n) : 0;
+}
+
+bool SockStat_Due(const SockStat *s, uint32_t now_ms, uint32_t period_ms)
+{
+	return (uint32_t)(now_ms - s->lastTick) >= period_ms;
+}
+
+uint8_t SockState_Index(uint8_t r)
+{
+	switch(r) {
+	case 0x00: return SS_CLOSED;
+	case 0x14: return SS_LISTEN;
+	case 0x16: return SS_SYNRECV;
+	case 0x17: return SS_EST;
+	case 0x18: return SS_FINWAIT;
+	case 0x1A: return SS_CLOSING;
+	case 0x1B: return SS_TIMEWAIT;
+	case 0x1C: return SS_CLOSEWAIT;
+	case 0x1D: return SS_LASTACK;
+	default:   return SS_OTHER;
+	}
+}
+
+void SockStat_Sample(SockStat *s, const uint8_t *sn_sr, uint8_t n, uint32_t now_ms)
+{
+	uint8_t listen = 0;
+	for(uint8_t i = 0; i < n; i++) {
+		const uint8_t k = SockState_Index(sn_sr[i]);
+		s->st[k]++;
+		if(k == SS_LISTEN) listen++;
+	}
+	s->lastTick = now_ms;
+	s->samples++;
+	s->listen[listen > 7 ? 7 : listen]++;
+	if(listen == 0) {
+		if(!s->inZero) { s->inZero = true; s->zeroSince = now_ms; }          // период без слушающих сокетов начался
+	} else if(s->inZero) {                                                   // закончился: длина = от первой выборки без LISTEN до первой с LISTEN
+		s->inZero = false;
+		s->zeroEvents++;
+		uint32_t d = (uint32_t)(now_ms - s->zeroSince);
+		if(d > s->zeroMax) s->zeroMax = d;
+	}
+}
+
 uint32_t flow_freq_mhz(uint32_t edges, uint32_t dt_ms)
 {
 	if(!dt_ms) return 0;

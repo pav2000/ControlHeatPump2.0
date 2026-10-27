@@ -46,6 +46,19 @@ struct type_socketData
     uint16_t http_req_type;                 // Тип запроса
   };
 extern type_socketData Socket[W5200_THREAD];
+// Метрики веб-сервера (F5). Меняются и читаются под замком сети; читает их sys.webstat, обнуляет reset.webstat.
+struct WebStat {
+	StatAcc  req;           // запрос целиком: от выбора клиента до закрытия сокета, мкс (включая ожидание замка при отдаче данных)
+	StatAcc  stop;          // client.stop(), мкс: в это время поток держит замок сети
+	StatAcc  lockWait;      // ожидание замка сети в начале web_server, мкс (все вызовы, в том числе пустые опросы)
+	StatAcc  fileRead;      // чтение очередного куска файла морды (SPI Flash или SD), мкс: поток держит замок сети и занимает шину
+	StatAcc  fileSend;      // отправка этого куска в сеть (sendBufferRTOS), мкс: в ней замок отдаётся на время ожидания подтверждений
+	uint32_t lockFail;      // замок не получен за W5200_TIME_WAIT
+	uint32_t slowStop;      // stop() дольше 100 мс
+	SockStat sock;          // состояния сокетов, выборка раз в WEBSTAT_PERIOD_MS
+};
+extern WebStat webStat;
+#define WEBSTAT_PERIOD_MS 10
 
 // Определены в WebServer.cpp
 extern SdFile     wFile;
