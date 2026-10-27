@@ -203,6 +203,7 @@ boolean set_time_NTP(void)
 // true если нет ошибок
 static boolean sendNTPpacket(IPAddress &ip)
 {
+	// SEM-BORROW: xWebThreadSemaphore - вызывается из set_time_NTP, замок сети там взят
 	memset(packetBuffer, 0, NTP_PACKET_SIZE);
 	// Initialize values needed to form NTP request
 	// (see URL above for details on the packets)
@@ -234,8 +235,9 @@ static boolean sendNTPpacket(IPAddress &ip)
 // Запрос времени от NTP сервера, возвращает время как long
 boolean set_time_NTP(void)
 {
-	unsigned long secs;
+	uint32_t secs = 0;
 	boolean flag = false;
+	uint8_t bad = NTP_PKT_OK;                                    // последняя причина отказа пакета
 	IPAddress ip(0, 0, 0, 0);
 
 	journal.jprintf_time("Update time from NTP server: %s\n", HP.get_serverNTP());
@@ -271,22 +273,25 @@ boolean set_time_NTP(void)
 		if(flag) {
 			flag = false;
 			if(Udp.parsePacket()) {
-				// Пакет получен, значит считываем данные оттуда:
-				Udp.read(packetBuffer, NTP_PACKET_SIZE); // считываем содержимое пакета в буфер
-				flag = true;                                       // Время получили
+				// Пакет получен: читаем и проверяем. Принимается только настоящий ответ сервера (длина, mode, stratum, LI, отметка,
+				// правдоподобный год), см. Ntp_Parse. Чужой пакет не прерывает опрос: ждём следующей попытки.
+				memset(packetBuffer, 0, NTP_PACKET_SIZE);
+				int got = Udp.read(packetBuffer, NTP_PACKET_SIZE);   // считываем содержимое пакета в буфер
+				bad = Ntp_Parse(packetBuffer, got, &secs);
+				if(bad == NTP_PKT_OK) flag = true;                   // Время получили
+				else journal.jprintf(" NTP bad packet (%d bytes, reason %d)\n", got, (int) bad);
 			}
 		}
-		if(flag) {
-			// Временная отметка начинается с 40 байта полученного пакета и его длина составляет четыре байта или два слова.
-			// Для начала извлекаем два этих слова:
-			unsigned long highWord = packetBuffer[40] << 8 | packetBuffer[41];
-			unsigned long lowWord = packetBuffer[42] << 8 | packetBuffer[43];
-			// Совмещаем четыре байта (два слова) в длинное целое. Это и будет NTP-временем (секунды начиная с 1 января 1990 года):
-			secs = (highWord << 16 | lowWord) - 2208988800UL; // Время Unix стартует с 1 января 1970 года. В секундах это 2208988800: Вычитаем 70 лет
-			break;                                           // ответ получен выходим
-		}
+		if(flag) break;                                      // ответ получен выходим
 	} // for
 	Udp.stop();
+	// Внутренние часы хранят МЕСТНОЕ время (set_clock добавляет пояс), а secs - UTC: сравниваем в одной шкале.
+	const uint32_t secsLocal = secs + TIME_ZONE * 3600UL;
+	if(flag && !Ntp_JumpOk(rtcSAM3X8.unixtime(), secsLocal)) {   // правдоподобный пакет, но скачок часов слишком велик: календарь ТН не трогаем
+		journal.jprintf("$NTP: time jump %d s rejected (limit %d s), set the clock manually\n", (int)(secsLocal - rtcSAM3X8.unixtime()), (int) NTP_MAX_JUMP_S);
+		flag = false;
+		bad = NTP_PKT_RANGE;
+	}
 	if(flag) {  // Обновление времени если оно получено
 		setClockShifted(secs);                   // обновить внутренние часы
 		// обновились, можно и часы i2c обновить
@@ -297,7 +302,7 @@ boolean set_time_NTP(void)
 		journal.jprintf_date("ERROR update time from NTP server!");
 	}
 	SemaphoreGive(xWebThreadSemaphore);
-	ntp_done(flag ? NTP_RES_OK : NTP_RES_NOANSWER);
+	ntp_done(flag ? NTP_RES_OK : bad != NTP_PKT_OK ? NTP_RES_BADANSWER : NTP_RES_NOANSWER);
 
 	return flag;
 }

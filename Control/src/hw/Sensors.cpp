@@ -459,7 +459,7 @@ int8_t sensorFrequency::Read()
 			__set_PRIMASK(primask);
 		}
 		__asm__ volatile ("" ::: "memory");
-		Frequency = (cnt * 500 * 1000) / (tickCount - sTime); // ТЫСЯЧНЫЕ ГЦ время в миллисекундах частота в тысячных герца *2 (прерывание по обоим фронтам)!!!!!!!!
+		Frequency = flow_freq_mhz(cnt, tickCount - sTime); // ТЫСЯЧНЫЕ ГЦ время в миллисекундах частота в тысячных герца *2 (прерывание по обоим фронтам)!!!!!!!!
 		sTime = tickCount;
 		Value = Frequency * 360 / cfg.kfValue; // ЛИТРЫ В ЧАС (ИЛИ ТЫСЯЧНЫЕ КУБА) частота в тысячных, и коэффициент правим
 		return 1;

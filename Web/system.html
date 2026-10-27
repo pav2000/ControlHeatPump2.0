@@ -25,7 +25,7 @@ urlupdate = 4000;
 function tip(n, t) { return '<span class="hint" tabindex="0" data-tip="' + stEsc(t) + '">' + n + '</span>'; }
 var TIPS = {
 	2: 'Состояние FreeRTOS при старте: старший байт — номер задачи (см. «Диагностика → Задачи RTOS»), младший байт — код ошибки (1 — configASSERT fails, 2 — malloc fails, 3 — stack overflow, 4 — hard fault, 5 — bus fault, 6 — usage fault, 7 — crash data).',
-	3: 'Контроль включается в «Связь → Сеть → Ежеминутный контроль связи с чипом»; при необходимости — его сброс.'
+	3: 'Контроль включается в «Связь → Сеть → Контроль связи с чипом раз 10 сек.»; при необходимости — его сброс.'
 };
 var fixed = {};
 function kv(label, value, mono) {

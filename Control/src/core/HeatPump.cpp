@@ -33,6 +33,7 @@
 // ---------------------------------------------------------------------------
 #include "HeatPump.h"
 #include "ClimateControl.h"  // решение об управлении компрессором
+#include "OverheatCalc.h"    // OHN_*: какие датчики нужны правилу перегрева
 
 // Объявлены в HeatPump.h - создаются здесь, в единственном экземпляре.
 int32_t motohour_OUT_work = 0; // рабочий для счетчиков - энергия отопления, Вт
@@ -63,7 +64,11 @@ void set_Error(int8_t _err, char *nam)
 		HP.dRelay[RCOMP].set_OFF();
 #else
 #ifdef MODBUS_PORT_NUM
+#ifdef FC_VACON
 		if(HP.dFC.write_0x06_16(FC_CONTROL, FC_C_STOP) == OK) // подать команду ход/стоп через Modbus
+#else
+		if(HP.dFC.emergency_stop() == OK)                     // у Omron нет слова FC_CONTROL: стоп битом ХОД, write_0x05_bit закрыт
+#endif
 #endif
 #endif
 			HP.set_stopCompressor();
@@ -602,7 +607,7 @@ boolean HeatPump::CheckAvailableWork()
 // Датчик годен, если он есть в конфигурации и привязан к адресу или к удалённому
 // датчику. Без привязки Read() подставляет тестовую температуру: ТН считал бы
 // по выдуманным значениям. Режим теста разрешает работу без адреса осознанно.
-static bool sensor_usable(sensorTemp &s)
+bool sensor_usable(sensorTemp &s)
 {
 	if(!s.get_present()) return false;
 #ifndef DEMO                                    // на стенде значения случайные, адресов нет
@@ -630,6 +635,17 @@ sensorTemp *HeatPump::CheckSensors()
 	};
 	for(uint8_t i = 0; i < sizeof(map) / sizeof(map[0]); i++)
 		if((need & map[i].bit) && !sensor_usable(sTemp[map[i].num])) return &sTemp[map[i].num];
+#ifdef EEV_DEF
+	// Датчики правила перегрева ЭРВ: непривязанный получил бы тестовую температуру, и ЭРВ регулировался бы по выдуманному перегреву
+	uint8_t eev = dEEV.sensors_needed();
+	if((eev & OHN_EVAOUT) && !sensor_usable(sTemp[TEVAOUT])) return &sTemp[TEVAOUT];
+#ifdef TEVAIN
+	if((eev & OHN_EVAIN)  && !sensor_usable(sTemp[TEVAIN]))  return &sTemp[TEVAIN];
+#endif
+#ifdef TCOMPIN
+	if((eev & OHN_COMPIN) && !sensor_usable(sTemp[TCOMPIN])) return &sTemp[TCOMPIN];
+#endif
+#endif
 	return NULL;
 }
 
@@ -920,7 +936,8 @@ boolean HeatPump::boilerAddHeat()
 	int16_t T = sTemp[TBOILER].get_Temp();
 	if((GETBIT(Prof.SaveON.flags, fBoilerON)) && (GETBIT(Prof.Boiler.flags, fSalmonella))) // Сальмонелла не взирая на расписание если включен бойлер (запрет ТЭНа на генераторе проверен выше)
 	{
-		if((rtcSAM3X8.get_day_of_week() == SALMONELLA_DAY) && (rtcSAM3X8.get_hours() == SALMONELLA_HOUR) && (rtcSAM3X8.get_minutes() <= 2) && (!onSalmonella)) { // Надо начитать процесс обеззараживания
+		if(ClimateSalmonellaStart(rtcSAM3X8.get_day_of_week(), rtcSAM3X8.get_hours(), rtcSAM3X8.get_minutes(), SALMONELLA_DAY, SALMONELLA_HOUR,
+				onSalmonella, doneSalmonella, rtcSAM3X8.unixtime())) { // Надо начитать процесс обеззараживания
 			startSalmonella = rtcSAM3X8.unixtime();
 			onSalmonella = true;
 			journal.jprintf(" Cycle start salmonella, %.2dC°\n", sTemp[TBOILER].get_Temp());
@@ -932,12 +949,14 @@ boolean HeatPump::boilerAddHeat()
 				else {  // Обычная обработка: только до достижения температуры и сразу выключение
 					onSalmonella = false;
 					startSalmonella = 0;
+					doneSalmonella = rtcSAM3X8.unixtime();
 					journal.jprintf(" Salmonella cycle finished, %.2dC°\n", sTemp[TBOILER].get_Temp());
 					return false;
 				}
 			} else {  // Время вышло, выключаем, и идем дальше по алгоритму
 				onSalmonella = false;
 				startSalmonella = 0;
+				doneSalmonella = rtcSAM3X8.unixtime();
 				journal.jprintf(" Salmonella cycle end, %.2dC°\n", sTemp[TBOILER].get_Temp());
 			}
 		}
@@ -1879,7 +1898,7 @@ void HeatPump::defrost()
       
       // организация задержки перед включением
       if (startDefrost==0) startDefrost=xTaskGetTickCount();               // первое срабатывание датчика - запоминаем время (тики)
-      if (xTaskGetTickCount()-startDefrost<Option.delayDefrostOn*1000)  return; //  Еще рано размораживать
+      if (!Defrost_DelayPassed(xTaskGetTickCount(), startDefrost, Option.delayDefrostOn))  return; //  Еще рано размораживать
       // придется размораживать
        journal.jprintf("Start defrost\n");
        Switch_R4WAY(true);  // охлаждение
@@ -1904,7 +1923,7 @@ void HeatPump::defrost()
   journal.jprintf("Next step, defrost . . .\n");
   // организация задержки перед включением
   if (startDefrost==0) startDefrost=xTaskGetTickCount();                    // первое срабатывание датчика - запоминаем время (тики)// Наступило условие, средняя температура испарителя ниже воздуха, более чем 15С - запоминаем время (тики)
-  if (xTaskGetTickCount()-startDefrost<Option.delayDefrostOn*125)  return;  // Еще рано размораживать
+  if (!Defrost_DelayPassed(xTaskGetTickCount(), startDefrost, Option.delayDefrostOn))  return;  // Еще рано размораживать
   journal.jprintf("Start defrost\n");                                       // Пошла оттайка
 	 // Дальше в зависимости от работает компрессор или нет - это главное условие
 	  if (is_compressor_on())

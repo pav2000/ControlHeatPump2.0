@@ -49,6 +49,28 @@ char* UTimeToStr(uint32_t idt);                       // "12:34:56", НЕ рее
 char* DecodeTimeDate(uint32_t idt, char *ret);        // "hh:mm:ss dd/mm/yyyy", ДОБАВЛЯЕТСЯ в ret
 char* StatDate(uint32_t idt, bool forma, char *ret);  // ДДММГГ (forma=true) или Д/М/ГГГГ, ДОБАВЛЯЕТСЯ в ret
 
+// ---- DateTime.cpp: ответ NTP-сервера ----
+// Разбор пакета NTP (48 байт) в unix-время. Прежде принимался любой UDP-пакет: чужой, короткий, «Kiss-o'-Death»
+// (stratum 0), с признаком несинхронизированных часов сервера, нулевой отметкой - и часы прыгали куда угодно,
+// а за ними сдвигались рабочие времена ТН и перезаписывались часы DS3231.
+enum NtpPacket {
+	NTP_PKT_OK = 0,
+	NTP_PKT_SHORT,        // короче 48 байт
+	NTP_PKT_MODE,         // не ответ сервера (mode != 4)
+	NTP_PKT_KOD,          // stratum 0: Kiss-o'-Death, сервер просит не опрашивать
+	NTP_PKT_UNSYNC,       // LI = 3 или stratum 16 и выше: часы сервера не синхронизированы
+	NTP_PKT_NOTIME,       // нулевая отметка Transmit
+	NTP_PKT_RANGE         // время вне 2024...2099 годов
+};
+NtpPacket Ntp_Parse(const uint8_t *p, int len, uint32_t *unix_s);
+// Принять ли скачок часов с cur на now. Малый скачок (до суток) - всегда. Большой - только если текущие часы
+// явно не выставлены (раньше 2024 года: пустая батарейка, старт до загрузки часов). Иначе скачок на
+// сутки и больше от случайного пакета сдвинул бы календарь ТН, статистику и расписание.
+#define NTP_MAX_JUMP_S   86400UL
+#define NTP_MIN_UNIX     1704067200UL      // 2024-01-01 00:00:00 UTC
+#define NTP_MAX_UNIX     4102444800UL      // 2100-01-01 00:00:00 UTC
+bool Ntp_JumpOk(uint32_t cur, uint32_t now);
+
 // ---- Clock.cpp: читают часы ----
 char* NowTimeToStr(char *buf = NULL);                 // текущее время "xx:xx:xx"
 char* NowDateToStr(char *buf = NULL);                 // текущая дата "xx.xx.xxxx"

@@ -98,6 +98,8 @@ static void sysInfoText(char *strReturn)
 	strcat(strReturn,"Счетчик числа повторных соединений MQTT клиента|");_itoa(Diag.num_resMQTT,strReturn);strcat(strReturn,";");
 	#endif
 	strcat(strReturn,"Счетчик неудачных ping|");_itoa(Diag.num_resPing,strReturn);strcat(strReturn,";");
+	strcat(strReturn,"Чтений сетевого чипа по DMA с таймаутом (должно быть 0)|");_itoa(Diag.num_dmaTimeout,strReturn);strcat(strReturn,";");
+	strcat(strReturn,"Переполнений приёмника SPI при чтении сетевого чипа (должно быть 0)|");_itoa(Diag.num_dmaOverrun,strReturn);strcat(strReturn,";");
 	#ifdef USE_ELECTROMETER_SDM
 	strcat(strReturn,"Счетчик числа ошибок чтения электро-счетчика|");_itoa(HP.dSDM.get_numErr(),strReturn);strcat(strReturn,";");
 	#endif
@@ -1120,7 +1122,9 @@ static int apiAct_save_stats(ApiOut *o, const char *) { return api_save_stats(o)
 static int apiAct_save_prepare_update(ApiOut *o, const char *)
 {
 	if(HP.is_compressor_on()) return AE_BUSY;
+#ifdef EEV_DEF
 	if(HP.dEEV.EEV != -1) HP.dEEV.set_EEV(HP.dEEV.get_maxEEV());      // ЭРВ в максимальное положение
+#endif
 	return api_save_stats(o);
 }
 // Служебные действия страниц «Система», «Задачи», «Журнал», «Modbus»

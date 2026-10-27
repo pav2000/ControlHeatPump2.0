@@ -82,7 +82,13 @@ int8_t sensorTemp::Read()
 				set_Error(err = ERR_ADDRESS, name);
 				return err;
 			} else if(cfg.number == TIN) return OK; // Этот может получать значения от других датчиков
-			else lastTemp = cfg.testTemp; // Если датчик не привязан, то присвоить значение теста
+			else {
+				lastTemp = cfg.testTemp; // Если датчик не привязан, то присвоить значение теста
+				if(!GETBIT(flags, fWarnNoAddr)) {   // один раз на датчик: прежде подмена шла молча
+					SETBIT1(flags, fWarnNoAddr);
+					journal.jprintf("$Warning: sensor %s has no address, test value %.2d is used\n", name, lastTemp);
+				}
+			}
 		} else {
 			{
 				int16_t ttemp;

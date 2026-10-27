@@ -60,6 +60,8 @@ void Message::initMessage(uint8_t web_task)
   dnsUpadateSMS = false;                                                           // Флаг необходимости обновления через dns IP адреса для смс
   dnsUpadateSMTP = false;                                                          // Флаг необходимости обновления через dns IP адреса для smtp
   sendTime = 0;                                                                    // отправок уведомлений не было
+  NotifyQueue_Init(&nq);                                                           // очередь ожидающих пуста
+  lastQueuedMs = pMESSAGE_NONE;
 
   SETBIT0(messageSetting.flags, fMail );                                           // флаг уведомления скидывать на почту
   SETBIT1(messageSetting.flags, fMailAUTH);                                        // флаг необходимости авторизации на почтовом сервере
@@ -314,6 +316,7 @@ void Message::setRetTest(const char *prefix, const char *var, const char *answer
 // и молча теряет хвост, а EthernetClient::write() все равно возвращает полный размер.
 void Message::smtpFlush()
 {
+	// SEM-BORROW: xWebThreadSemaphore - вызывается из sendMail, замок сети там взят
 	uint16_t pos = 0, chunk;
 	while(pos < txLen) {
 		chunk = txLen - pos;
@@ -468,6 +471,7 @@ boolean Message::smtpCmd(const char *cmd, uint32_t timeout)
 // а журнал доступен через веб-морду.
 boolean Message::smtpCmdSecret(const char *cmd, uint32_t timeout)
 {
+	// SEM-BORROW: xWebThreadSemaphore - вызывается из sendMail, замок сети там взят
 	if(!clientMessage.connected()) {
 		setRetMail("Connection lost");
 		smtpCode = 0;
@@ -488,8 +492,8 @@ boolean Message::smtpCmdSecret(const char *cmd, uint32_t timeout)
 // true - сообщение принято (или запрещено), false - сообщение отвергнуто т.к оно уже посылалось (дубль) или внутренняя ошибка
 boolean Message::setMessage(MESSAGE ms, char *c, int p1) // может запускаться из любого потока!!
 {
-  // Проверка на необходимость посылки сообщения
-  if (!(((GETBIT(messageSetting.flags, fMail)) || (GETBIT(messageSetting.flags, fSMS))) && ((messageData.ms != pMESSAGE_TESTMAIL) || (messageData.ms != pMESSAGE_TESTSMS)))) return true;	// посылать ненадо
+  // Проверка на необходимость посылки сообщения: ни почта, ни SMS не разрешены - слать некуда
+  if (!((GETBIT(messageSetting.flags, fMail)) || (GETBIT(messageSetting.flags, fSMS)))) return true;	// посылать ненадо
   // Проверка необходимости отправки уведомления
   if (((GETBIT(messageSetting.flags, fMessageReset)) == 0) && (ms == pMESSAGE_RESET))       return true; // Попытка отправить не разрешенное сообщение, выходим без ошибок
   if (((GETBIT(messageSetting.flags, fMessageError)) == 0) && (ms == pMESSAGE_ERROR))       return true;
@@ -498,29 +502,68 @@ boolean Message::setMessage(MESSAGE ms, char *c, int p1) // может запу�
   if (((GETBIT(messageSetting.flags, fMessageSD)) == 0) && (ms == pMESSAGE_SD))             return true;
   if (((GETBIT(messageSetting.flags, fMessageWarning)) == 0) && (ms == pMESSAGE_WARNING))   return true;
 
-  // Проверка на дублирование сообщения. Тестовые сообщения и сообщения жизни  можно посылать многократно  подряд
-  if ((rtcSAM3X8.unixtime() - sendTime < REPEAT_TIME) && (messageData.ms == ms) && ((ms != pMESSAGE_TESTMAIL) && (ms != pMESSAGE_TESTSMS) && (ms != pMESSAGE_LIFE))) //дублирующие сообщения посылаются с интервалом
-  {
-    return false;
-  } else {
-    JOURNAL("MSG: #%d: %s\n", ms, c);
+  // Решение и запись - под запретом прерываний: функцию зовут задачи разных приоритетов (set_Error из ReadSensor, Web0 при
+  // этом отправляет). Копируется не больше 200 байт - микросекунды. Отправляемое сейчас (messageData) не трогается никогда:
+  // новое уведомление либо занимает messageData, когда отправлять нечего, либо встаёт в очередь.
+  // Дубли: тестовые сообщения и сигнал жизни можно посылать многократно подряд, остальные - с интервалом REPEAT_TIME.
+  const uint32_t now = rtcSAM3X8.unixtime();
+  const bool repeatable = (ms == pMESSAGE_TESTMAIL) || (ms == pMESSAGE_TESTSMS) || (ms == pMESSAGE_LIFE);
+  const uint8_t important = (ms != pMESSAGE_WARNING) && (ms != pMESSAGE_LIFE);   // предупреждения и сигнал жизни вытесняются первыми
+  type_messageData *d = NULL;
+  uint8_t evicted = 0;
+  bool dup, direct = false;
+  uint32_t primask = __get_PRIMASK();
+  __disable_irq();
+  dup = (now - sendTime < REPEAT_TIME) && (lastQueuedMs == ms) && !repeatable;
+  if (!dup) {
+    if (!waitSend) { d = &messageData; direct = true; }
+    else {
+      int8_t s = NotifyQueue_Push(&nq, important, &evicted);
+      if (s >= 0) d = &pend[s];
+    }
   }
+  if (d) {                                                     // место есть: записать текст
+    d->ms = ms;
+    strncpy(d->data, c, sizeof(d->data) - 1);
+    d->data[sizeof(d->data) - 1] = 0;
+    // в сообщение pMESSAGE_TEMP добавить значение температуры
+    if (ms == pMESSAGE_TEMP && strlen(d->data) < sizeof(d->data) - 16) {
+      strcat(d->data, " t=");
+      _dtoa(d->data, p1, 2);
+    }
+    d->p1 = p1;
+    d->number = 0;
+    sendTime = now;                                            // запомнить время отправки
+    lastQueuedMs = ms;
+    if (direct) {                                              // отправлять было нечего: уходит сразу
+      sendRetry = 0;                                           // новое уведомление - счетчик повторов и признак ухода SMS сбрасываются
+      sendRetryTime = 0;
+      smsSent = false;
+      waitSend = true;                                         // выставить флаг необходимости отправки Уведомления
+    }
+  }
+  __set_PRIMASK(primask);
 
-  // Подготовить уведомление
-  messageData.ms = ms;
-  sendTime = rtcSAM3X8.unixtime(); // запомнить время отправки
-  strcpy(messageData.data, c);
-  // в сообщение pMESSAGE_TEMP добавить значение температуры
-  if (ms == pMESSAGE_TEMP) {
-    strcat(messageData.data, " t=");
-    _dtoa(messageData.data, p1, 2);
-  }
-  messageData.p1 = p1;
-  waitSend = true;                // выставить флаг необходимости отправки Уведомления
-  sendRetry = 0;                  // новое уведомление - счетчик повторов и признак ухода SMS сбрасываются
-  sendRetryTime = 0;
-  smsSent = false;
+  if (dup) return false;
+  if (!d) { journal.jprintf("MSG dropped (queue full): #%d: %s\n", ms, c); return false; }
+  JOURNAL("MSG: #%d: %s%s\n", ms, c, direct ? "" : evicted ? " (queued, older dropped)" : " (queued)");
   return true;
+}
+
+// Отправка закончена: следующее ожидающее становится отправляемым. Зовётся из sendMessage (Web0).
+void Message::promotePending()
+{
+  uint32_t primask = __get_PRIMASK();
+  __disable_irq();
+  int8_t s = NotifyQueue_Pop(&nq);
+  if (s >= 0) {
+    memcpy(&messageData, &pend[s], sizeof(messageData));
+    sendRetry = 0;
+    sendRetryTime = 0;
+    smsSent = false;
+    waitSend = true;                                           // отправится на следующем проходе
+  }
+  __set_PRIMASK(primask);
 }
 
 // Установить (сформировать) тестовое письмо, отправка sendMessage();
@@ -620,6 +663,7 @@ boolean Message::sendMessage()  // запуск из 0 потока
   if (retryMail) return false;   // waitSend оставляем взведенным - письмо будет повторено
   waitSend = false;        // Сбросить флаг необходимости отправки уведомления
   sendRetry = 0;
+  promotePending();        // ждавшее своей очереди уведомление становится отправляемым
   return true;             // Послано
 }
 
@@ -927,10 +971,10 @@ boolean Message::sendSMS()
 	}
 
 	// посылка смс
-	strcpy(mailBuf, "GET http://sms.ru/sms/send?api_id=");                    // Начало
-	strcat(mailBuf, messageSetting.sms_p1);                                   // id
+	strcpy(mailBuf, "GET /sms/send?api_id=");                                 // Начало; адрес сервера уходит в заголовке Host
+	url_encode_append(mailBuf, LEN_MAILBUF, messageSetting.sms_p1);       // id
 	strcat(mailBuf, "&to=");
-	strcat(mailBuf, messageSetting.sms_phone);                                // номер
+	url_encode_append(mailBuf, LEN_MAILBUF, messageSetting.sms_phone);    // номер
 	strcat(mailBuf, "&text=");
 	strcat(mailBuf, SendSMSTitle);
 	strcat(mailBuf, "+");
@@ -951,12 +995,15 @@ boolean Message::sendSMS()
 		SemaphoreGive (xWebThreadSemaphore);
 		return false;
 	}
-	// Замена пробела на знак "+" т.к. это запрещенный знак при отправке сообщения.
-	// Заменяем в КОПИИ: сам messageData.data править нельзя, его использует и отправка почты
-	i = strlen(mailBuf);
-	strcat(mailBuf, messageData.data);                       // содержимое
-	for(; mailBuf[i]; i++) if(mailBuf[i] == ' ') mailBuf[i] = '+';
-	strcat(mailBuf, cStrEnd);
+	// Текст кодируется процентным кодированием в КОПИИ (сам messageData.data править нельзя, его использует и отправка почты):
+	// &, %, #, = и кириллица раньше шли в запрос как есть. Запрос - HTTP/1.0 с Host и Connection: close.
+	url_encode_append(mailBuf, LEN_MAILBUF, messageData.data);   // содержимое
+	if(!http_request_tail(mailBuf, LEN_MAILBUF, ADR_SMS_RU)) {
+		strcpy(retSMS, "SMS request too long");
+		clientMessage.stop();
+		SemaphoreGive(xWebThreadSemaphore);
+		return false;
+	}
 	clientMessage.write(mailBuf, strlen(mailBuf));
 
 
@@ -1044,11 +1091,11 @@ boolean Message::sendSMSC()
   strcpy(retSMS, "");         // Обнулить ответ
   if (clientMessage.connect(messageSetting.sms_serviceIP, 80, W5200_SOCK_SYS)) // Соединение по HTTP
   {
-	  JOURNAL("Connect server: %s port: %d\n", messageSetting.sms_service == pSMSC_RU ? ADR_SMS_RU : ADR_SMSC_UA, 80);
+	  JOURNAL("Connect server: %s port: %d\n", messageSetting.sms_service == pSMSC_RU ? ADR_SMSC_RU : ADR_SMSC_UA, 80);
   }
   else
   {
-	  if(!GETBIT(WorkFlags, fWF_SMSSendError)) journal.jprintf("Connect failed: %s port: %d\n", messageSetting.sms_service == pSMSC_RU ? ADR_SMS_RU : ADR_SMSC_UA, 80);
+	  if(!GETBIT(WorkFlags, fWF_SMSSendError)) journal.jprintf("Connect failed: %s port: %d\n", messageSetting.sms_service == pSMSC_RU ? ADR_SMSC_RU : ADR_SMSC_UA, 80);
       strcpy(retSMS, "No connect "); strcat(retSMS, ADR_SMSC_RU);
       clientMessage.stop();
       SETBIT1(WorkFlags, fWF_SMSSendError);
@@ -1057,13 +1104,13 @@ boolean Message::sendSMSC()
   }
 
   // посылка смс
-  if ((messageSetting.sms_service) == pSMSC_RU) strcpy(mailBuf, "GET http://smsc.ru/sys/send.php?login=");         // Начало
-  if ((messageSetting.sms_service) == pSMSC_UA) strcpy(mailBuf, "GET http://smsc.ua/sys/send.php?login=");         // Начало
-  strcat(mailBuf, messageSetting.sms_p1);                                   // login
+  if ((messageSetting.sms_service) == pSMSC_RU) strcpy(mailBuf, "GET /sys/send.php?login=");         // Начало; адрес сервера уходит в заголовке Host
+  if ((messageSetting.sms_service) == pSMSC_UA) strcpy(mailBuf, "GET /sys/send.php?login=");         // Начало; адрес сервера уходит в заголовке Host
+  url_encode_append(mailBuf, LEN_MAILBUF, messageSetting.sms_p1);       // login
   if(messageSetting.sms_p2[0] != '&') strcat(mailBuf, "&psw=");   // пароль без имени параметра; у того, кто вписал его вместе с "&psw=" - как было
   strcat(mailBuf, messageSetting.sms_p2);                                   // password
   strcat(mailBuf, "&phones=");
-  strcat(mailBuf, messageSetting.sms_phone);                                // номер
+  url_encode_append(mailBuf, LEN_MAILBUF, messageSetting.sms_phone);    // номер
   strcat(mailBuf, "&mes=");
   strcat(mailBuf, SendSMSTitle);
   strcat(mailBuf, "+");
@@ -1080,12 +1127,16 @@ boolean Message::sendSMSC()
     case pMESSAGE_WARNING : strcat(mailBuf, "WARNING+"); break;                                                          // Уведомление "Прочие уведомления"
     default               : strcat(mailBuf, "ERROR+TYPE+"); clientMessage.stop(); SemaphoreGive(xWebThreadSemaphore); return false; break;    // ответ содержит ошибки
   }
-  // Замена пробела на знак "+" т.к. это запрещенный знак при отправке сообщения.
-  // Заменяем в КОПИИ: сам messageData.data править нельзя, его использует и отправка почты
-  i = strlen(mailBuf);
-  strcat(mailBuf, messageData.data);                       // содержимое
-  for (; mailBuf[i]; i++) if (mailBuf[i] == ' ') mailBuf[i] = '+';
-  strcat(mailBuf, cStrEnd);  clientMessage.write(mailBuf, strlen(mailBuf));
+  // Текст кодируется процентным кодированием в КОПИИ (сам messageData.data править нельзя, его использует и отправка почты).
+  // Запрос - HTTP/1.0 с Host и Connection: close. Пароль (sms_p2) остаётся как введён: в нём допустимо вписать "&psw=".
+  url_encode_append(mailBuf, LEN_MAILBUF, messageData.data);   // содержимое
+  if (!http_request_tail(mailBuf, LEN_MAILBUF, messageSetting.sms_service == pSMSC_UA ? ADR_SMSC_UA : ADR_SMSC_RU)) {
+    strcpy(retSMS, "SMS request too long");
+    clientMessage.stop();
+    SemaphoreGive(xWebThreadSemaphore);
+    return false;
+  }
+  clientMessage.write(mailBuf, strlen(mailBuf));
 
 
   // Ожидание и получение ответа

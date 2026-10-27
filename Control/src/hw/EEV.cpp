@@ -258,6 +258,12 @@ static uint8_t ruleToOverheatRule(RULE_EEV rule)
 	}
 }
 
+// Датчики, которые обязаны быть привязаны для текущего правила (OHN_*): 0, если ЭРВ нет в конфигурации
+uint8_t devEEV::sensors_needed()
+{
+	return get_present() ? Overheat_SensorsNeeded(ruleToOverheatRule(_data.ruleEEV)) : 0;
+}
+
 // Вычислить текущий перегрев, вычисляется каждое измерение (опрос датчиков)
 // На входе флаг нагрева или охлаждения
 // Если ЭРВ запрещена в конфигурации, то перегрев не вычисляется =0 и сразу выходим

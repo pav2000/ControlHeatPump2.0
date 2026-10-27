@@ -41,6 +41,8 @@ void spiSend(const uint8_t* buf, size_t len) {
 }
 //==============================================================================
 #elif  USE_NATIVE_SAM3X_SPI  // DMA SPI SAM3 Дальше варианта с ДМА
+volatile uint32_t spiDmaTimeouts = 0;
+volatile uint32_t spiDmaOverruns = 0;
   #define USE_SAM3X_DMAC 3   //3  Use SAM3X DMAC if nonzero
   #define USE_SAM3X_BUS_MATRIX_FIX 0 // Use extra Bus Matrix arbitration fix if nonzero
   #define SAM3X_DMA_TIMEOUT 50 //100  Time in ms for DMA receive timeout
@@ -195,10 +197,11 @@ uint8_t spiRec(uint8_t* buf, size_t len) {
       dmac_channel_disable(SPI_DMAC_RX_CH);
       dmac_channel_disable(SPI_DMAC_TX_CH);
       rtn = 2;
+      spiDmaTimeouts++;                               // раньше таймаут был неотличим от успеха: вызывающий возвращаемое значение не смотрит
       break;
     }
   }
-  if (pSpi->SPI_SR & SPI_SR_OVRES) rtn |= 1;
+  if (pSpi->SPI_SR & SPI_SR_OVRES) { rtn |= 1; spiDmaOverruns++; }
 #else  // USE_SAM3X_DMAC
   for (size_t i = 0; i < len; i++) {
     pSpi->SPI_TDR = 0XFF;

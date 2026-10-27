@@ -146,7 +146,7 @@ struct type_DateTimeHP
 //  Работа с отдельными флагами type_NetworkHP
 #define fDHCP         0                  // флаг Использование DHCP
 #define fPass         1                  // флаг Использование паролей
-#define fInitW5200    2                  // флаг Ежеминутный контроль SPI для сетевого чипа
+#define fInitW5200    2                  // флаг Контроль связи с чипом раз 10 сек. (самотест регистров W5500)
 #define fNoAck        4                  // флаг Не ожидать ответа ACK
 #define fNoPing       5                  // флаг Запрет пинга контроллера
 // Устаревшие биты, значения переехали в флаги отладки (DebugFlags.h: WERR, WFULL).
@@ -609,6 +609,7 @@ class HeatPump
     uint32_t startDefrost;                // время срабатывания датчика разморозки
     uint8_t  defrostFails;                // сколько оттаек подряд не закончилось за DEFROST_WAIT_MAX
     uint32_t startSalmonella;             // время начала обеззараживания
+    uint32_t doneSalmonella;              // время окончания прошлого цикла обеззараживания (0 - не было), не сохраняется
     uint32_t command_completed;			  // Время отработки команды
     boolean  compressor_in_pause;         // Компрессор в паузе
        
@@ -633,6 +634,7 @@ class HeatPump
 // Тепловой насос. Определён в Control.ino. Конструктора нет, инициализация -
 // HP.initHeatPump() в setup().
 extern HeatPump HP;
+bool sensor_usable(sensorTemp &s);   // датчик есть в конфигурации и привязан (адрес или удалённый датчик); в DEMO всегда годен, см. HeatPump.cpp
 
 // Лежит здесь: always_inline, и из отдельной единицы
 // трансляции её иначе не позвать - компоновщику нечего вызывать. Зовут её

@@ -91,8 +91,9 @@ void  HeatPump::updateChart()
 	}
 	for(uint8_t i = 0; i < sizeof(ChartsConstSetup) / sizeof(ChartsConstSetup[0]); i++) {
 		uint8_t j = sizeof(ChartsModSetup) / sizeof(ChartsModSetup[0]) + i;
-		if(ChartsConstSetup[i].object == STATS_OBJ_Overheat) Charts[j].add_Point(dEEV.get_Overheat());
+		if(false) {}                                                   // начало цепочки else if: ветки ЭРВ ниже существуют только с EEV_DEF
 #ifdef EEV_DEF
+		else if(ChartsConstSetup[i].object == STATS_OBJ_Overheat) Charts[j].add_Point(dEEV.get_Overheat());
 #ifdef EEV_PREFER_PERCENT
 		else if(ChartsConstSetup[i].object == STATS_OBJ_EEV) Charts[j].add_Point(dEEV.calc_percent(dEEV.get_EEV()));
 #else

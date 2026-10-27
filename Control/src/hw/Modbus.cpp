@@ -198,7 +198,7 @@ xErr:
 // Получить параметр счетчика в виде строки
 char* devSDM::get_paramSDM(char *var, char *ret)           
 {
-	static float tmp;
+	float tmp = 0;                                   // не static: функцию зовут четыре веб-потока, общий tmp перемешивал им ответы
 
 	if(strcmp(var,sdm_NAME)==0){         return strcat(ret,(char*)name);                                         }else      // Имя счетчика
 	if(strcmp(var,sdm_NOTE)==0){         return strcat(ret,(char*)note);                                         }else      // Описание счетчика
@@ -341,6 +341,7 @@ int8_t devModbus::initModbus()
 int8_t devModbus::transact(const char *who, uint8_t id, MB_FUNC func, uint16_t cmd,
                            uint16_t num, uint16_t *rx, const uint16_t *tx)
 {
+	if(!xModbusSemaphore) return err = ERR_NO_MODBUS;            // замок создаётся только при наличии Modbus (Control.ino); без него захват пустого замка - assert ядра
 	if(SemaphoreTake(xModbusSemaphore, (MODBUS_TIME_WAIT / portTICK_PERIOD_MS)) == pdFALSE) // Захват мютекса потока или ОЖИДАНИЕ MODBUS_TIME_WAIT
 	{
 		journal.jprintf((char*) cErrorMutex, who, MutexModbusBusy);

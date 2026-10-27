@@ -114,7 +114,7 @@ boolean sendNarodMon(boolean debug)
          #else
           strcat(HP.clMQTT.topic,HP.sTemp[TEVAOUTG].get_name());
           if(HP.sTemp[TEVAOUTG].get_present()) ftoa(HP.clMQTT.temp,(float)HP.sTemp[TEVAOUTG].get_Temp()/100.0,1);
-          else   strcat(topic,"skip1 0");
+          else   strcpy(HP.clMQTT.temp,"skip1 0");          // датчика нет: в значение, а не в имя топика (topic здесь не объявлен)
          #endif
          if (HP.clMQTT.sendTopic(true,debug,false)) {if (debug) journal.jprintf((char*)MQTTDebugStr, HP.clMQTT.topic,HP.clMQTT.temp);} else return false; 
 
@@ -134,7 +134,7 @@ boolean sendNarodMon(boolean debug)
            #else
              strcat(HP.clMQTT.topic,HP.sTemp[TEVAING].get_name());
              if(HP.sTemp[TEVAING].get_present()) ftoa(HP.clMQTT.temp,(float)HP.sTemp[TEVAING].get_Temp()/100.0,1);
-             else   strcat(topic,"skip2 0");
+             else   strcpy(HP.clMQTT.temp,"skip2 0");
            #endif  
              if (HP.clMQTT.sendTopic(true,debug,false)) {if (debug) journal.jprintf((char*)MQTTDebugStr, HP.clMQTT.topic,HP.clMQTT.temp);} else return false; 
             
@@ -700,7 +700,7 @@ boolean  sendThingSpeak(boolean debug)
      _itoa(HP.dEEV.get_EEV(),HP.clMQTT.topic);
      #else  // Вместо положения ЭРВ посылаем температуру гликоля
      if(HP.sTemp[TEVAING].get_present()) strcat(HP.clMQTT.topic,ftoa(HP.clMQTT.temp,(float)HP.sTemp[TEVAING].get_Temp()/100.0,1));
-     else   strcat(topic,cZero);
+     else   strcat(HP.clMQTT.topic,cZero);
      #endif
      
      strcat(HP.clMQTT.topic,"&field8=");

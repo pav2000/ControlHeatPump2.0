@@ -595,6 +595,54 @@ SettingsHead settings_head_check(uint16_t size, uint8_t ver, uint8_t max_ver, ui
 	return SETHEAD_OK;
 }
 
+uint32_t flow_freq_mhz(uint32_t edges, uint32_t dt_ms)
+{
+	if(!dt_ms) return 0;
+	uint64_t f = (uint64_t) edges * 500000ULL / dt_ms;
+	return f > 0xFFFFFFFFULL ? 0xFFFFFFFFUL : (uint32_t) f;
+}
+
+int16_t fc_gen_freq_fix(int16_t stored, int16_t def)
+{
+	return stored > 0 ? stored : def;
+}
+
+uint16_t url_encode_append(char *dst, uint16_t cap, const char *src)
+{
+	static const char hex[] = "0123456789ABCDEF";
+	uint16_t n = 0;
+	while(n < cap && dst[n]) n++;                                // длина уже лежащего
+	if(n >= cap) { if(cap) dst[cap - 1] = 0; return cap ? cap - 1 : 0; }
+	for(; *src; src++) {
+		uint8_t c = (uint8_t) *src;
+		bool plain = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~';
+		uint8_t need = (plain || c == ' ') ? 1 : 3;
+		if(n + need + 1 > cap) break;                            // нужен ещё байт под нуль; символ не режем
+		if(plain) dst[n++] = (char) c;
+		else if(c == ' ') dst[n++] = '+';
+		else { dst[n++] = '%'; dst[n++] = hex[c >> 4]; dst[n++] = hex[c & 15]; }
+	}
+	dst[n] = 0;
+	return n;
+}
+
+bool http_request_tail(char *dst, uint16_t cap, const char *host)
+{
+	static const char a[] = " HTTP/1.0\r\nHost: ", b[] = "\r\nConnection: close\r\n\r\n";
+	uint16_t n = strlen(dst), h = strlen(host);
+	if((uint32_t) n + (sizeof(a) - 1) + h + (sizeof(b) - 1) + 1 > cap) return false;
+	memcpy(dst + n, a, sizeof(a) - 1); n += sizeof(a) - 1;
+	memcpy(dst + n, host, h); n += h;
+	memcpy(dst + n, b, sizeof(b));                               // вместе с нулём
+	return true;
+}
+
+bool settings_len_ok(uint16_t size, int32_t avail)
+{
+	if(size < 2) return false;                                  // меньше контрольной суммы: size -= 2 заворачивается
+	return (int32_t) size + 2 <= avail;                         // поле длины + size байт обязаны уместиться в принятое
+}
+
 void settings_scan(const uint8_t *p, const uint8_t *p_max, uint16_t end_tag, uint16_t max_tag, SettingsScan *s)
 {
 	memset(s, 0, sizeof(*s));

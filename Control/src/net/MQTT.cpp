@@ -399,6 +399,7 @@ return  w5200_MQTT.connected();
 const char* NoClosed={"Problem: W5200_SOCK_SYS sock is not closed, SR=%s\n"};
 boolean clientMQTT::closeSockSys(boolean debug)
 {
+	// SEM-BORROW: xWebThreadSemaphore - обращение к чипу под замком сети, который держит вызывающий (см. recoverNARMON)
 uint8_t x, sr;
 sr = W5100.readSnSR(W5200_SOCK_SYS);                                                   // Прочитать статус сокета
 if(sr==SnSR::CLOSED) return true;                                                      // Сокет уже закрыт выходим

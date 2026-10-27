@@ -260,7 +260,7 @@ void Watchdog_Supervise(uint32_t now_ms)
 	// таблица по всем задачам - в веб-диагностике, get_sysWDT.
 	for(uint8_t i = 0; records && i < WDT_TASK_COUNT; i++) {
 		if(!(records & (1UL << i))) continue;
-		if(wdtTasks[i].max_silence_ms * 2 < wdtTasks[i].limit_ms) continue;
+		if(!wdtTasks[i].limit_ms || wdtTasks[i].max_silence_ms * 2 < wdtTasks[i].limit_ms) continue;   // предел 0 - задача не наблюдается
 		journal.jprintf_time("WDT: %s silent %.1d of %.1d s\n", wdtNames[i],
 		                     (int)(wdtTasks[i].max_silence_ms / 100),
 		                     (int)(wdtTasks[i].limit_ms / 100));
@@ -778,7 +778,7 @@ x_I2C_init_std_message:
 	// 10. Сетевые настройки
 	journal.jprintf("8. Setting Network . . .\n");
 	if(initW5200(true)) {   // Инициализация сети с выводом инфы в консоль
-		W5100.getMACAddress((uint8_t *)Socket[0].outBuf);
+		W5100.getMACAddress((uint8_t *)Socket[0].outBuf);   // SEM-OK: setup, планировщик ещё не запущен
 		journal.jprintf(" MAC: %s\n", MAC2String((uint8_t *)Socket[0].outBuf));
 	}
 	digitalWriteDirect(PIN_BEEP,LOW);          // Выключить пищалку
@@ -939,9 +939,17 @@ x_I2C_init_std_message:
 		Watchdog_Init(&wdtTasks[WDT_ReadSensor], 30000,  now);  // период 2 с, внутри ожидание DS18B20 и SDM
 		Watchdog_Init(&wdtTasks[WDT_ServiceHP],  10000,  now);  // период 50 мс / 1 с
 		Watchdog_Init(&wdtTasks[WDT_UpdateHP],   120000, now);  // период 5-10 с, внутри пуск компрессора с задержками
+#ifdef EEV_DEF
 		Watchdog_Init(&wdtTasks[WDT_UpdateEEV],  60000,  now);  // период 1-4 с
+#else
+		Watchdog_Init(&wdtTasks[WDT_UpdateEEV],  0,      now);  // без ЭРВ задач нет: предел 0 = не наблюдается (иначе перезагрузка каждую минуту)
+#endif
 		Watchdog_Init(&wdtTasks[WDT_CommandHP],  120000, now);  // событийная, runCommand бывает долгой
+#ifdef EEV_DEF
 		Watchdog_Init(&wdtTasks[WDT_StepperEEV], 60000,  now);  // событийная
+#else
+		Watchdog_Init(&wdtTasks[WDT_StepperEEV], 0,      now);  // без ЭРВ задач нет: не наблюдается
+#endif
 		Watchdog_Init(&wdtTasks[WDT_Web0],       120000, now);  // почта, DHCP, MQTT - законно долгие
 		Watchdog_Init(&wdtTasks[WDT_Web1],       60000,  now);  // отдача файлов с SD
 		Watchdog_Init(&wdtTasks[WDT_Web2],       60000,  now);
@@ -951,7 +959,9 @@ x_I2C_init_std_message:
 		wdtHandles[WDT_UpdateHP]   = &Tasks.xHandleUpdate;
 		wdtHandles[WDT_UpdateEEV]  = &Tasks.xHandleUpdateEEV;
 		wdtHandles[WDT_CommandHP]  = &Tasks.xHandleUpdateCommand;
+#ifdef EEV_DEF
 		wdtHandles[WDT_StepperEEV] = &HP.dEEV.stepperEEV.xHandleStepperEEV;
+#endif
 		wdtHandles[WDT_Web0]       = &Tasks.xHandleUpdateWeb0;
 		wdtHandles[WDT_Web1]       = &Tasks.xHandleUpdateWeb1;
 		wdtHandles[WDT_Web2]       = &Tasks.xHandleUpdateWeb2;
@@ -1031,7 +1041,6 @@ void vWeb0(void *)
 	static unsigned long mqttt=0;
 #endif
 	static boolean active = false;  // ФЛАГ Одно дополнительное действие за один цикл - распределяем нагрузку, если действие проделано то active = false и новый цикл
-	static boolean network_last_link = true;
 
 	HP.timeNTP = thisTime = xTaskGetTickCount();        // В первый момент не обновляем
 	for(;;)
@@ -1090,20 +1099,14 @@ void vWeb0(void *)
 					active = false;
 				}
 			}
-			// 4. Проверка связи с чипом
-			if((HP.get_fInitW5200()) && (thisTime - iniW5200 > 60 * 1000UL) && (active)) // проверка связи с чипом сети раз в минуту
+			// 4. Контроль связи с чипом раз в NETCHIP_TEST_S секунд (галочка net.init): регистры чипа против снимка после инициализации, см. netChipSelfTest.
+			// Прежняя проверка читала бит линка PHYCFGR раз в минуту БЕЗ замка шины и не видела чип, у которого линк горит, а IP-стек мёртв.
+			if((HP.get_fInitW5200()) && (thisTime - iniW5200 >= NETCHIP_TEST_S * 1000UL) && (active))
 			{
 				WEB_STORE_DEBUG_INFO(5);
 				iniW5200 = thisTime;
 				if(!HP.NO_Power) {
-					boolean lst = linkStatusWiznet(false);
-					if(!lst || !network_last_link) {
-						if(!lst) journal.jprintf_time("%s no link[%02X], resetting . . .\n", nameWiznet, W5100.readPHYCFGR());
-						HP.sendCommand(pNETWORK);       // Если связь потеряна то подать команду на сброс сетевого чипа
-						Diag.num_resW5200++;              // Добавить счетчик инициализаций
-						active = false;
-					}
-					network_last_link = lst;
+					if(netChipSelfTest()) active = false;          // чип сброшен - остальные дела этого цикла отложены
 				}
 			}
 			// 5.Обновление времени 1 раз в сутки или по запросу (HP.timeNTP==0)
@@ -1319,7 +1322,7 @@ void vReadSensor(void *)
 #endif
 #ifdef SEVA  //Если определен лепестковый датчик протока - это переливная схема ТН - надо контролировать проток при работе
  	if(HP.dRelay[RPUMPI].get_Relay())                                                                                             // Только если включен насос геоконтура  (PUMP_IN)
-		if (HP.sInput[SEVA].get_Input()==SEVA_OFF) {set_Error(ERR_SEVA_FLOW,(char*)"SEVA"); return;}                              // Выход по ошибке отсутствия протока
+		if (HP.sInput[SEVA].get_Input()==SEVA_OFF) set_Error(ERR_SEVA_FLOW,(char*)"SEVA");                                        // Нет протока: ошибка останавливает ТН. НЕ return - это тело задачи, возврат из неё аварийный выход FreeRTOS
 #endif
 
 		//  Синхронизация часов с I2C часами если стоит соответсвующий флаг
@@ -1345,11 +1348,12 @@ void vReadSensor(void *)
 		if(HP.message.get_fMessageTemp()) {
 			if(countTEMP > TIME_MESSAGE_TEMP) {
 				countTEMP = 0;
-				if(HP.message.get_mTIN() > HP.sTemp[TIN].get_Temp()) HP.message.setMessage(pMESSAGE_TEMP,
+				// Только по исправному и привязанному датчику: у отсутствующего Temp = 0, то есть «холодно» без причины
+				if(sensor_usable(HP.sTemp[TIN]) && HP.message.get_mTIN() > HP.sTemp[TIN].get_Temp()) HP.message.setMessage(pMESSAGE_TEMP,
 						(char*) "Критическая температура в доме,", HP.sTemp[TIN].get_Temp());
-				if(HP.message.get_mTBOILER() > HP.sTemp[TBOILER].get_Temp()) HP.message.setMessage(pMESSAGE_TEMP,
+				if(sensor_usable(HP.sTemp[TBOILER]) && HP.message.get_mTBOILER() > HP.sTemp[TBOILER].get_Temp()) HP.message.setMessage(pMESSAGE_TEMP,
 						(char*) "Критическая температура ГВС,", HP.sTemp[TBOILER].get_Temp());
-				if(HP.message.get_mTCOMP() < HP.sTemp[TCOMP].get_Temp()) HP.message.setMessage(pMESSAGE_TEMP,
+				if(sensor_usable(HP.sTemp[TCOMP]) && HP.message.get_mTCOMP() < HP.sTemp[TCOMP].get_Temp()) HP.message.setMessage(pMESSAGE_TEMP,
 						(char*) "Критическая температура компрессора,", HP.sTemp[TCOMP].get_Temp());
 			} else countTEMP += TIME_READ_SENSOR / 100; // в 0.1 сек
 		}
@@ -1753,7 +1757,6 @@ void vServiceHP(void *)
 	static uint32_t NextionTick = 0;
 #endif
 	static uint8_t  task_updstat_countm = rtcSAM3X8.get_minutes();
-	static uint8_t  task_dailyswitch_countm = task_updstat_countm;
 	static TickType_t timer_sec = xTaskGetTickCount(), timer_idle = 0, timer_total = 0;
 	static uint16_t restart_cnt;
 	static uint16_t pump_in_pause_timer = 0;
@@ -1764,6 +1767,13 @@ void vServiceHP(void *)
 		if(t - timer_sec >= 1000) { // 1 sec
 			Watchdog_Supervise(t);
 			if(GPBR->SYS_GPBR[7] && t > FAULT_CLEAR_S * 1000UL) GPBR->SYS_GPBR[7] = 0;   // проработали без аварий - счёт сбросов подряд с нуля
+			{	// Счётчик повторных пусков: час работы без ошибок - попытки снова все (раньше обнулялся только ручным пуском)
+				static RepeatWatch repeat_watch = { 0 };
+				if(Error_RepeatReset(repeat_watch, HP.num_repeat, HP.get_State() == pWORK_HP && HP.get_errcode() == OK, t, REPEAT_RESET_S * 1000UL)) {
+					journal.jprintf("Repeat start counter reset: %d attempts used, %d h without errors\n", HP.num_repeat, REPEAT_RESET_S / 3600);
+					HP.num_repeat = 0;
+				}
+			}
 #ifdef TEST_KERNEL_FAULT
 			if(t > 120000UL) configASSERT(0);                                            // стенд: провал configASSERT -> errorBlink -> аварийный хук
 #endif
@@ -1806,16 +1816,6 @@ void vServiceHP(void *)
 					HP.updateCount();                                       // Обновить счетчики моточасов
 					STORE_DEBUG_INFO(74);
 					if(task_updstat_countm == 59) HP.save_motoHour();		// сохранить раз в час
-				} else if(m != task_dailyswitch_countm) {
-					task_dailyswitch_countm = m;
-					uint32_t tt = rtcSAM3X8.get_hours() * 100 + m;
-					for(uint8_t i = 0; i < DAILY_SWITCH_MAX; i++) {
-						if(HP.Prof.DailySwitch[i].Device == 0) break;
-						uint32_t st = HP.Prof.DailySwitch[i].TimeOn * 10;
-						uint32_t end = HP.Prof.DailySwitch[i].TimeOff * 10;
-						HP.dRelay[HP.Prof.DailySwitch[i].Device].set_Relay(((end >= st && tt >= st && tt <= end) || (end < st && (tt >= st || tt <= end)))
-								&& !HP.NO_Power && !GETBIT(HP.Option.flags, fBackupPower) ? fR_StatusDaily : -fR_StatusDaily);
-					}
 				}
 				STORE_DEBUG_INFO(75);
 			}
@@ -1852,8 +1852,7 @@ void vServiceHP(void *)
 			NextionTick = xTaskGetTickCount();
 		}
 #endif
-		t = GetTickCount() - timer_sec;
-		vTaskDelay(t < NEXTION_READ ? t : NEXTION_READ); // задержка чтения уменьшаем загрузку процессора
+		vTaskDelay(NEXTION_READ / portTICK_PERIOD_MS); // задержка чтения уменьшаем загрузку процессора. Прежде считалась разность GetTickCount() (мс от включения) и timer_sec (тики планировщика): шкалы разные, результат всегда был NEXTION_READ
 	}
 	vTaskDelete(NULL);
 }

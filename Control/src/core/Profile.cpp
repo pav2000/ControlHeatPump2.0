@@ -655,19 +655,6 @@ char*   Profile::get_paramProfile(char *var, char *ret)
 	if(strcmp(var,prof_CRC16_PROFILE)==0)  { return strcat(ret,uint16ToHex(crc16));                           }else
 	if(strcmp(var,prof_NUM_PROFILE)==0)    { return _itoa(I2C_PROFIL_NUM,ret);                                }else
 	if(strcmp(var,prof_TBL_PROFILE)==0)    { return get_table(ret);                                           }else
-	if(strncmp(var, prof_DailySwitch, sizeof(prof_DailySwitch)-1) == 0) {
-		var += sizeof(prof_DailySwitch)-1;
-		uint8_t i = *(var + 1) - '0';
-		if(i >= DAILY_SWITCH_MAX) return false;
-		if(*var == prof_DailySwitchDevice) {
-		 _itoa(DailySwitch[i].Device, ret);
-		} else if(*var == prof_DailySwitchOn) {
-		 m_snprintf(ret + m_strlen(ret), 32, "%02d:%d0", DailySwitch[i].TimeOn / 10, DailySwitch[i].TimeOn % 10);
-		} else if(*var == prof_DailySwitchOff) {
-		 m_snprintf(ret + m_strlen(ret), 32, "%02d:%d0", DailySwitch[i].TimeOff / 10, DailySwitch[i].TimeOff % 10);
-		}
-		return ret;
-	} else
 		return  strcat(ret,(char*)cInvalid);
 }
 

@@ -40,6 +40,27 @@ static const char FORMAT_DATE_STR[] = "%02d/%02d/%04d";
 // делается в Clock.cpp по #ifdef SENSOR_IP. Здесь его делать нельзя -
 // модуль не видит Config.h, и такой #ifdef молча выбрал бы не ту ветку
 // (ровно так уже ломался Freon на R4WAY).
+NtpPacket Ntp_Parse(const uint8_t *p, int len, uint32_t *unix_s)
+{
+	if(len < 48) return NTP_PKT_SHORT;
+	if((p[0] & 7) != 4) return NTP_PKT_MODE;
+	if(p[1] == 0) return NTP_PKT_KOD;
+	if((p[0] >> 6) == 3 || p[1] >= 16) return NTP_PKT_UNSYNC;
+	uint32_t ntp = ((uint32_t) p[40] << 24) | ((uint32_t) p[41] << 16) | ((uint32_t) p[42] << 8) | p[43];
+	if(ntp == 0) return NTP_PKT_NOTIME;
+	const uint64_t NTP_TO_UNIX = 2208988800ULL;                         // секунд от 1900 до 1970
+	if((uint64_t) ntp < NTP_TO_UNIX + NTP_MIN_UNIX || (uint64_t) ntp >= NTP_TO_UNIX + NTP_MAX_UNIX) return NTP_PKT_RANGE;
+	*unix_s = (uint32_t) ((uint64_t) ntp - NTP_TO_UNIX);                // вычитание в 64 битах: в 32 битных меньшее значение заворачивалось в 2036 год
+	return NTP_PKT_OK;
+}
+
+bool Ntp_JumpOk(uint32_t cur, uint32_t now)
+{
+	if(cur < NTP_MIN_UNIX) return true;                                 // часы не выставлены
+	uint32_t d = now > cur ? now - cur : cur - now;
+	return d <= NTP_MAX_JUMP_S;
+}
+
 char* TimeIntervalToStrCompact(uint32_t idt, char *ret, uint8_t fSec)
 {
 	uint8_t Hour, Min, Sec = 0;

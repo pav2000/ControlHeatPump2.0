@@ -43,7 +43,7 @@ struct ProfileSlot
     type_settingHP   Cool;
     type_settingHP   Heat;
     type_boilerHP    Boiler;
-    type_DailySwitch DailySwitch[DAILY_SWITCH_MAX];
+    type_DailySwitch DailySwitch[DAILY_SWITCH_MAX];   // НЕ ИСПОЛЬЗУЕТСЯ: ежесуточное включение реле удалено, поле хранится ради формата EEPROM
 };
 
 class Profile                         // Класс профиль
@@ -54,7 +54,7 @@ class Profile                         // Класс профиль
     type_settingHP Cool;                                    // Настройки для режима охлаждение
     type_settingHP Heat;                                    // Настройки для режима отопления
     type_boilerHP Boiler;                                   // Настройка бойлера
-	type_DailySwitch DailySwitch[DAILY_SWITCH_MAX]; 		// дневное периодическое включение
+	type_DailySwitch DailySwitch[DAILY_SWITCH_MAX]; 		// НЕ ИСПОЛЬЗУЕТСЯ (функция удалена), хранится ради формата EEPROM
     
      // Функции работы с профилем
     void initProfile();                                     // инициализация профиля

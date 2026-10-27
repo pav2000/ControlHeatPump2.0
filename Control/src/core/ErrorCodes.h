@@ -227,6 +227,74 @@ bool     Fault_NoAutoStart(uint32_t gpbr); // отменить автопуск 
 // Уровень ноги, выключающий реле, - тот же, что ставят devRelay::initRelay и set_Relay(выкл).
 // Флаги сборки передаются параметрами: ErrorCodes не видит Config.h.
 bool     Fault_RelayOffLevel(bool relay_invert, bool r4way_invert, bool is_r4way);
+
+// ---- Сторож сетевого чипа W5500 ----
+// Чип дважды замолкал (ping и ARP не отвечали) при живом PHY: светодиоды линка мигали, а проверка «бит LINK раз в минуту» ничего не
+// видела. Теперь раз в NETCHIP_TEST_S секунд читаются регистры чипа и сверяются со снимком, снятым сразу после успешной инициализации
+// (initW5200). Расхождение - сброс и инициализация заново. Решения - чистые функции, проверяются на хосте (tests/test_errorcodes.cpp).
+struct NetChipRegs {
+	uint8_t version;      // VERSIONR: у W5500 всегда 4; 0x00/0xFF - чип не отвечает или шина мусорит
+	uint8_t mode;         // MR
+	uint8_t phy;          // PHYCFGR, бит 0 - линк
+	uint8_t mac[6];       // SHAR
+	uint8_t ip[4];        // SIPR
+	uint8_t gw[4];        // GAR
+	uint8_t mask[4];      // SUBR
+};
+enum NETCHIP_FAULT : uint8_t {
+	NCF_NONE = 0,
+	NCF_VERSION,          // версия не та: чип не отвечает или чтение испорчено
+	NCF_MODE,             // регистр режима изменился
+	NCF_MAC,              // MAC не тот
+	NCF_IP,               // IP не тот (в том числе 0.0.0.0 после сброса чипа в значения по умолчанию)
+	NCF_GATEWAY,
+	NCF_MASK,
+	NCF_LINK,             // нет линка (кабель)
+	NCF_NOINIT,           // чип ещё ни разу не был успешно инициализирован (снимка нет)
+	NCF_PING              // не прошёл ping внешнего хоста (4 попытки подряд уже были): подтверждён сразу
+};
+#define NETCHIP_TEST_S     10     // период самотеста, секунд
+#define NETCHIP_FAILS      2      // расхождений подряд до сброса (кроме NCF_PING)
+#define NETCHIP_MIN_GAP_S  30     // не чаще одного сброса за это время
+#define NETCHIP_MANY       5      // столько сбросов за NETCHIP_WINDOW_S - «много»: однократное уведомление, пауза растёт
+#define NETCHIP_SLOW_GAP_S 300    // пауза между сбросами, когда их «много»
+#define NETCHIP_WINDOW_S   3600
+// Первое расхождение с базой по приоритету (VERSION > MODE > MAC > IP > GATEWAY > MASK > LINK), NCF_NONE - всё сошлось.
+NETCHIP_FAULT NetChip_Check(const NetChipRegs &got, const NetChipRegs &base);
+struct NetChipWatch {
+	uint8_t  fails;           // расхождений подряд
+	uint8_t  recoveries;      // сбросов в текущем окне
+	bool     warned;          // уведомление в этом окне уже было
+	bool     ever;            // сброс уже был
+	uint32_t last_recover_s;  // момент последнего сброса
+	uint32_t window_start_s;  // начало окна подсчёта сбросов
+};
+enum NETCHIP_ACTION : uint8_t { NCA_NONE, NCA_RECOVER, NCA_RECOVER_NOTIFY };
+static inline void NetChip_Init(NetChipWatch *w) { w->fails = 0; w->recoveries = 0; w->warned = false; w->ever = false; w->last_recover_s = 0; w->window_start_s = 0; }
+// Решение по результату очередного замера. now_s - любые монотонные секунды. NCA_RECOVER_NOTIFY - сброс И однократное уведомление «сбросов слишком много».
+NETCHIP_ACTION NetChip_Decide(NetChipWatch *w, NETCHIP_FAULT fault, uint32_t now_s);
+
+// ---- Состояние контроллера SPI0 ----
+// SPI0 общий у W5500 (свой драйвер с DMA), SD (SdFat) и флеша (SerialFlash через библиотеку Arduino SPI); все трое используют канал 3
+// и переписывают его регистры (режим MR целиком у SdFat и W5500, CSR3 у всех), а драйвер W5500 прописывает конфигурацию только при
+// W5100.init(). Пока режимы совместимы, это работает; проверка ловит случай, когда чья-то настройка увела SPI0 с общей конфигурации.
+#define SPI_ANOM_MASTER   0x01   // MR: не ведущий
+#define SPI_ANOM_VARIABLE 0x02   // MR: переменный выбор периферии (PS=1), драйвер W5500 пишет TDR без номера канала
+#define SPI_ANOM_CHANNEL  0x04   // MR: выбран не канал 3
+#define SPI_ANOM_MODE     0x08   // CSR3: не режим 0 (CPOL=1 или NCPHA=0)
+#define SPI_ANOM_BITS     0x10   // CSR3: не 8 бит
+#define SPI_ANOM_SCBR     0x20   // CSR3: делитель вне 2...8 (тактовая выше 42 МГц или ниже 10 МГц)
+uint8_t Spi0_Check(uint32_t mr, uint32_t csr3);
+
+// Обнуление счётчика повторных пусков (num_repeat). Прежде он обнулялся только ручным
+// пуском и перезагрузкой: за месяцы работы nStart разнесённых во времени эпизодических
+// ошибок останавливали ТН насовсем. Теперь после REPEAT_RESET_S непрерывной работы
+// (pWORK_HP) без ошибки счёт начинается заново. Время - монотонные тики, а не часы:
+// NTP не сдвигает окно. Окно перезапускается любой ошибкой, выходом из работы и
+// самим повтором. true - пора обнулить (окно при этом начинается заново).
+#define REPEAT_RESET_S    3600
+struct RepeatWatch { uint32_t since_ms; };
+bool Error_RepeatReset(RepeatWatch &w, uint8_t num_repeat, bool work_ok, uint32_t now_ms, uint32_t limit_ms);
 bool   Error_IsLinkLoss(int8_t err);          // ERR_MODBUS_0xe0..0xe3
 int8_t Error_LinkCode(int8_t err);            // ERR_FC_NO_LINK вместо транспортного кода, остальные без изменений
 // fails - сбоев подряд, since_ms - с последнего ответа, running - инвертор в работе.

@@ -56,7 +56,7 @@ int8_t devOmronMX2::initFC()
   name=(char*)nameOmron;                           // Имя
   note=(char*)noteFC_NONE;                         // Описание инвертора   типа нет его
   // Настройки по умолчанию
-  _data.Uptime=DEF_FC_UPTIME;				       // Время обновления алгоритма пид регулятора (мсек) Основной цикл управления
+  _data.Uptime=DEF_FC_UPTIME;				       // Время обновления алгоритма пид регулятора (секунды) Основной цикл управления
   _data.PidFreqStep=DEF_FC_PID_FREQ_STEP;          // Максимальный шаг (на увеличение) изменения частоты при ПИД регулировании в 0.01 Гц Необходимо что бы ЭРВ успевал
   _data.PidStop=DEF_FC_PID_STOP;				   // Проценты от уровня защит (мощность, ток, давление, темпеартура) при которой происходит блокировка роста частоты пидом
   _data.dtCompTemp=DEF_FC_DT_COMP_TEMP;    		   // Защита по температуре компрессора - сколько градусов не доходит до максимальной (TCOMP) и при этом происходит уменьшение частоты
@@ -611,7 +611,7 @@ boolean devOmronMX2::set_paramFC(char *var, float x)
 	if(strcmp(var,fc_MAX_FREQ_COOL)==0)         { if((x>=40)&&(x<=240)){_data.maxFreqCool=rd(x, 100);return true; } else return false; } else // Гц
 	if(strcmp(var,fc_MAX_FREQ_BOILER)==0)       { if((x>=40)&&(x<=240)){_data.maxFreqBoiler=rd(x, 100);return true; } else return false; } else // Гц
 	if(strcmp(var,fc_MAX_FREQ_USER)==0)         { if((x>=40)&&(x<=240)){_data.maxFreqUser=rd(x, 100);return true; } else return false; } else // Гц
-	if(strcmp(var,fc_MAX_FREQ_GEN)==0)          { if((x>=40)&&(x<=240)){_data.maxFreqGen=rd(x, 100);return true; } } else
+	if(strcmp(var,fc_MAX_FREQ_GEN)==0)          { if((x>=40)&&(x<=240)){_data.maxFreqGen=rd(x, 100);return true; } else return false; } else
 	if(strcmp(var,fc_STEP_FREQ)==0)             { if((x>=0.2)&&(x<=10)){_data.stepFreq=rd(x, 100);return true; } else return false; } else // Гц
 	if(strcmp(var,fc_STEP_FREQ_BOILER)==0)      { if((x>=0.2)&&(x<=10)){_data.stepFreqBoiler=rd(x, 100);return true; } else return false; } // Гц
 
@@ -726,7 +726,7 @@ int16_t devOmronMX2::read_tempFC()
     // Реализовано FC_NUM_READ попыток чтения/записи в инвертор
     boolean devOmronMX2::read_0x01_bit(uint16_t cmd)
     { uint8_t i;
-      boolean result;
+      boolean result = false;                                                // при исчерпании попыток чтения возвращается не мусор из стека
       err=OK;  
       if ((!get_present())||(GETBIT(flags,fErrFC))) return false;             // выходим если нет инвертора или он заблокирован по ошибке
       for(i=0;i<FC_NUM_READ;i++)   // делаем FC_NUM_READ попыток чтения Чтение состояния инвертора, при ошибке генерация общей ошибки ТН и останов

@@ -477,6 +477,18 @@ void PowerCalculate(const PowerIn &in, const PowerRules &r, PowerOut &out)
 	}
 }
 
+bool ClimateSalmonellaStart(uint8_t dow, uint8_t hour, uint8_t minute, uint8_t want_dow, uint8_t want_hour,
+                            bool on, uint32_t last_done, uint32_t now)
+{
+	if(on || dow != want_dow || hour != want_hour || minute > 2) return false;
+	return last_done == 0 || (uint32_t)(now - last_done) >= 3600UL;
+}
+
+bool Defrost_DelayPassed(uint32_t now, uint32_t start, uint16_t delay_s)
+{
+	return (uint32_t)(now - start) >= (uint32_t) delay_s * 1000UL;
+}
+
 uint8_t SensorsNeeded(bool house_on, bool tin_used, bool weather, bool boiler_on)
 {
 	uint8_t m = NEED_FEED | NEED_RET;          // подача и обратка нужны всегда: защита по разности и мощность

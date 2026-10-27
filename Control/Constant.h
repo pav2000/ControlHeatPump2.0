@@ -49,7 +49,7 @@
 #endif
 
 // ---- ОПЦИИ КОМПИЛЯЦИИ ПРОЕКТА ----
-#define VERSION			"2.26"	// Версия прошивки: защита заливки веба, номер схемы в /api/ver, частота на генераторе по умолчанию, разморозка под DEFROST
+#define VERSION			"2.28"	// Версия прошивки: сторож сетевого чипа W5500 (самотест регистров раз в 10 с, лечение из Web0), замок вокруг чтения чипа, дисциплина CS на шине SPI
 // Версия формата, которой прошивка ПИШЕТ настройки в I2C память.
 // Должна совпадать с версией каркаса, которым пишутся настройки (150): иначе Option.ver по
 // умолчанию неверен, первое сохранение на чистом контроллере печатает
@@ -343,7 +343,7 @@ const uint16_t  defaultPort=80;
 	#define MAX_CALENDARS			5   		// число расписаний (старые данные при чтении обрезаются)
 	#define MAX_CALENDARS_OLD		9   		// число расписаний в записях, сделанных прежними прошивками
 	#define TIMETABLES_MAXSIZE		500 		// bytes
-	#define DAILY_SWITCH_MAX		10			// Максимальное количество записей ежедневного включения устройств (DailySwitch). MAX=10
+	#define DAILY_SWITCH_MAX		10			// Размер поля DailySwitch в профиле. Ежесуточное включение реле УДАЛЕНО (исполнения нет), поле хранится ради формата EEPROM
 	#define I2C_JOURNAL_EEPROM 		0x1FFE      // Адрес с которого начинается журнал в памяти i2c, вначале лежит признак форматирования журнала. Длина журнала JOURNAL_LEN
 	#define I2C_JOURNAL_START 		(I2C_JOURNAL_EEPROM + 2)      // Адрес с которого начинается ДАННЫЕ журнал в памяти i2c ВНИМАНИЕ - 2 байт лежит признак форматирования журнала
 	// Журнал
@@ -725,10 +725,6 @@ STRCONST(prof_CRC16_PROFILE, "CRC16"); // контрольная сумма пр
 STRCONST(prof_NUM_PROFILE, "NUM");     // максимальное число профилей
 STRCONST(prof_TBL_PROFILE, "TBL");     // таблица всех слотов профилей одним ответом
 STRCONST(prof_SEL_PROFILE, "SEL");     // список профилей (пока не используется)
-STRCONST(prof_DailySwitch, 	"DS");
-const char prof_DailySwitchDevice = 'D';		// DSD
-const char prof_DailySwitchOn  	= 'S';			// DSS
-const char prof_DailySwitchOff 	= 'E';			// DSE
 
 // Описание имен параметров уведомлений для функций set_messageSetting get_messageSetting
 STRCONST(mess_MAIL, "MAIL");                  // флаг уведомления скидывать на почту
@@ -813,7 +809,7 @@ STRCONST(net_PASS, "PASS");             // Использование парол
 STRCONST(net_PASSUSER, "PASSUSER");     // Пароль пользователя 
 STRCONST(net_PASSADMIN, "PASSADMIN");   // Пароль администратора  
 STRCONST(net_SIZE_PACKET, "SIZE");      // размер пакета
-STRCONST(net_INIT_W5200, "INIT");       // Ежеминутный контроль SPI для сетевого чипа
+STRCONST(net_INIT_W5200, "INIT");       // Контроль связи с чипом раз 10 сек.: самотест регистров W5500 (netChipSelfTest)
 STRCONST(net_PORT, "PORT");             // Port веб сервера
 STRCONST(net_NO_ACK, "NO_ACK");         // Не ожидать ответа ack
 STRCONST(net_DELAY_ACK, "DELAY_ACK");   // Задержка перед посылкой следующего пакета

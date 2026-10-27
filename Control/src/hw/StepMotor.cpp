@@ -53,11 +53,14 @@ void StepMotor::setSpeed(long whatSpeed)
 // печатает вызывающий: журнала модуль не знает и знать не должен.
 bool StepMotor::step(int steps_to_move)
 {
+	// busy ставится ДО постановки в очередь: задача шагового двигателя приоритетом выше и может взять команду и закончить её раньше, чем
+	// вызывающий вернётся, - флаг, поставленный после, оставался бы поднятым навсегда (compressorON ждёт его до 25,5 с).
+	busy = true;                      // флаг начало движения
 	if(xQueueSend(xCommandQueue, &steps_to_move, 20 / portTICK_PERIOD_MS) == errQUEUE_FULL) // команду на движение в очередь
 	{
+		busy = false;                 // не поставлена - движения не будет
 		return false;
 	}
-	busy = true;                      // флаг начало движения
 	if(xHandleStepperEEV != NULL) xTaskNotifyGive(xHandleStepperEEV);   // Разбудить задачу: уведомление не теряется, даже если она ещё не ждёт
 	return true;
 }

@@ -68,6 +68,8 @@ inline void digitalWriteDirectARM(int pin, boolean val) // Быстрый выв
   if(val) g_APinDescription[pin].pPort -> PIO_SODR = g_APinDescription[pin].ulPin;
   else    g_APinDescription[pin].pPort -> PIO_CODR = g_APinDescription[pin].ulPin;
   }
+ extern volatile uint32_t spiDmaTimeouts;   // пакетов, прочитанных по DMA с таймаутом (данные не дошли: прочитан мусор)
+ extern volatile uint32_t spiDmaOverruns;   // переполнений приёмника SPI при чтении по DMA
  extern void spiBegin();    // Начало
  extern void spiInit(uint8_t spiRate);
  extern uint8_t spiRec();   // SPI receive a byte

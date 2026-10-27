@@ -292,8 +292,10 @@ void readFileSD(char *filename, uint8_t thread)
 		if(strncmp(str + 1, filename_subst_scheme, sizeof(filename_subst_scheme)-1) == 0) // найден аргумент (схема ТН) надо подменять на значение HP_SHEME
 		{
 			if(*(str + 1 + sizeof(filename_subst_scheme)-1) == ']') {
+				const char *tail = str + 1 + sizeof(filename_subst_scheme)-1 + 1;   // остаток имени после ']' лежит в том же буфере, что и место вставки
+				size_t tail_len = strlen(tail) + 1;
 				itoa(HP_SCHEME, str, 10); // вставить номер схемы
-				strcat(filename, str + 1 + sizeof(filename_subst_scheme)-1 + 1);
+				memmove(str + strlen(str), tail, tail_len);                         // области перекрываются: strcat тут - неопределённое поведение
 			} else journal.jprintf("Not found ] in: %s", filename); // нет закрывающейся скобки
 		}
 	}
@@ -459,12 +461,15 @@ xFileFound:
 	case pFLASH_WEB:
 		{
 			WEB_STORE_DEBUG_INFO(16);
+			SPI_switchFlash();                                  // все CS вверх: флеш выбирает своя библиотека (SPI_switchFlash раньше нигде не вызывалась)
 			SerialFlashFile ff = SerialFlash.open(filename);
 			if(ff) {
 				if(DBG_ON(DBG_HTTP)) { journal.jprintf("$Thread: %d socket: %d read file: %s\n",thread,Socket[thread].sock,filename); }
 				sendConstRTOS(thread, webFileHeader(filename));
+				SPI_switchFlash();
 				while((n = ff.read(Socket[thread].outBuf, sizeof(Socket[thread].outBuf))) > 0) {
 					if(sendBufferRTOS(thread, (byte*) (Socket[thread].outBuf), n) == 0) break;
+					SPI_switchFlash();                          // после отдачи страницы в сеть (замок отпускался) - снова все CS вверх
 				} // while
 			} else {
 				sendConstRTOS(thread, HEADER_FILE_NOT_FOUND);
@@ -716,6 +721,10 @@ xLenErr:
 				return pSETTINGS_ERR;
 			}
 		}
+		if(ptr[NEW_OFS_VER] < SETTINGS_VER_NEW && !settings_len_ok(*((uint16_t*) ptr), buf_len)) {   // старый формат: длина из файла против принятого
+			journal.jprintf("Upload: bad settings length %d of %d bytes received\n", (int) *((uint16_t*) ptr), (int) buf_len);
+			return pSETTINGS_ERR;
+		}
 		len = ptr[NEW_OFS_VER] >= SETTINGS_VER_NEW ? HP.load_new(ptr, 1) : HP.load(ptr, 1);
 		if(len <= 0) return pSETTINGS_ERR; // ошибка загрузки настроек
 		boolean ret = true;
@@ -761,6 +770,7 @@ xLenErr:
 			if(!webUploadBegin()) return pLOAD_ERR;
 			numFilesWeb = 0;
 			journal.jprintf_time("Start upload, erase SPI disk ");
+			SPI_switchFlash();                                  // все CS вверх: флеш выбирает своя библиотека
 			SerialFlash.eraseAll();
 			while(SerialFlash.ready() == false) {
 				xSemaphoreGive(xWebThreadSemaphore); // отдать семафор вебморды, что бы обработались другие потоки веб морды
@@ -817,6 +827,7 @@ xLenErr:
 					int32_t loadLen; // Обработанная (загруженная) длина
 					WEB_STORE_DEBUG_INFO(54);
 					journal.jprintf("%s (%d) ", nameFile, (int)(lenFile));
+					SPI_switchFlash();
 					loadLen = SerialFlash.free_size();
 					if(lenFile > loadLen) {
 						journal.jprintf("Not enough space, free: %d\n", (int)(loadLen));
@@ -838,7 +849,9 @@ xLenErr:
 										continue;
 									}
 									tIdle = webUploadTick = millis();
+									Watchdog_AliveHere();   // пакет пришёл: заливка по медленному каналу идёт, а не висит
 									Socket[thread].client.read(Socket[thread].inBuf, buf_len);        // прочитать буфер
+									SPI_switchFlash();
 									loadLen = loadLen + ff.write(Socket[thread].inBuf, buf_len);             // записать
 									numPoint++;
 									if(numPoint >= 20) {                   // точка на 30 кб приема (20 пакетов по 1540)
@@ -883,6 +896,7 @@ xLenErr:
 									continue;
 								}
 								tIdle = webUploadTick = millis();
+								Watchdog_AliveHere();   // пакет пришёл: заливка по медленному каналу идёт, а не висит
 								Socket[thread].client.read(Socket[thread].inBuf, buf_len);                      // прочитать буфер
 								WEB_STORE_DEBUG_INFO(56);
 								for(uint16_t _timeout = 0; _timeout < 2000 && card.card()->isBusy(); _timeout++) _delay(1);

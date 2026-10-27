@@ -132,10 +132,7 @@ int8_t HeatPump::runCommand()
 			break;
 		case pNETWORK:
 			_delay(1000);               						// задержка что бы вывести сообщение в консоль и на веб морду
-			if(SemaphoreTake(xWebThreadSemaphore,(W5200_TIME_WAIT/portTICK_PERIOD_MS))==pdFALSE) {journal.jprintf((char*)cErrorMutex,__FUNCTION__,MutexWebThreadBusy); break;} // Захват мютекса потока или ОЖИДАНИНЕ W5200_TIME_WAIT
-			initW5200(true);                                  // Инициализация сети с выводом инфы в консоль
-			for (i=0;i<W5200_THREAD;i++) SETBIT1(Socket[i].flags,fABORT_SOCK);                                 // Признак инициализации сокета, надо прерывать передачу в сервере
-			SemaphoreGive(xWebThreadSemaphore);                                                                // Мютекс потока отдать
+			netChipReinit(true);                              // Инициализация сети с выводом инфы в консоль; замок сети берёт сама (Network.cpp)
 			break;
 		case pPROG_FC:                                             // Программировать инвертор первоначальными данными (настройка инвертора)
 		    #ifndef FC_VACON  // Omron , если в Vacon будет определен метод progFC этот дефайн убрать

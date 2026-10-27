@@ -62,12 +62,13 @@ x_Error:
 			journal.jprintf(" - read error %d!\n", error);
 			return error;      // этот путь только при чтении из I2C (from_RAM == 0)
 		}
-		if(size > I2C_PROFILE_EEPROM - I2C_SETTING_EEPROM) { error = ERR_BAD_LEN_EEPROM; goto x_Error; }
+		if(size < 2 || size > I2C_PROFILE_EEPROM - I2C_SETTING_EEPROM) { error = ERR_BAD_LEN_EEPROM; goto x_Error; }
 		if(readEEPROM_I2C(I2C_SETTING_EEPROM + sizeof(size), buffer, size)) goto x_ReadError;
 	} else {
 		journal.jprintf("FILE");
 		size = *((uint16_t *) buffer);
 		buffer += sizeof(size);
+		if(size < 2) { journal.jprintf(" - bad size %d!\n", size); return ERR_BAD_LEN_EEPROM; }   // отказ файла не меняет error ТН
 	}
 	journal.jprintf(", size %d, crc: ", size + 2); // sizeof(crc)
 	size -= 2;
@@ -132,6 +133,9 @@ xSkip:		load_struct(NULL, &buffer, 0); // skip unknown type
 	}
 #ifdef SENSOR_IP
 	updateLinkIP();
+#endif
+#ifndef FC_VACON
+	dFC.after_load();                                // maxFreqGen: в старых настройках его нет
 #endif
 	dbg_after_load();
 	journal.jprintf("OK\n");
@@ -464,6 +468,9 @@ xReadError:
 #ifdef SENSOR_IP
 	updateLinkIP();
 #endif
+#ifndef FC_VACON
+	dFC.after_load();                                // maxFreqGen: в старых настройках его нет
+#endif
 	dbg_after_load();
 	journal.jprintf(bad_struct ? "WARNING\n" : "OK\n");
 	if(bad_struct) load_warn(ERR_SETTINGS_STRUCT, from_RAM);
@@ -582,8 +589,10 @@ void HeatPump::updateDateTime(int32_t dTime)
 		if(stopCompressor > 0) stopCompressor = stopCompressor + dTime;               // время останова компрессора
 		if(countNTP > 0) countNTP = countNTP + dTime;                           // число секунд с последнего обновления по NTP
 		if(offBoiler > 0) offBoiler = offBoiler + dTime;                         // время выключения нагрева ГВС ТН (необходимо для переключения на другие режимы на ходу)
-		if(startDefrost > 0) startDefrost = startDefrost + dTime;                   // время срабатывания датчика разморозки
+		// startDefrost здесь НЕ сдвигается: он хранится в тиках (xTaskGetTickCount), а не по настенным часам, и от смены часов не зависит.
+		// Прежний сдвиг прибавлял к тикам секунды.
 		if(startSalmonella > 0) startSalmonella = startSalmonella + dTime;             // время начала обеззараживания
+		if(doneSalmonella > 0) doneSalmonella = doneSalmonella + dTime;                // время окончания прошлого цикла
 
 	}
 }
@@ -632,6 +641,8 @@ void HeatPump::resetSettingHP()
 	Diag.num_semSuspended = 0;                           // попыток взять замок при остановленном планировщике
 	Diag.num_resMQTT = 0;                                // число повторных инициализация MQTT клиента
 	Diag.num_resPing = 0;                                // число не прошедших пингов
+	Diag.num_dmaTimeout = 0;                             // чтений W5500 по DMA с таймаутом
+	Diag.num_dmaOverrun = 0;                             // переполнений приёмника SPI
 
 	fullCOP = -1000;                                // Полный СОР  сотые -1000 признак невозможности расчета
 	COP = -1000;                                    // Чистый COP сотые  -1000 признак невозможности расчета
@@ -646,6 +657,7 @@ void HeatPump::resetSettingHP()
 	startDefrost = 0;                               // время срабатывания датчика разморозки
 	timeNTP = 0;                                    // Время обновления по NTP в тиках (0-сразу обновляемся)
 	startSalmonella = 0;                            // время начала обеззараживания
+	doneSalmonella = 0;                             // прошлых циклов не было
 	command_completed = 0;
 	compressor_in_pause = false;
 
@@ -664,7 +676,7 @@ void HeatPump::resetSettingHP()
 	Network.resSocket = 30;                         // Время очистки сокетов
 	Network.resW5200 = 0;                           // Время сброса чипа
 	Diag.countResSocket = 0;                             // Число сбросов сокетов
-	SETBIT1(Network.flags, fInitW5200);           // Ежеминутный контроль SPI для сетевого чипа
+	SETBIT1(Network.flags, fInitW5200);           // Контроль связи с чипом раз 10 сек. (самотест регистров W5500)
 	SETBIT0(Network.flags, fPass);                 // !save! Использование паролей
 	strcpy(Network.passUser, "user");              // !save! Пароль пользователя
 	strcpy(Network.passAdmin, "admin");            // !save! Пароль администратора
@@ -743,7 +755,7 @@ char* HeatPump::get_network(char *var,char *ret)
   if(strcmp(var,net_PASSUSER)==0){  return strcat(ret,Network.passUser);                      }else                 
   if(strcmp(var,net_PASSADMIN)==0){ return strcat(ret,Network.passAdmin);                     }else   
   if(strcmp(var,net_SIZE_PACKET)==0){return _itoa(Network.sizePacket,ret);          }else   
-    if(strcmp(var,net_INIT_W5200)==0){if (GETBIT(Network.flags,fInitW5200)) return  strcat(ret,(char*)cOne);       // флаг Ежеминутный контроль SPI для сетевого чипа
+    if(strcmp(var,net_INIT_W5200)==0){if (GETBIT(Network.flags,fInitW5200)) return  strcat(ret,(char*)cOne);       // флаг Контроль связи с чипом раз 10 сек.
                                       else      return  strcat(ret,(char*)cZero);               }else      
     if(strcmp(var,net_PORT)==0){return _itoa(Network.port,ret);                       }else    // Порт веб сервера
     if(strcmp(var,net_NO_ACK)==0){    if (GETBIT(Network.flags,fNoAck)) return  strcat(ret,(char*)cOne);

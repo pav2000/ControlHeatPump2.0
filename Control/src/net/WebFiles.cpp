@@ -391,7 +391,7 @@ void get_txtSettings(uint8_t thread)
 
      strcat(Socket[thread].outBuf,"Проверка ping до сервера: "); HP.get_network((char*)net_PING_TIME,Socket[thread].outBuf);STR_END;
      strcat(Socket[thread].outBuf,"Адрес пингуемого сервера: "); HP.get_network((char*)net_PING_ADR,Socket[thread].outBuf); STR_END;
-     strcat(Socket[thread].outBuf,"Ежеминутный контроль связи с Wiznet W5xxx: "); HP.get_network((char*)net_INIT_W5200,Socket[thread].outBuf);STR_END;
+     strcat(Socket[thread].outBuf,"Контроль связи с чипом Wiznet W5xxx раз 10 сек.: "); HP.get_network((char*)net_INIT_W5200,Socket[thread].outBuf);STR_END;
      strcat(Socket[thread].outBuf,"Время очистки сокетов Wiznet W5xxx: "); HP.get_network((char*)net_RES_SOCKET,Socket[thread].outBuf);STR_END;
      strcat(Socket[thread].outBuf,"Время сброса Wiznet W5xxx: "); strcat(Socket[thread].outBuf,nameWiznet);strcat(Socket[thread].outBuf,": "); HP.get_network((char*)net_RES_W5200,Socket[thread].outBuf);STR_END;
      strcat(Socket[thread].outBuf,"Размер пакета для отправки в байтах: "); HP.get_network((char*)net_SIZE_PACKET,Socket[thread].outBuf);STR_END;

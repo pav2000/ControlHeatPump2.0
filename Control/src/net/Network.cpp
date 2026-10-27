@@ -28,6 +28,7 @@
 #include "../../Constant.h"                       // Вся конфигурация и константы проекта Должен быть первым !!!!
 #include "utility/w5100.h"
 #include "utility/socket.h"
+#include "utility/spi_dma.h"   // счётчики таймаутов DMA драйвера W5500
 #include <ICMPPing.h>
 // ICMPPing.h заканчивается непарным "#pragma pack(1)" - без восстановления.
 // Всё, что объявлено ПОСЛЕ него в этой единице трансляции, пакуется, и
@@ -51,6 +52,7 @@ static unsigned long connectTime[MAX_SOCK_NUM];    // время соедине�
 // Получить номер версии сетевого чипа
 uint8_t W5200VERSIONR()
 {
+	// SEM-BORROW: xWebThreadSemaphore - обращение к чипу под замком сети, который держит вызывающий
   #if defined(W5100_ETHERNET_SHIELD)
     return 51;                    // В чипе w5100 нет номера версии по этому делаем условно 51
   #else
@@ -61,6 +63,7 @@ uint8_t W5200VERSIONR()
 // show - нужен вывод в консоль или нет, возврат true- связь есть
 boolean linkStatusWiznet(boolean show)
 {
+	// SEM-BORROW: xWebThreadSemaphore - обращение к чипу под замком сети, который держит вызывающий
 #if defined(W5500_ETHERNET_SHIELD) // Задание имени чипа для вывода сообщений
 	uint8_t st = W5100.readPHYCFGR();
 	if(show){
@@ -83,6 +86,7 @@ boolean linkStatusWiznet(boolean show)
 // show - нужен вывод в консоль или нет, возврат true- связь есть
 boolean resetWiznet(boolean show)
 {
+	// SEM-BORROW: xWebThreadSemaphore - обращение к чипу под замком сети, который держит вызывающий
     uint8_t i;
     uint16_t t;
     for (i = 0; i <  W5200_NUM_LINK; i++)  // делается несколько попыток связи до появления LINK с задержкой
@@ -111,6 +115,7 @@ const char* NetworkChipBad={" WRONG setting library, library: %s, ID: chip 0x%x\
 const char* NetworkError={" $ERROR: Problem reset and setting %s\n"};
 boolean initW5200(boolean flag)
 {
+	// SEM-BORROW: xWebThreadSemaphore - обращение к чипу под замком сети, который держит вызывающий
 	uint8_t i;
 	boolean EthernetOK = true;   // флаг успешности инициализации
 #ifdef PIN_ETH_INT
@@ -188,6 +193,7 @@ boolean initW5200(boolean flag)
 				HP.set_subnet(Ethernet.subnetMask());
 				HP.set_sdns(Ethernet.dnsServerIP());
 				HP.set_gateway(Ethernet.gatewayIP());
+				beginWeb(HP.get_port());              // при DHCP порт тоже из настроек: раньше сокеты открывались лениво на 80
 			}
 		} else {
 x_TryStaticIP:
@@ -244,6 +250,7 @@ x_TryStaticIP:
 		else journal.jprintf(" ERROR: setting %s", nameWiznet);
 	}
 	}
+	if(EthernetOK) netChipBaseline();   // снимок регистров для самотеста: после beginWeb и pingW5200, то есть в рабочем состоянии
 	return EthernetOK;
 }
 // ---- DNS ----
@@ -280,6 +287,7 @@ uint8_t check_address(char *adr, IPAddress &ip)
 // ---- Вывести состояние регистров сокета ----
 void ShowSockRegisters(uint8_t s)
 {
+	// SEM-BORROW: xWebThreadSemaphore - обращение к чипу под замком сети, который держит вызывающий
  journal.jprintf("#%d", s); // номер сокета
  journal.jprintf(" MR:%02x",W5100.readSnMR(s)); 
  journal.jprintf(" CR:%02x",W5100.readSnCR(s)); 
@@ -305,6 +313,7 @@ static const SockState sockStates[] = {
 	{ 0x1d, "LAST_ACK", 1 }, { 0x22, "UDP", 0 }, { 0x32, "IPRAW", 0 }, { 0x42, "MACRAW", 0 }, { 0x5f, "PPPOE", 0 } };
 void socketInfoApi(ApiOut *o)
 {
+	// SEM-BORROW: xWebThreadSemaphore - обращение к чипу под замком сети, который держит вызывающий
 	api_putc(o, '[');
 	for(int i = 0; i < MAX_SOCK_NUM; i++) {
 		uint8_t s = W5100.readSnSR(i), dmac[6], dip[4], k;
@@ -324,6 +333,127 @@ void socketInfoApi(ApiOut *o)
 	}
 	api_putc(o, ']');
 }
+// ---- Сторож сетевого чипа ----
+// Чип W5500 дважды замолкал при живом PHY. Проверка «бит LINK раз в минуту» этого не видела. Теперь раз в NETCHIP_TEST_S секунд
+// читаются регистры (версия, режим, MAC, IP, шлюз, маска, PHY) и сверяются со снимком, снятым в конце initW5200. Решение - NetChip_Decide
+// (ErrorCodes, с тестами). Чтение идёт ПОД замком сети: прежняя проверка читала PHYCFGR без замка и могла вклиниться в чужую транзакцию.
+#if defined(W5500_ETHERNET_SHIELD)
+static NetChipRegs   netBase;                       // снимок после последней успешной инициализации
+static bool          netBaseOk = false;
+static NetChipWatch  netWatch = { 0, 0, false, false, 0, 0 };
+static bool          netLastLink = true;
+static uint16_t      netSkips = 0;                  // подряд пропущенных замеров (замок сети занят)
+static uint8_t       netSpiAnom = 0;                // последнее замечание по конфигурации SPI0 (чтобы писать в журнал только изменения)
+static const char * const netFaultName[] = { "ok", "version", "mode", "mac", "ip", "gateway", "mask", "link", "not-initialized", "ping" };
+
+// SEM-BORROW: xWebThreadSemaphore - читает регистры чипа, замок держит вызывающий
+static void netChipRead(NetChipRegs *r)
+{
+	// SEM-BORROW: xWebThreadSemaphore - обращение к чипу под замком сети, который держит вызывающий
+	r->version = W5100.readVERSIONR();
+	r->mode = W5100.readMR();
+	r->phy = W5100.readPHYCFGR();
+	W5100.getMACAddress(r->mac);
+	W5100.getIPAddress(r->ip);
+	W5100.getGatewayIp(r->gw);
+	W5100.getSubnetMask(r->mask);
+}
+
+// SEM-BORROW: xWebThreadSemaphore - вызывается из initW5200 и pingW5200, замок держит вызывающий
+void netChipBaseline()
+{
+	// SEM-BORROW: xWebThreadSemaphore - обращение к чипу под замком сети, который держит вызывающий
+	netChipRead(&netBase);
+	netBaseOk = netBase.version == 0x04;            // снимок с неверной версией - чип не отвечал, базой он быть не может
+}
+
+// Две строки в журнал: что прочитано и что ожидалось. Каждая короче буфера строки журнала.
+static void netChipDump(const char *tag, const NetChipRegs &r)
+{
+	journal.jprintf("$W5500 %s: ver=%d MR=%02X PHY=%02X MAC=%02X:%02X:%02X:%02X:%02X:%02X IP=%d.%d.%d.%d GW=%d.%d.%d.%d MASK=%d.%d.%d.%d\n",
+			tag, r.version, r.mode, r.phy, r.mac[0], r.mac[1], r.mac[2], r.mac[3], r.mac[4], r.mac[5],
+			r.ip[0], r.ip[1], r.ip[2], r.ip[3], r.gw[0], r.gw[1], r.gw[2], r.gw[3], r.mask[0], r.mask[1], r.mask[2], r.mask[3]);
+}
+
+// Сброс по решению сторожа. Вызывается из vWeb0 БЕЗ замка: netChipReinit берёт его сама.
+static void netChipRecover(NETCHIP_FAULT f, NETCHIP_ACTION a)
+{
+	journal.jprintf_time("$W5500 fault: %s, resetting . . .\n", netFaultName[f]);
+	Diag.num_resW5200++;
+	netChipReinit(false);
+	if(a == NCA_RECOVER_NOTIFY) {
+		journal.jprintf("$W5500 resets too often: %d in the last hour\n", (int)netWatch.recoveries);
+		HP.message.setMessage(pMESSAGE_WARNING, (char*) "Сетевой чип W5500 сбрасывается слишком часто", 0);
+	}
+}
+
+bool netChipSelfTest()
+{
+	NetChipRegs r;
+	if(SemaphoreTake(xWebThreadSemaphore, 200 / portTICK_PERIOD_MS) == pdFALSE) {   // шина занята отдачей страницы: пропускаем, повторим через период
+		if(++netSkips == 30) { journal.jprintf_time("$W5500 self-test skipped 30 times: network lock is busy\n"); }
+		return false;
+	}
+	netSkips = 0;
+	netChipRead(&r);
+	const uint32_t spiMr = SPI0->SPI_MR, spiCsr3 = SPI0->SPI_CSR[3];      // общий SPI0: читаем в том же сеансе под замком
+#if USE_NATIVE_SAM3X_SPI
+	const uint32_t dmaT = spiDmaTimeouts, dmaO = spiDmaOverruns;
+#endif
+	SemaphoreGive(xWebThreadSemaphore);
+	const uint8_t anom = Spi0_Check(spiMr, spiCsr3);
+	if(anom != netSpiAnom) {                                              // писать только смену состояния
+		journal.jprintf_time("$SPI0 config %s: MR=%08X CSR3=%08X anomalies=%02X\n", anom ? "differs from shared" : "back to shared", (unsigned) spiMr, (unsigned) spiCsr3, anom);
+		netSpiAnom = anom;
+	}
+#if USE_NATIVE_SAM3X_SPI
+	if(dmaT != Diag.num_dmaTimeout || dmaO != Diag.num_dmaOverrun) {
+		journal.jprintf_time("$W5500 SPI DMA: timeouts %u, overruns %u\n", (unsigned) dmaT, (unsigned) dmaO);
+		Diag.num_dmaTimeout = dmaT; Diag.num_dmaOverrun = dmaO;
+	}
+#endif
+#ifdef TEST_NETCHIP_FAULT
+	{	// стенд: после 3-й минуты работы на ДВА замера подряд подменяем прочитанный IP (чип «сбросился в значения по умолчанию»): путь расхождение -> журнал -> сброс
+		static uint8_t injected = 0;
+		if(injected < NETCHIP_FAILS && xTaskGetTickCount() > 180000UL) { injected++; memset(r.ip, 0, sizeof(r.ip)); }
+	}
+#endif
+	const bool link = r.phy & 0x01;
+	if(link && !netLastLink) NetChip_Init(&netWatch);      // кабель вернулся: пауза между сбросами не должна задерживать восстановление
+	netLastLink = link;
+	const NETCHIP_FAULT f = netBaseOk ? NetChip_Check(r, netBase) : NCF_NOINIT;
+	if(f != NCF_NONE) {
+		journal.jprintf_time("$W5500 mismatch: %s\n", netFaultName[f]);
+		netChipDump("now ", r);
+		if(netBaseOk) netChipDump("base", netBase);
+	} else if(DBG_ON(DBG_PHY)) netChipDump("ok  ", r);
+	const NETCHIP_ACTION a = NetChip_Decide(&netWatch, f, xTaskGetTickCount() / 1000);
+	if(a == NCA_NONE) return false;
+	netChipRecover(f, a);
+	return true;
+}
+
+void netChipPingFailed()
+{
+	const NETCHIP_ACTION a = NetChip_Decide(&netWatch, NCF_PING, xTaskGetTickCount() / 1000);
+	if(a != NCA_NONE) netChipRecover(NCF_PING, a);
+}
+#else   // не W5500: регистров для сверки нет, остаются прежние проверки
+void netChipBaseline() {}
+bool netChipSelfTest() { return false; }
+void netChipPingFailed() { HP.sendCommand(pNETWORK); }
+#endif
+
+// Сброс чипа и инициализация под замком сети. Тело прежней команды pNETWORK (HeatPumpControl.cpp), вынесено, чтобы сторож лечил чип сам, а не через очередь команд.
+boolean netChipReinit(boolean verbose)
+{
+	if(SemaphoreTake(xWebThreadSemaphore, (W5200_TIME_WAIT / portTICK_PERIOD_MS)) == pdFALSE) { journal.jprintf((char*) cErrorMutex, __FUNCTION__, MutexWebThreadBusy); return false; }
+	boolean ok = initW5200(verbose);
+	for(uint8_t i = 0; i < W5200_THREAD; i++) SETBIT1(Socket[i].flags, fABORT_SOCK);   // признак инициализации сокета, надо прерывать передачу в сервере
+	SemaphoreGive(xWebThreadSemaphore);
+	return ok;
+}
+
 // ---- Сброс зависших сокетов ----
 // Учитывается многопоточность, не сбрасываются сокеты которые сейчас в работе Socket[xxxx].sock
 void checkSockStatus()
@@ -497,18 +627,10 @@ uint16_t sendPrintfRTOS(uint8_t thread, const char *format, ...)
 // Старт прослушивания порта веб морды (подъем веб сервера), на прослушивание ставятся не все сокеты, системный остается свободным
 void beginWeb(uint16_t port)
 {
- for (int sock = 0; sock < W5200_SOCK_SYS; sock++)
- {
-    EthernetClient client(sock);
-    if (client.status() == SnSR::CLOSED) 
-    {
-      socket(sock, SnMR::TCP, port, 0);
-      listen(sock);
-      EthernetClass::_server_port[sock] = HP.get_port();
-      break;
-    }
-  }  
-  
+	// Порт должен попасть в сам сервер (server1.begin(port) меняет его _port): EthernetServer::available_ обслуживает сокет,
+	// только если _server_port[sock] == _port, а _port был 80 из конструктора. Прежняя версия открывала сокет на порту из настроек,
+	// сервер его не обслуживал (соединение принималось чипом и висело), остальные сокеты лениво открывались на 80: настройка net.port не работала.
+	server1.begin(port);
 }
 
 // Пингование сервера
@@ -546,7 +668,7 @@ boolean pingServer()
 		if(!HP.NO_Power) {
 			journal.jprintf(", Resetting %s...\n", nameWiznet);
 			Diag.num_resPing++;
-			HP.sendCommand(pNETWORK);                                                // Если связь потеряна то подать команду на сброс сетевого чипа
+			netChipPingFailed();                                                     // Связь потеряна: сторож решает о сбросе чипа сам (пауза между сбросами, счёт за час)
 		}
 		return false;
 	}
@@ -556,9 +678,10 @@ boolean pingServer()
 // Установка флага пингования контроллера w5200 или w5500 на w5100 не проверялся
 // true - пинг запрещен
 // false - пинг разрешен
-#define MR_BIT_PB 0x04  //MR (Mode Register) Ping Block Mode bit (0x04) If the bit is ‘1’, it blocks the response to a ping request.
+#define MR_BIT_PB 4     // НОМЕР бита (SETBIT1/SETBIT0 берут номер): бит 4 регистра MR = маска 0x10, Ping Block Mode. Если ‘1’, чип не отвечает на ping
 void pingW5200(boolean f)
 {
+	// SEM-BORROW: xWebThreadSemaphore - зовётся из initW5200 и из обработчика записи настройки (веб-поток), замок сети у вызывающего
 	uint8_t x = W5100.readMR();
 	if(f) {
 		SETBIT1(x, MR_BIT_PB);
@@ -568,6 +691,9 @@ void pingW5200(boolean f)
 		if(DBG_ON(DBG_PHY)) journal.jprintf(" Disable Ping block\n");
 	}
 	W5100.writeMR(x);
+#if defined(W5500_ETHERNET_SHIELD)
+	if(netBaseOk) netBase.mode = W5100.readMR();       // режим изменён законно: снимок для самотеста обновляется
+#endif
 }
 
 // Запрос на сервер с ожиданием ответа, веб блокируется, вызов из MAIN_WEB_TASK
@@ -630,7 +756,7 @@ int Send_HTTP_Request(const char *server, const char *request, uint8_t fget_valu
 											if(buffer) {
 												buffer += sizeof(WEB_HEADER_END)-1;
 												if(fget_value == 1)	{
-													memcpy((uint8_t*)Socket[MAIN_WEB_TASK].outBuf, buffer, datasize - (buffer - (uint8_t*)Socket[MAIN_WEB_TASK].outBuf));
+													memmove((uint8_t*)Socket[MAIN_WEB_TASK].outBuf, buffer, datasize - (buffer - (uint8_t*)Socket[MAIN_WEB_TASK].outBuf));   // buffer лежит внутри outBuf: области перекрываются
 													ret = 0;
 													if(DBG_ON(DBG_WFULL)) journal.jprintf_time("Response: %s", Socket[MAIN_WEB_TASK].outBuf);
 												} else {

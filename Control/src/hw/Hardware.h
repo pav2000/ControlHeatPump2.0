@@ -310,6 +310,7 @@ public:
 	uint8_t get_typeFreon(){return FREON; }     			// Получить тип фреона
 	RULE_EEV get_ruleEEV(){return _data.ruleEEV;}          // Получить правило перегрева
 	void get_ruleEEVtext(char *strReturn);				 // Получить правило перегрева как строку
+	uint8_t sensors_needed();							 // Датчики, обязанные быть привязанными для правила перегрева (OHN_*)
 	boolean get_HoldMotor(){return GETBIT(_data.flags,fHoldMotor);}      // Получить флаг Удержания шагового двигателя
 	boolean get_OneSeekZero(){return GETBIT(_data.flags,fOneSeekZero);}  // Получить флаг однократного поиска "0" ЭРВ
 	boolean get_EevClose(){return GETBIT(_data.flags,fEevClose);}        // Получить флаг закрытие ЭРВ при выключении компрессора

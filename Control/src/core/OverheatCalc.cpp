@@ -95,6 +95,17 @@ static int16_t calc_manual(const OverheatIn &in, int16_t prev)
 	return 0;
 }
 
+uint8_t Overheat_SensorsNeeded(uint8_t rule)
+{
+	switch(rule) {
+	case OHR_TEVAOUT_PEVA:	return OHN_EVAOUT;
+	case OHR_TCOMPIN_PEVA:	return OHN_COMPIN;
+	case OHR_TEVAOUT_TEVAIN:return OHN_EVAOUT | OHN_EVAIN;
+	case OHR_TCOMPIN_TEVAIN:return OHN_COMPIN | OHN_EVAIN;
+	default:				return 0;			// таблица и ручной перебор: считаются по тому, что есть
+	}
+}
+
 int16_t Overheat_Calc(const OverheatIn &in, int16_t prev, bool *error)
 {
 	int16_t v;

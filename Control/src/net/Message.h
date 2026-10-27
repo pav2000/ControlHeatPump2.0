@@ -22,6 +22,7 @@
 #ifndef Message_h
 #define Message_h
 #include "../../Constant.h"                       // Вся конфигурация и константы проекта Должен быть первым !!!!
+#include "NotifyQueue.h"                          // очередь ожидающих уведомлений
 
 // Константы
 #define LEN_TEMPBUF      256                // Длина рабочего буфера используемого для работы уведомлений
@@ -149,7 +150,11 @@ class Message
     boolean dnsUpadateSMTP;                                                  // Флаг необходимости обновления через dns IP адреса для smtp
     // Уведомления
     type_messageHP     messageSetting;                                       // Структура для хранения НАСТРОЕК уведомлений
-    type_messageData   messageData;                                          // Структура для хранения уведомления (ДАННЫЕ)
+    type_messageData   messageData;                                          // Структура для хранения уведомления (ДАННЫЕ): то, что отправляется сейчас
+    type_messageData   pend[NOTIFY_DEPTH];                                   // ожидающие своей очереди, пока отправляется messageData (раньше новое затирало неотправленное)
+    NotifyQueue        nq;                                                   // порядок и приоритет ожидающих
+    MESSAGE            lastQueuedMs;                                         // тип последнего принятого уведомления (для подавления повторов)
+    void               promotePending();                                     // отправка закончена: взять следующее из очереди
     MESSAGE lastmessageSetting;                                              // последнее отправленное уведомление 
     boolean waitSend;                                                        // true - есть не отправленные сообщения
     boolean sendMail();                                                      // Отправить почту

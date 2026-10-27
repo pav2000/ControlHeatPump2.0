@@ -88,7 +88,7 @@ void Journal::Init()
 	uint16_t i;
 	char *ptr;
 
-	if((eepStatus = eepromI2C.begin(I2C_SPEED) != 0))  // Инициализация памяти
+	if((eepStatus = eepromI2C.begin(I2C_SPEED)) != 0)  // Инициализация памяти; код возврата, а не результат сравнения (приоритет операций)
 	{
 		SerialDbg.println("$ERROR - open I2C journal, check I2C chip!");   // ошибка открытия чипа
 		err = ERR_OPEN_I2C_JOURNAL;

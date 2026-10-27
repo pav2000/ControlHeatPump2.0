@@ -24,6 +24,7 @@
  * функции с проверкой границ, поэтому рассинхронизацию индекса и текста
  * нельзя внести из другого файла.
  */
+#include <string.h>
 #include "mini-printf.h"
 #include "ErrorCodes.h"
 
@@ -285,6 +286,55 @@ uint32_t Fault_Count(uint32_t gpbr)
 bool Fault_NoAutoStart(uint32_t gpbr)
 {
 	return Fault_Resets(gpbr) >= FAULT_MAX_RESETS;
+}
+
+NETCHIP_FAULT NetChip_Check(const NetChipRegs &got, const NetChipRegs &base)
+{
+	if(got.version != base.version) return NCF_VERSION;
+	if(got.mode != base.mode) return NCF_MODE;
+	if(memcmp(got.mac, base.mac, sizeof(got.mac))) return NCF_MAC;
+	if(memcmp(got.ip, base.ip, sizeof(got.ip))) return NCF_IP;
+	if(memcmp(got.gw, base.gw, sizeof(got.gw))) return NCF_GATEWAY;
+	if(memcmp(got.mask, base.mask, sizeof(got.mask))) return NCF_MASK;
+	if(!(got.phy & 0x01)) return NCF_LINK;
+	return NCF_NONE;
+}
+
+NETCHIP_ACTION NetChip_Decide(NetChipWatch *w, NETCHIP_FAULT fault, uint32_t now_s)
+{
+	if(fault == NCF_NONE) { w->fails = 0; return NCA_NONE; }
+	if(w->fails < 255) w->fails++;
+	if(w->fails < (fault == NCF_PING ? 1 : NETCHIP_FAILS)) return NCA_NONE;
+	if(!w->ever || (uint32_t)(now_s - w->window_start_s) >= NETCHIP_WINDOW_S) {    // новое окно подсчёта
+		w->window_start_s = now_s; w->recoveries = 0; w->warned = false;
+	}
+	const uint32_t gap = w->recoveries >= NETCHIP_MANY ? NETCHIP_SLOW_GAP_S : NETCHIP_MIN_GAP_S;
+	if(w->ever && (uint32_t)(now_s - w->last_recover_s) < gap) return NCA_NONE;     // рано: расхождения копятся, сброс будет позже
+	w->fails = 0; w->ever = true; w->last_recover_s = now_s;
+	if(w->recoveries < 255) w->recoveries++;
+	if(w->recoveries >= NETCHIP_MANY && !w->warned) { w->warned = true; return NCA_RECOVER_NOTIFY; }
+	return NCA_RECOVER;
+}
+
+uint8_t Spi0_Check(uint32_t mr, uint32_t csr3)
+{
+	uint8_t a = 0;
+	if(!(mr & (1UL << 0))) a |= SPI_ANOM_MASTER;                       // MSTR
+	if(mr & (1UL << 1)) a |= SPI_ANOM_VARIABLE;                        // PS
+	if(((mr >> 16) & 0xF) != 0x7) a |= SPI_ANOM_CHANNEL;               // PCS = 0111: выбран канал 3 (активный низкий уровень в поле)
+	if((csr3 & (1UL << 0)) || !(csr3 & (1UL << 1))) a |= SPI_ANOM_MODE; // CPOL = 0 и NCPHA = 1: режим 0
+	if(csr3 & (0xFUL << 4)) a |= SPI_ANOM_BITS;                        // BITS = 0: 8 бит
+	const uint32_t scbr = (csr3 >> 8) & 0xFF;
+	if(scbr < 2 || scbr > 8) a |= SPI_ANOM_SCBR;
+	return a;
+}
+
+bool Error_RepeatReset(RepeatWatch &w, uint8_t num_repeat, bool work_ok, uint32_t now_ms, uint32_t limit_ms)
+{
+	if(!work_ok || num_repeat == 0) { w.since_ms = now_ms; return false; }   // окно идёт только при работе без ошибок и с ненулевым счётом
+	if((uint32_t)(now_ms - w.since_ms) < limit_ms) return false;            // разность беззнаковая: переход тиков через ноль не ломает отсчёт
+	w.since_ms = now_ms;
+	return true;
 }
 
 bool Fault_RelayOffLevel(bool relay_invert, bool r4way_invert, bool is_r4way)
