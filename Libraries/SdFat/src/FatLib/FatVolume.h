@@ -290,10 +290,10 @@ class FatVolume {
   bool writeBlock(uint32_t block, const uint8_t* src) {
     return m_blockDev->writeBlock(block, src);
   }
-#if USE_MULTI_BLOCK_IO
-  bool readBlocks(uint32_t block, uint8_t* dst, size_t nb) {
+  bool readBlocks(uint32_t block, uint8_t* dst, size_t nb) {   // ТН: чтение CMD18 есть всегда, включается флагом sdMultiBlockRead
     return m_blockDev->readBlocks(block, dst, nb);
   }
+#if USE_MULTI_BLOCK_IO
   bool writeBlocks(uint32_t block, const uint8_t* src, size_t nb) {
     return m_blockDev->writeBlocks(block, src, nb);
   }

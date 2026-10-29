@@ -32,6 +32,9 @@
 #include "SPI.h"
 #include "SdSpiBaseDriver.h"
 #include "SdFatConfig.h"
+#if defined(__SAM3X8E__) || defined(__SAM3X8H__)
+#include <SpiBus.h>     // контроллер ТН: SD на общей шине SPI0 с W5500 и флеш (Libraries/SpiBus)
+#endif
 //-----------------------------------------------------------------------------
 /** SDCARD_SPI is defined if board has built-in SD card socket */
 #ifndef SDCARD_SPI
@@ -167,6 +170,12 @@ class SdSpiAltDriver {
    * \param[in] n Number of bytes to send.
    */
   void send(const uint8_t* buf, size_t n);
+#if defined(__SAM3X8E__) || defined(__SAM3X8H__)
+  // SAM3X: CS и настройку канала ведёт общая шина (SdSpiSAM3X.cpp); частота хранится в шине, не здесь
+  void select() { spiBusSelect(SPIDEV_SD); }
+  void setSpiSettings(SPISettings spiSettings);
+  void unselect() { spiBusDeselect(SPIDEV_SD); }
+#else
   /** Set CS low. */
   void select() {
      digitalWrite(m_csPin, LOW);
@@ -182,6 +191,7 @@ class SdSpiAltDriver {
   void unselect() {
     digitalWrite(m_csPin, HIGH);
   }
+#endif
 #if IMPLEMENT_SPI_PORT_SELECTION || defined(DOXYGEN)
   /** Set SPI port number.
    * \param[in] portNumber Hardware SPI port number.

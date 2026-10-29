@@ -434,7 +434,11 @@ void setup() {
 	pinMode(PIN_SPI_CS_FLASH,INPUT_PULLUP);     // сигнал CS управление чипом флеш памяти
 	pinMode(PIN_SPI_CS_FLASH,OUTPUT);           // сигнал CS управление чипом флеш памяти
 #endif
-	SPI_switchAllOFF();                         // Выключить все устройства на SPI
+	digitalWriteDirect(PIN_SPI_CS_SD,HIGH);     // все устройства SPI выключены (драйверы шины их ещё не настроили - spiBusDeselectAll рано)
+	digitalWriteDirect(PIN_SPI_CS_W5XXX,HIGH);
+#ifdef SPI_FLASH
+	digitalWriteDirect(PIN_SPI_CS_FLASH,HIGH);
+#endif
 	// Отключить питание (VUSB) на Native USB
 	Set_bits(UOTGHS->UOTGHS_CTRL, UOTGHS_CTRL_VBUSHWC);
 	PIO_Configure(PIOB, PIO_OUTPUT_0, PIO_PB10A_UOTGVBOF, PIO_DEFAULT);

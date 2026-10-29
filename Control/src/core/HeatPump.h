@@ -81,7 +81,7 @@ extern boolean  Charts_when_comp_on; // графики в памяти толь�
 #define fReserved7				7				// РЕЗЕРВ: раньше "на шине 2 1-Wire только один датчик" (шины 2-4 нет, флаг не использовался). Не занимать без нужды
 #define fReserved8				8				// РЕЗЕРВ: раньше "на шине 3 1-Wire только один датчик" (шины 2-4 нет, флаг не использовался). Не занимать без нужды
 #define fReserved9				9				// РЕЗЕРВ: раньше "на шине 4 1-Wire только один датчик" (шины 2-4 нет, флаг не использовался). Не занимать без нужды
-#define fReserved10				10				// РЕЗЕРВ: бит 10 флагов опций, раньше "СК для регенерации геоконтура" (нигде не использовался). Не занимать без нужды
+#define fSDMultiBlock			10				// флаг Многоблочное чтение SD (CMD18). Бит прежде нигде не использовался (был резерв "СК для регенерации геоконтура"), в сохранённых настройках 0
 #define fNextionOnWhileWork		11				// Включать дисплей, когда компрессор работает
 #define fWebStoreOnSPIFlash		12				// флаг, что веб морда лежит на SPI Flash, иначе на SD карте
 #define fReserved13				13				// РЕЗЕРВ: раньше "логировать обмен беспроводных датчиков" (радио удалено)
@@ -426,6 +426,7 @@ class HeatPump
    uint16_t get_pausePump() {return Option.pausePump;};                // Время паузы  насоса при выключенном компрессоре, секунды
    uint16_t get_workPump() {return Option.workPump;};                  // Время работы  насоса при выключенном компрессоре, секунды
    uint8_t  get_Beep() {return GETBIT(Option.flags,fBeep);};           // подача звуковых сигналов
+   uint8_t  get_SDMultiBlock() {return GETBIT(Option.flags,fSDMultiBlock);};   // многоблочное чтение SD (CMD18)
    uint8_t  get_SaveON() {return GETBIT(Option.flags,fSaveON);}        // получить флаг записи состояния
    uint8_t  get_WebStoreOnSPIFlash() {return GETBIT(Option.flags,fWebStoreOnSPIFlash);}// получить флаг хранения веб морды на флеш диске
    boolean  set_WebStoreOnSPIFlash(boolean f) {if(f)SETBIT1(Option.flags,fWebStoreOnSPIFlash);else SETBIT0(Option.flags,fWebStoreOnSPIFlash);return GETBIT(Option.flags,fWebStoreOnSPIFlash);}// установить флаг хранения веб морды на флеш диске

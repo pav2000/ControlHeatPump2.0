@@ -10,9 +10,10 @@
 #include <stdio.h>
 #include <string.h>
 #include "utility/w5100.h"
-#include "utility/spi_dma.h"
 
 #if defined(W5200_ETHERNET_SHIELD)
+// Драйвер W5200 не переведён на общую шину SPI (SpiBus): прежние spiSend/spiRec из utility/spi_dma.cpp удалены.
+#error "W5200 не переведён на шину SpiBus (Libraries/SpiBus/SpiBus.h); образец - utility/w5500.cpp"
 // W5200 controller instance
 W5200Class W5100;
 #define TX_RX_MAX_BUF_SIZE 2048

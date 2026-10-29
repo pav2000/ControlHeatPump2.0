@@ -613,6 +613,15 @@ bool WebSock_Busy(int8_t sock, const int8_t *owners, uint8_t n)
 	return false;
 }
 
+uint8_t SD_BlockRun(uint32_t first, uint32_t last, uint32_t ram1, uint32_t ram2, uint8_t maxn)
+{
+	if(first == ram1 || first == ram2) return 0;
+	if(maxn == 0) maxn = 1;
+	uint8_t n = 1;
+	for(uint32_t b = first; n < maxn && b < last && b + 1 != ram1 && b + 1 != ram2; b++) n++;   // b < last: следующий блок есть (без переполнения b + 1)
+	return n;
+}
+
 SendWait Send_StallStep(uint16_t free, uint16_t *last_free, uint32_t now_ms, uint32_t *progress_ms, uint32_t limit_ms)
 {
 	if(free > *last_free) {                        // клиент подтвердил данные: буфер освободился

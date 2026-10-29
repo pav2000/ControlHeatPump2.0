@@ -23,6 +23,7 @@
  * DEALINGS IN THE SOFTWARE.
  */
 #include "SdSpiCard.h"
+uint16_t sdBusyMaxMs = 0;
 // debug trace macro
 #define SD_TRACE(m, b)
 // #define SD_TRACE(m, b) Serial.print(m);Serial.println(b);
@@ -358,6 +359,7 @@ bool SdSpiCard::readBlocks(uint32_t block, uint8_t* dst, size_t count) {
   }
   for (uint16_t b = 0; b < count; b++, dst += 512) {
     if (!readData(dst, 512)) {
+      readStop();     // ТН: карта ещё выдаёт блоки - без CMD12 следующая команда ушла бы в поток данных
       return false;
     }
   }
@@ -527,6 +529,8 @@ bool SdSpiCard::waitNotBusy(uint16_t timeoutMS) {
       return false;
     }
   }
+  const uint16_t busy = curTimeMS() - t0;
+  if (busy > sdBusyMaxMs) sdBusyMaxMs = busy;
   return true;
 #endif  // WDT_YIELD_TIME_MICROS
 }

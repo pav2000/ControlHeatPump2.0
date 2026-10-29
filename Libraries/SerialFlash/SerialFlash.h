@@ -29,15 +29,13 @@
 #define SerialFlash_h_
 
 #include <Arduino.h>
-#include <SPI.h>
 
 class SerialFlashFile;
 
 class SerialFlashChip
 {
 public:
-	static bool begin(SPIClass& device, uint8_t pin = 6);
-	static bool begin(uint8_t pin = 6);
+	static bool begin(uint8_t pin = 6);           // контроллер ТН: обмен через общую шину SpiBus (выбор порта SPIClass убран)
 	static uint32_t capacity(const uint8_t *id);
 	static uint32_t blockSize();
 	static void sleep();
@@ -45,6 +43,7 @@ public:
 	static void readID(uint8_t *buf);
 	static void readSerialNumber(uint8_t *buf);
 	static void read(uint32_t addr, void *buf, uint32_t len);
+	static uint8_t readHeader(uint8_t *h, uint32_t addr, bool addr32);   // заголовок Fast Read в h (до 6 байт), возвращает длину
 	static bool ready();
 	static void wait();
 	static void write(uint32_t addr, const void *buf, uint32_t len);

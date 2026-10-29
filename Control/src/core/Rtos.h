@@ -143,8 +143,8 @@ struct ControllerDiag
 	uint16_t num_semSuspended; // попыток взять замок при ОСТАНОВЛЕННОМ планировщике (должно быть 0)
 	uint16_t num_resMQTT;      // повторных инициализаций MQTT-клиента
 	uint16_t num_resPing;      // не прошедших пингов
-	uint16_t num_dmaTimeout;   // чтений W5500 по DMA с таймаутом (данные не дошли)
-	uint16_t num_dmaOverrun;   // переполнений приёмника SPI при чтении W5500
+	uint16_t num_dmaTimeout;   // чтений по DMA шины SPI (W5500, SD) с таймаутом (данные не дошли)
+	uint16_t num_dmaOverrun;   // переполнений приёмника SPI при чтении по DMA (W5500, SD)
 	uint32_t countResSocket;   // сбросов сокетов
 };
 extern ControllerDiag Diag;    // создаётся в Control.ino

@@ -22,7 +22,7 @@
 .wxr div:first-child{border-top:0}.wxr div:hover{background:var(--acc2)}.wxr small{color:var(--mute)}
 </style>
 <script>
-// Реле (/api/meta?g=relay, ключи relay.<ИМЯ>.on), дисплей Nextion и звук (BEEP). Реле переключаются сразу и только при остановленном ТН: пока он работает,
+// Реле (/api/meta?g=relay, ключи relay.<ИМЯ>.on), дисплей Nextion и карточка «Контроллер» (звук ohp.beep, многоблочное чтение SD ohp.sdmb). Реле переключаются сразу и только при остановленном ТН: пока он работает,
 // опрос блокирует переключатели. Блок «Корректировка электрической мощности» убран:
 // прошивка больше не поддерживает эту функцию (CORRECT_POWER220 удалён в cd50217, get_tblPwrC отвечает E01).
 urlupdate = 2000;
@@ -115,7 +115,10 @@ window.onload = function() {
 		{key: 'ohp.nxts', t: 'Время засыпания дисплея', h: '0…255 мин, 0 — не выключается', u: 'мин', min: 0, max: 255, step: 1, n: [7, '0 — дисплей Nextion не выключается.']},
 		{key: 'ohp.nxtd', t: 'Яркость', h: '1…100 %', u: '%', min: 1, max: 100, step: 1}
 	]);
-	stFields('snd', [{key: 'ohp.beep', k: 'sw', t: 'Звуковой сигнал', h: 'генерация сигналов контроллером'}]);
+	stFields('ctl', [
+		{key: 'ohp.beep', k: 'sw', t: 'Звуковой сигнал', h: 'генерация сигналов контроллером'},
+		{key: 'ohp.sdmb', k: 'sw', t: 'Многоблочное чтение SD', h: 'файлы читаются с карты пачкой блоков: быстрее; выключить, если старая карта даёт ошибки чтения'}
+	]);
 	stDevices('relay', function(list) {
 		relays = list;
 		$('rows').innerHTML = list.map(row).join('');
@@ -141,8 +144,8 @@ window.onload = function() {
 			<div id="nxt"></div>
 		</section>
 		<section class="card">
-			<h3>Звук</h3>
-			<div id="snd"></div>
+			<h3>Контроллер</h3>
+			<div id="ctl"></div>
 		</section>
 		<section class="card">
 			<h3>Интерфейс <span class="r" style="color:var(--mute);font-weight:600">только в этом браузере</span></h3>

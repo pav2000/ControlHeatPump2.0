@@ -10,7 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "utility/w5100.h"
-#include "utility/spi_dma.h"
+#include <SpiBus.h>         // общая шина SPI0 с DMA (Libraries/SpiBus)
 
 #if defined(W5500_ETHERNET_SHIELD)
 // W5500 controller instance
@@ -25,8 +25,8 @@ void W5500Class::init(void)
   SPI.setClockDivider(SPI_CS, 3);
   SPI.setDataMode(SPI_CS, SPI_MODE0);
 #endif
-	spiBegin();
-	spiInit(SPI_RATE);
+	spiBusInit();
+	spiBusSetDevice(SPIDEV_NET, SS, SPI_RATE);     // SS = 10: CS сетевого чипа
 
   writeMR(1<<RST);
 
@@ -99,49 +99,49 @@ void W5500Class::read_data(SOCKET s, volatile uint16_t src, volatile uint8_t *ds
 
 uint8_t W5500Class::write(uint16_t _addr, uint8_t _cb, uint8_t _data)
 {
-    digitalWriteDirectARM(SS,LOW);
-    spiSend(_addr >> 8);
-    spiSend(_addr & 0xFF);
-    spiSend(_cb);
-    spiSend(_data);
-    digitalWriteDirectARM(SS,HIGH);
+    spiBusSelect(SPIDEV_NET);
+    spiBusXfer(_addr >> 8);
+    spiBusXfer(_addr & 0xFF);
+    spiBusXfer(_cb);
+    spiBusXfer(_data);
+    spiBusDeselect(SPIDEV_NET);
     return 1;
 }
 // Передать пакет, есть отличия от 5200 чипа - длина передаваемых данных не передается
 uint16_t W5500Class::write(uint16_t _addr, uint8_t _cb, const uint8_t *_buf, uint16_t _len)
 {
-    digitalWriteDirectARM(SS,LOW);
-    spiSend(_addr >> 8);
-    spiSend(_addr & 0xFF);
-    spiSend(_cb);
+    spiBusSelect(SPIDEV_NET);
+    spiBusXfer(_addr >> 8);
+    spiBusXfer(_addr & 0xFF);
+    spiBusXfer(_cb);
    // spiSend((0x80 | ((_len & 0x7F00) >> 8)));     // для w5500 длина не передается
    // spiSend(_len & 0x00FF);
-    spiSend(_buf,_len);
-    digitalWriteDirectARM(SS,HIGH);
+    spiBusSend(_buf,_len);
+    spiBusDeselect(SPIDEV_NET);
   return _len;
 }
 
 uint8_t W5500Class::read(uint16_t _addr, uint8_t _cb)
 {
-digitalWriteDirectARM(SS,LOW);
-    spiSend(_addr >> 8);
-    spiSend(_addr & 0xFF);
-    spiSend(_cb);
-    uint8_t _data = spiRec();
-    digitalWriteDirectARM(SS,HIGH);
+    spiBusSelect(SPIDEV_NET);
+    spiBusXfer(_addr >> 8);
+    spiBusXfer(_addr & 0xFF);
+    spiBusXfer(_cb);
+    uint8_t _data = spiBusXfer(0xFF);
+    spiBusDeselect(SPIDEV_NET);
   return _data;
 }
 
 uint16_t W5500Class::read(uint16_t _addr, uint8_t _cb, uint8_t *_buf, uint16_t _len)
 {
-digitalWriteDirectARM(SS,LOW);
-    spiSend(_addr >> 8);
-    spiSend(_addr & 0xFF);
-    spiSend( _cb);
+    spiBusSelect(SPIDEV_NET);
+    spiBusXfer(_addr >> 8);
+    spiBusXfer(_addr & 0xFF);
+    spiBusXfer( _cb);
   //  spiSend((0x00 | ((_len & 0x7F00) >> 8)));  // для w5500 длина не передается
   //  spiSend(_len & 0x00FF);
-    spiRec(_buf,_len);
-    digitalWriteDirectARM(SS,HIGH);
+    spiBusRec(_buf,_len);
+    spiBusDeselect(SPIDEV_NET);
   return _len;
 }
 

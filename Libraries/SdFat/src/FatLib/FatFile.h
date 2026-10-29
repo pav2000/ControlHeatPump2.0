@@ -36,6 +36,10 @@
 #include "FatApiConstants.h"
 #include "FatStructs.h"
 #include "FatVolume.h"
+// Контроллер ТН: многоблочное чтение файлов (CMD18) включается во время работы настройкой «Многоблочное чтение SD», а не при
+// сборке (USE_MULTI_BLOCK_IO 0 - запись остаётся поблочной ради старых карт). Отказ CMD18 сбрасывает флаг: дальше поблочно.
+extern uint8_t  sdMultiBlockRead;     // 1 - читать файлы пачкой блоков
+extern uint32_t sdMultiBlockFails;    // отказов CMD18 с начала работы
 class FatFileSystem;
 //------------------------------------------------------------------------------
 // Stuff to store strings in AVR flash.

@@ -24,6 +24,8 @@
  */
 #include "FatFile.h"
 #include "FatFileSystem.h"
+uint8_t  sdMultiBlockRead = 0;
+uint32_t sdMultiBlockFails = 0;
 //------------------------------------------------------------------------------
 // Pointer to cwd directory.
 FatFile* FatFile::m_cwd = 0;
@@ -784,8 +786,7 @@ int FatFile::read(void* buf, size_t nbyte) {
       }
       uint8_t* src = pc->data + offset;
       memcpy(dst, src, n);
-#if USE_MULTI_BLOCK_IO
-    } else if (toRead >= 1024) {
+    } else if (sdMultiBlockRead && toRead >= 1024) {
       size_t nb = toRead >> 9;
       if (!isRootFixed()) {
         uint8_t mb = m_vol->blocksPerCluster() - blockOfCluster;
@@ -803,10 +804,16 @@ int FatFile::read(void* buf, size_t nbyte) {
         }
       }
       if (!m_vol->readBlocks(block, dst, nb)) {
-        DBG_FAIL_MACRO;
-        goto fail;
+        // Карта не справилась с CMD18 (старые карты): дальше только поблочно, этот блок дочитываем одиночной командой.
+        // Повторять с той же позиции нельзя: на границе кластера следующий кластер уже взят из FAT.
+        sdMultiBlockRead = 0;
+        sdMultiBlockFails++;
+        n = 512;
+        if (!m_vol->readBlock(block, dst)) {
+          DBG_FAIL_MACRO;
+          goto fail;
+        }
       }
-#endif  // USE_MULTI_BLOCK_IO
     } else {
       // read single block
       n = 512;

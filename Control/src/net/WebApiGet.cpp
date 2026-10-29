@@ -35,6 +35,8 @@
 
 
 // Системная информация для разработчика: «подпись|значение;...», разделы - строки <b>…</b>. Источник ключа sys.info.
+static int spiBusMHz(SpiDev d) { const uint8_t scbr = spiBusScbr(d); return scbr ? (int) (F_CPU / 1000000UL / scbr) : 0; }
+
 static void sysInfoText(char *strReturn)
 {
 	strcat(strReturn,"Источник загрузкки web интерфейса |");
@@ -98,8 +100,9 @@ static void sysInfoText(char *strReturn)
 	strcat(strReturn,"Счетчик числа повторных соединений MQTT клиента|");_itoa(Diag.num_resMQTT,strReturn);strcat(strReturn,";");
 	#endif
 	strcat(strReturn,"Счетчик неудачных ping|");_itoa(Diag.num_resPing,strReturn);strcat(strReturn,";");
-	strcat(strReturn,"Чтений сетевого чипа по DMA с таймаутом (должно быть 0)|");_itoa(Diag.num_dmaTimeout,strReturn);strcat(strReturn,";");
-	strcat(strReturn,"Переполнений приёмника SPI при чтении сетевого чипа (должно быть 0)|");_itoa(Diag.num_dmaOverrun,strReturn);strcat(strReturn,";");
+	strcat(strReturn,"Чтений по DMA шины SPI с таймаутом (должно быть 0)|");_itoa(Diag.num_dmaTimeout,strReturn);strcat(strReturn,";");
+	strcat(strReturn,"Переполнений приёмника SPI при чтении по DMA (должно быть 0)|");_itoa(Diag.num_dmaOverrun,strReturn);strcat(strReturn,";");
+	strcat(strReturn,"Чтений по DMA, закончившихся во время вытеснения потока (не ошибка)|");_itoa(spiBusStat.dmaLate,strReturn);strcat(strReturn,";");
 	#ifdef USE_ELECTROMETER_SDM
 	strcat(strReturn,"Счетчик числа ошибок чтения электро-счетчика|");_itoa(HP.dSDM.get_numErr(),strReturn);strcat(strReturn,";");
 	#endif
@@ -140,8 +143,13 @@ static void wc_CONST(char *strReturn)
 		strcat(strReturn,"CONFIG_NAME|Имя конфигурации|");strcat(strReturn,CONFIG_NAME);strcat(strReturn,";");
 		strcat(strReturn,"CONFIG_NOTE|");strcat(strReturn,CONFIG_NOTE);strcat(strReturn,"|;");
 		strcat(strReturn,"configCPU_CLOCK_HZ|Частота CPU (МГц)|");_itoa(configCPU_CLOCK_HZ/1000000,strReturn);strcat(strReturn,";");
-		strcat(strReturn,"SD_SPI_SPEED|Частота SPI SD карты (МГц)|");_itoa(SD_CLOCK, strReturn);strcat(strReturn,";");
-		strcat(strReturn,"W5200_SPI_SPEED|Частота SPI сети "); strcat(strReturn,nameWiznet);strcat(strReturn," (МГц)|");_itoa(84/W5200_SPI_SPEED, strReturn);strcat(strReturn,";");
+		// Частоты SPI - фактические, по делителю, который стоит в шине (84 МГц / SCBR): запрошенные SD_CLOCK 30 и 50 МГц флеш
+		// округляются вниз до 28 и 42. Устройство, которое не инициализировалось (нет карты), - 0.
+		strcat(strReturn,"SD_SPI_SPEED|Частота SPI SD карты (МГц)|");_itoa(spiBusMHz(SPIDEV_SD), strReturn);strcat(strReturn,";");
+		strcat(strReturn,"W5200_SPI_SPEED|Частота SPI сети "); strcat(strReturn,nameWiznet);strcat(strReturn," (МГц)|");_itoa(spiBusMHz(SPIDEV_NET), strReturn);strcat(strReturn,";");
+#ifdef SPI_FLASH
+		strcat(strReturn,"FLASH_SPI_SPEED|Частота SPI флеш памяти (МГц)|");_itoa(spiBusMHz(SPIDEV_FLASH), strReturn);strcat(strReturn,";");
+#endif
 		strcat(strReturn,"I2C_SPEED|Частота работы шины I2C (кГц)|"); _itoa(I2C_SPEED/1000,strReturn); strcat(strReturn,";");
 		strcat(strReturn,"UART_SPEED|Скорость отладочного порта (бод)|");_itoa(UART_SPEED,strReturn);strcat(strReturn,";");
 		strcat(strReturn,"WDT_TIME|Период сторожевого таймера, 0 - нет (сек)|");_itoa(WDT_TIME,strReturn);strcat(strReturn,";");

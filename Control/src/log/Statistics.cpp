@@ -84,7 +84,7 @@ int8_t Statistics::CreateOpenFile(uint8_t what)
 	_itoa(year, filename);
 	strcat(filename, stats_file_ext);
 	journal.jprintf(" File: %s ", filename);
-	SPI_switchSD();
+	spiBusDeselectAll();
 	if(!StatsFile.opens(filename, O_READ, &open_fname)) {
 		uint16_t days = month == 1 ? 366 : (12 - month + 1) * 31;
 		if(!StatsFile.createContiguous(filename, what ? HistoryFileSize((uint16_t) HISTORY_MAX_RECORD_LEN, days) : STATS_MAX_FILE_SIZE(days))) {
@@ -215,7 +215,7 @@ void Statistics::ScanYears()
 {
 	yearFiles[0] = yearFiles[1] = yearFiles[2] = 0;
 	if(!HP.get_fSD()) return;
-	SPI_switchSD();
+	spiBusDeselectAll();
 	for(uint8_t what = 0; what < 3; what++) {
 		for(int32_t y = rtcSAM3X8.get_years(); y > 2000 && y < 2065; y--) {
 			strcpy(filename, what == ID_HISTORY_OLD ? history_file_start : what == ID_HISTORY ? history2_file_start : stats_file_start);
@@ -345,7 +345,7 @@ void Statistics::CheckCreateNewFile()
 		strcpy(filename, stats_file_start);
 		_itoa(year, filename);
 		strcat(filename, stats_file_ext);
-		SPI_switchSD();
+		spiBusDeselectAll();
 		if(!StatsFile.opens(filename, O_RDWR, &open_fname)) Error("open", ID_STATS);
 		else {
 			journal.jprintf("Truncate %s to %d\n", filename, (int)((CurrentBlock - BlockStart) * SD_BLOCK + CurrentPos));
@@ -713,7 +713,7 @@ void Statistics::StatsWebTable(char *ret)
 // Return: OK, 1 - not found, >2 - error. Network is active
 void Statistics::SendFileData(uint8_t thread, SdFile *File, char *filename, bool noMarkers)
 {
-	SPI_switchSD();
+	spiBusDeselectAll();
 	if(!File->opens(filename, O_READ, &open_fname)) {
 		journal.jprintf("Error open %s\n", filename);
 		sendConstRTOS(thread, HEADER_FILE_NOT_FOUND);
@@ -733,23 +733,36 @@ void Statistics::SendFileData(uint8_t thread, SdFile *File, char *filename, bool
 	}
 	readed = 0;
 	bool eod = false;
-	for(uint32_t i = bst; i <= bend && !eod; i++) {
-		SPI_switchSD();
-		if(i == CurrentBlock) {
-			memcpy(_buffer_ + readed, stats_buffer, SD_BLOCK);
-		} else if(i == HistoryCurrentBlock) {
-			memcpy(_buffer_ + readed, history_buffer, SD_BLOCK);
-		} else if(!card.card()->readBlock(i, _buffer_ + readed)) {
+	for(uint32_t i = bst; i <= bend && !eod; ) {
+		spiBusDeselectAll();
+		// Серия блоков одной командой CMD18 (настройка «Многоблочное чтение SD»): сколько влезает в пакет, до блока из ОЗУ или конца файла.
+		// Без настройки или после отказа CMD18 - по одному блоку, как раньше. На блок CMD17 карта тратит 0,05-0,3 мс доступа, CMD18 - один раз.
+		const uint8_t room = (W5200_MAX_LEN - readed) / SD_BLOCK;
+		uint8_t nb = SD_BlockRun(i, bend, CurrentBlock, HistoryCurrentBlock, sdMultiBlockRead ? room : 1);
+		if(nb == 0) {
+			memcpy(_buffer_ + readed, i == CurrentBlock ? stats_buffer : history_buffer, SD_BLOCK);
+			nb = 1;
+		} else if(nb > 1 && !card.card()->readBlocks(i, _buffer_ + readed, nb)) {
+			sdMultiBlockRead = 0;                      // отказ CMD18: дальше поблочно (SD_ReadMode напишет в журнал)
+			sdMultiBlockFails++;
+			nb = 1;
+			if(!card.card()->readBlock(i, _buffer_ + readed)) { Error("read data", ID_STATS); break; }
+		} else if(nb == 1 && !card.card()->readBlock(i, _buffer_ + readed)) {
 			Error("read data", ID_STATS);
 			break;
 		}
-		if(_buffer_[readed + SD_BLOCK - 1] == 0) {  // end of data
-			if(_buffer_[readed] != 0) readed = (uint8_t*)memchr(_buffer_ + readed, 0, SD_BLOCK) - _buffer_;
-			eod = true;
-		} else {
+		i += nb;
+		bool send = false;
+		for(uint8_t j = 0; j < nb; j++) {          // разбор блоков серии по одному, как прежде по одиночным
+			if(_buffer_[readed + SD_BLOCK - 1] == 0) {  // end of data
+				if(_buffer_[readed] != 0) readed = (uint8_t*)memchr(_buffer_ + readed, 0, SD_BLOCK) - _buffer_;
+				eod = true;
+				send = true;
+				break;
+			}
 			readed += SD_BLOCK;
-			if(readed <= W5200_MAX_LEN - SD_BLOCK) continue;
 		}
+		if(!send && readed <= W5200_MAX_LEN - SD_BLOCK) continue;   // как прежде: без маркера конца хвост после последнего блока не досылается
 		if(!SendFileChunk(thread, &readed, noMarkers, eod)) {
 			journal.jprintf(" Error send %s\n", filename);
 			break;
@@ -787,7 +800,7 @@ void Statistics::SendFileDataByPeriod(uint8_t thread, SdFile *File, char *Prefix
 	strcpy((char*)_buffer_ + bendfile + 1, Prefix);
 	strncat((char*)_buffer_+ bendfile + 1, TimeStart, 4); // year
 	strcat((char*)_buffer_ + bendfile + 1, stats_file_ext);
-	SPI_switchSD();
+	spiBusDeselectAll();
 	if(!File->opens((char*)_buffer_ + bendfile + 1, O_READ, &open_fname)) {
 		journal.jprintf("Error open %s\n", _buffer_ + bendfile + 1);
 		sendConstRTOS(thread, HEADER_FILE_NOT_FOUND);
@@ -880,7 +893,7 @@ xGoDown:	if(cur == bst) { // low limit
 		goto xFoundStart;
 	}
 	for(; bst <= bendfile; bst++) {
-		SPI_switchSD();
+		spiBusDeselectAll();
 		if(bst == CurrentBlock) {
 			memcpy(_buffer_ + readed, stats_buffer, SD_BLOCK);
 		} else if(bst == HistoryCurrentBlock) {
@@ -973,7 +986,7 @@ int8_t Statistics::SaveStats(uint8_t newday)
 		// соберёт строку заново.
 		memcpy(stats_buffer + CurrentPos, rbuf, lensav = SD_BLOCK - CurrentPos < len ? SD_BLOCK - CurrentPos : len);
 #endif
-		SPI_switchSD();
+		spiBusDeselectAll();
 		if(!card.card()->writeBlock(CurrentBlock, stats_buffer)) {
 			Error("save", ID_STATS);
 			// to do - reinit card but in other task
@@ -1019,7 +1032,7 @@ int8_t Statistics::SaveHistory(uint8_t from_web)
 	if(!GETBIT(HP.Option.flags, fHistory) || !HP.get_fSD() || HistoryCurrentBlock == 0) return OK;
 	if(!from_web && SemaphoreTake(xWebThreadSemaphore, W5200_TIME_WAIT) == pdFALSE) return ERR_CONFIG;
 	int8_t retval = OK;
-	SPI_switchSD();
+	spiBusDeselectAll();
 	if(!card.card()->writeBlock(HistoryCurrentBlock, history_buffer)) {
 		Error("save", ID_STATS);
 		retval = ERR_SD_WRITE;

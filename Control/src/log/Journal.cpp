@@ -232,6 +232,7 @@ void Journal::jprintf_date(const char *format, ...)
 // отдать журнал в сеть клиенту  Возвращает число записанных байт
 int32_t Journal::send_Data(uint8_t thread)
 {
+	// SEM-BORROW: xWebThreadSemaphore - замок сети принадлежит web_server; на чтение EEPROM он отпускается и берётся обратно, при потере выставляется fLOCK_LOST
 	// Свежие строки лежат в кольце и в EEPROM ещё не попали. Перед отдачей
 	// журнала кольцо выгружается целиком, иначе последние записи - как раз
 	// самые интересные при разборе аварии - в файл не попадут.
@@ -252,20 +253,32 @@ int32_t Journal::send_Data(uint8_t thread)
 		} else {                                                        // Текущая позиция меньше хвоста (конец передачи)
 			if(tail - num >= W5200_MAX_LEN) len = W5200_MAX_LEN; else len = tail - num;     // Контроль достижения хвоста журнала
 		}
-		if(readEEPROM_I2C(I2C_JOURNAL_START + num, (byte*) Socket[thread].outBuf, len))         // чтение из памяти
+		// Кусок 2 КБ читается из EEPROM по I2C около 50 мс, весь журнал - около 3 с. Всё это время замок сети держал бы этот поток, и остальные
+		// веб-потоки (и страницы морды) вставали бы за ним (замер: запрос API 3 -> 130 мс, ожидание замка до 1-3 с). Буфер у потока свой, I2C
+		// защищён своим замком, поэтому замок сети на чтение отдаётся.
+		if(GETBIT(Socket[thread].flags, fLOCK_LOST)) return 0;                                  // замка уже нет: отдавать нечего
+		SemaphoreGive(xWebThreadSemaphore);
+		taskYIELD();
+		const bool bad = readEEPROM_I2C(I2C_JOURNAL_START + num, (byte*) Socket[thread].outBuf, len);   // чтение из памяти
+		if(SemaphoreTake(xWebThreadSemaphore, W5200_TIME_WAIT) != pdPASS) {
+			SETBIT1(Socket[thread].flags, fLOCK_LOST);                                          // web_server по этому флагу не отдаёт чужой замок
+			jprintf("Cant take SEM while sending journal!\n");
+			return 0;
+		}
+		if(bad)
 		{
 			err = ERR_READ_I2C_JOURNAL;
 			SerialDbg.print(errorReadI2C);
-			return 0;
+			return 0;                                                                           // SEM-OK: замок сети взят обратно и принадлежит web_server
 		}
-		if(sendPacketRTOS(thread, (byte*) Socket[thread].outBuf, len, 0) == 0) return 0;        // передать пакет, при ошибке выйти
+		if(sendPacketRTOS(thread, (byte*) Socket[thread].outBuf, len, 0) == 0) return 0;        // SEM-OK: замок вернулся к web_server, при ошибке выход
 		_delay(2);
 		sum = sum + len;                                                                        // сколько байт передано
 		if(sum >= avail) break;                                                                 // Все передано уходим
 		num = num + len;                                                                        // Указатель на переданные данные
 		if(num >= JOURNAL_LEN) num = 0;                                                         // переходим на начало
 	}  // for
-	return sum;
+	return sum;                                                                                 // SEM-OK: замок сети у web_server, как и вошли
 }
 
 // Возвращает размер журнала

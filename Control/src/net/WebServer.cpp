@@ -114,7 +114,7 @@ void web_server(uint8_t thread)
 
 	Socket[thread].sock = -1;                      // Сокет свободный
 
-	SPI_switchW5200();                    // Это лишнее но для надежности пусть будет
+	spiBusDeselectAll();                    // Это лишнее но для надежности пусть будет
 	webStatSample();                      // состояния сокетов: сколько слушает, сколько закрыто и ждёт повторного открытия
 	for(sock = 0; sock < W5200_SOCK_SYS; sock++)  // Цикл по сокетам веб сервера!!!! служебный не трогаем!!
 	{
@@ -266,11 +266,11 @@ xUNAUTHORIZED:
 					}
 
 					// Обработчик потерял замок сети (отпустил на время ожидания и не взял обратно): шина SPI сейчас у другой
-					// задачи, поэтому ни SPI_switchW5200, ни client.stop, ни отдача замка нам не принадлежат. Раньше здесь
+					// задачи, поэтому ни spiBusDeselectAll, ни client.stop, ни отдача замка нам не принадлежат. Раньше здесь
 					// всё это выполнялось: assert ядра при отдаче чужого мьютекса либо обмен по SPI без замка. Незакрытый
 					// сокет подберёт checkSockStatus.
 					if(GETBIT(Socket[thread].flags, fLOCK_LOST)) { Socket[thread].sock = -1; return; } // SEM-OK: замка нет, отдавать нечего
-					SPI_switchW5200();
+					spiBusDeselectAll();
 					Socket[thread].inBuf[0] = 0;
 					break;   // Подготовить к следующей итерации
 				} // end if (client.available())
@@ -300,11 +300,67 @@ static const char* webFileHeader(const char *filename)
 	return HEADER_FILE_WEB;
 }
 
+// TEST.SD:<файл> и TEST.FLASH:<файл> - скорость чтения файла с носителя без сети: читаем порциями outBuf (как отдача морды),
+// в журнал - байты, время, скорость и CRC16 (calc_crc16, MODBUS) для сверки содержимого с исходным файлом на компьютере.
+// Время - только внутри read(), в микросекундах: CRC стоит ~0,1 мкс на байт, это сравнимо с чтением флеш по DMA и исказило бы
+// замер, а маленький файл с флеш читается быстрее миллисекунды (прежний счёт по тикам делил на ноль).
+// Результат - одной строкой журнала вместе с именем: журнал сжимает повторы целых строк, и начало строки, напечатанное отдельно,
+// склеивалось со следующей (результат SD выходил под именем флеш). Возвращает результат последнего read(): < 0 - ошибка (у SdFat).
+template<class F> static int webTestRead(uint8_t thread, F &file, const char *dev, const char *name)
+{
+	uint32_t size = 0, us = 0;
+	uint16_t crc = 0xFFFF;
+	int n;
+	const uint32_t tStart = GetTickCount();
+	for(;;) {
+		const uint32_t t1 = micros();
+		n = file.read(Socket[thread].outBuf, sizeof(Socket[thread].outBuf));
+		us += micros() - t1;
+		if(n <= 0) break;
+		crc = calc_crc16((unsigned char *) Socket[thread].outBuf, n, crc);
+		size += n;
+		if(GetTickCount() - tStart > (3*W5200_TIME_WAIT/portTICK_PERIOD_MS) - 1000) break; // на секунду меньше, чем блок семафора
+		Watchdog_AliveHere();
+	}
+	if(us == 0) us = 1;
+	// Скорость в 64 битах, печать как 32: mini-printf берёт из va_list unsigned int, а 64-битный аргумент по ABI
+	// лежит с выравниванием на 8 байт - выводилось бы не то число. В байты в секунду 32 бит хватает.
+	journal.jprintf("%s test: %s - read %u bytes, %u us, %u b/sec, crc16 %04X\n", dev, name, (unsigned int) size, (unsigned int) us,
+	                (unsigned int) ((uint64_t) size * 1000000 / us), (unsigned int) crc);
+	return n;
+}
+
+// TEST.SPI: средние времена обменов на шине SPI под замком сети (вытеснение потока входит в среднее, поэтому повторы) и самое
+// долгое ожидание готовности SD с начала работы. Одной строкой журнала.
+static void webTestSpi(uint8_t thread)
+{
+	const SOCKET s = Socket[thread].sock;
+	uint32_t t = micros();
+	for(uint16_t i = 0; i < 1000; i++) W5100.readSnSR(s);                 // регистр 1 байт: одна транзакция
+	const uint32_t r8 = micros() - t;                                      // мкс на 1000 = нс на одно
+	t = micros();
+	for(uint16_t i = 0; i < 1000; i++) W5100.readSnTX_FSR(s);             // регистр 2 байта: две транзакции (С3)
+	const uint32_t r16 = micros() - t;
+	uint32_t fo = 0, fr = 0;
+	if(HP.get_fSPIFlash()) {
+		uint8_t b[16];
+		t = micros();
+		for(uint8_t i = 0; i < 20; i++) { spiBusDeselectAll(); SerialFlash.open("index.html"); }   // поиск по каталогу (Ф5)
+		fo = (micros() - t) / 20;
+		t = micros();
+		for(uint8_t i = 0; i < 100; i++) SerialFlash.read(0, b, sizeof(b));   // короткое чтение, как у каталога
+		fr = (micros() - t) * 10;                                            // нс на одно
+	}
+	journal.jprintf("SPI test: w5500 reg8 %u ns, reg16 %u ns; flash open %u us, read16 %u ns; SD busy max %u ms\n",
+	                (unsigned) r8, (unsigned) r16, (unsigned) fo, (unsigned) fr, (unsigned) sdBusyMaxMs);
+}
+
 //  Чтение файла с SD или его генерация
 void readFileSD(char *filename, uint8_t thread)
 {
 	int n;
 	SdFile webFile;
+	SD_ReadMode();                            // многоблочное чтение SD по настройке; отказ CMD18 - в журнал
 	// Реализация функционала подмены для имен файлов по типу: plan[HPscheme].png -> plan2.png
 	char *str;
 	WEB_STORE_DEBUG_INFO(11);
@@ -401,28 +457,11 @@ void readFileSD(char *filename, uint8_t thread)
 			get_indexNoSD(thread); // минимальная морда
 		} else if(strncmp(filename, "SD:", 3) == 0) {  // TEST.SD:<filename> - Тестирует скорость чтения файла с SD карты
 			filename += 3;
-			journal.jprintf("SD card test: %s - ", filename);
 			sendConstRTOS(thread, HEADER_FILE_WEB);
-			SPI_switchSD();
+			spiBusDeselectAll();
 			if(webFile.open(filename, O_READ)) {
-				uint32_t startTick = GetTickCount();
-				uint32_t size = 0;
-				for(;;) {
-					int n = webFile.read(Socket[thread].outBuf, sizeof(Socket[thread].outBuf));
-					if(n < 0) journal.jprintf("Read SD error (%d,%d)!\n", card.cardErrorCode(), (int)(card.cardErrorData()));
-					if(n <= 0) break;
-					size += n;
-					if(GetTickCount() - startTick > (3*W5200_TIME_WAIT/portTICK_PERIOD_MS) - 1000) break; // на секунду меньше, чем блок семафора
-					Watchdog_AliveHere();
-				}
-				startTick = GetTickCount() - startTick;
+				if(webTestRead(thread, webFile, "SD card", filename) < 0) journal.jprintf("Read SD error (%d,%d)!\n", card.cardErrorCode(), (int)(card.cardErrorData()));
 				webFile.close();
-				// Скорость считается в 64 битах, но ПЕЧАТАЛАСЬ как 32: mini-printf берёт из
-				// va_list unsigned int, а 64-битный аргумент по ABI лежит с выравниванием
-				// на 8 байт - выводилось не то число. В байты в секунду 32 бит хватает,
-				// поэтому сужаем явно.
-				journal.jprintf("read %u bytes, %u b/sec\n", (unsigned int)(size),
-				                (unsigned int)((uint64_t)size * 1000 / startTick));
 				/*/ check write!
 				if(!webFile.open(filename, O_RDWR)) journal.jprintf("Error open for writing!\n");
 				else {
@@ -433,8 +472,19 @@ void readFileSD(char *filename, uint8_t thread)
 				}
 				//*/
 			} else {
-				journal.jprintf("not found (%d,%d)!\n", card.cardErrorCode(), (int)(card.cardErrorData()));
+				journal.jprintf("SD card test: %s - not found (%d,%d)!\n", filename, card.cardErrorCode(), (int)(card.cardErrorData()));
 			}
+		} else if(strncmp(filename, "FLASH:", 6) == 0) {  // TEST.FLASH:<filename> - Тестирует скорость чтения файла с SPI флеш
+			filename += 6;
+			sendConstRTOS(thread, HEADER_FILE_WEB);
+			spiBusDeselectAll();
+			SerialFlashFile ff;
+			if(!HP.get_fSPIFlash()) journal.jprintf("SPI flash test: %s - no SPI flash!\n", filename);
+			else if((ff = SerialFlash.open(filename))) webTestRead(thread, ff, "SPI flash", filename);
+			else journal.jprintf("SPI flash test: %s - not found!\n", filename);
+		} else if(strcmp(filename, "SPI") == 0) {  // TEST.SPI - микрозамеры шины SPI (решения по мелким правкам делаются по ним)
+			sendConstRTOS(thread, HEADER_FILE_WEB);
+			webTestSpi(thread);
 		}
 		return;
 	}
@@ -448,7 +498,7 @@ void readFileSD(char *filename, uint8_t thread)
 	case pSD_WEB:
 		{ // Чтение с карты  файлов
 			WEB_STORE_DEBUG_INFO(15);
-			SPI_switchSD();
+			spiBusDeselectAll();
 			if(!webFile.open(filename, O_READ))
 			{
 				if(card.cardErrorCode() > SD_CARD_ERROR_NONE && card.cardErrorCode() < SD_CARD_ERROR_READ
@@ -469,7 +519,7 @@ xFileFound:
 			// Файл открыт читаем данные и кидаем в сеть
 			if(DBG_ON(DBG_HTTP)) { journal.jprintf("$Thread: %d socket: %d read file: %s\n",thread,Socket[thread].sock,filename); }
 			sendConstRTOS(thread, webFileHeader(filename));
-			SPI_switchSD();
+			spiBusDeselectAll();
 			for(;;) {
 				uint32_t t1 = micros();
 				n = webFile.read(Socket[thread].outBuf, sizeof(Socket[thread].outBuf));
@@ -479,22 +529,22 @@ xFileFound:
 				const int sent = sendBufferRTOS(thread, (byte*) (Socket[thread].outBuf), n);
 				StatAcc_Add(&webStat.fileSend, micros() - t1);
 				if(sent == 0) break;
-				SPI_switchSD();
+				spiBusDeselectAll();
 			} // for
 			if(n < 0) journal.jprintf("Read SD error (%d,%d)!\n", card.cardErrorCode(), (int)(card.cardErrorData()));
-			SPI_switchSD();
+			spiBusDeselectAll();
 			webFile.close();
 		}
 		break;
 	case pFLASH_WEB:
 		{
 			WEB_STORE_DEBUG_INFO(16);
-			SPI_switchFlash();                                  // все CS вверх: флеш выбирает своя библиотека (SPI_switchFlash раньше нигде не вызывалась)
+			spiBusDeselectAll();                                  // все CS вверх: флеш выбирает свой драйвер
 			SerialFlashFile ff = SerialFlash.open(filename);
 			if(ff) {
 				if(DBG_ON(DBG_HTTP)) { journal.jprintf("$Thread: %d socket: %d read file: %s\n",thread,Socket[thread].sock,filename); }
 				sendConstRTOS(thread, webFileHeader(filename));
-				SPI_switchFlash();
+				spiBusDeselectAll();
 				for(;;) {
 					uint32_t t1 = micros();
 					n = ff.read(Socket[thread].outBuf, sizeof(Socket[thread].outBuf));
@@ -504,7 +554,7 @@ xFileFound:
 					const int sent = sendBufferRTOS(thread, (byte*) (Socket[thread].outBuf), n);
 					StatAcc_Add(&webStat.fileSend, micros() - t1);
 					if(sent == 0) break;
-					SPI_switchFlash();                          // после отдачи страницы в сеть (замок отпускался) - снова все CS вверх
+					spiBusDeselectAll();                          // после отдачи страницы в сеть (замок отпускался) - снова все CS вверх
 				} // for
 			} else {
 				sendConstRTOS(thread, HEADER_FILE_NOT_FOUND);
@@ -805,7 +855,7 @@ xLenErr:
 			if(!webUploadBegin()) return pLOAD_ERR;
 			numFilesWeb = 0;
 			journal.jprintf_time("Start upload, erase SPI disk ");
-			SPI_switchFlash();                                  // все CS вверх: флеш выбирает своя библиотека
+			spiBusDeselectAll();                                  // все CS вверх: флеш выбирает свой драйвер
 			SerialFlash.eraseAll();
 			while(SerialFlash.ready() == false) {
 				xSemaphoreGive(xWebThreadSemaphore); // отдать семафор вебморды, что бы обработались другие потоки веб морды
@@ -862,7 +912,7 @@ xLenErr:
 					int32_t loadLen; // Обработанная (загруженная) длина
 					WEB_STORE_DEBUG_INFO(54);
 					journal.jprintf("%s (%d) ", nameFile, (int)(lenFile));
-					SPI_switchFlash();
+					spiBusDeselectAll();
 					loadLen = SerialFlash.free_size();
 					if(lenFile > loadLen) {
 						journal.jprintf("Not enough space, free: %d\n", (int)(loadLen));
@@ -886,7 +936,7 @@ xLenErr:
 									tIdle = webUploadTick = millis();
 									Watchdog_AliveHere();   // пакет пришёл: заливка по медленному каналу идёт, а не висит
 									Socket[thread].client.read(Socket[thread].inBuf, buf_len);        // прочитать буфер
-									SPI_switchFlash();
+									spiBusDeselectAll();
 									loadLen = loadLen + ff.write(Socket[thread].inBuf, buf_len);             // записать
 									numPoint++;
 									if(numPoint >= 20) {                   // точка на 30 кб приема (20 пакетов по 1540)

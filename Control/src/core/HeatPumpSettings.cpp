@@ -641,7 +641,7 @@ void HeatPump::resetSettingHP()
 	Diag.num_semSuspended = 0;                           // попыток взять замок при остановленном планировщике
 	Diag.num_resMQTT = 0;                                // число повторных инициализация MQTT клиента
 	Diag.num_resPing = 0;                                // число не прошедших пингов
-	Diag.num_dmaTimeout = 0;                             // чтений W5500 по DMA с таймаутом
+	Diag.num_dmaTimeout = 0;                             // чтений по DMA шины SPI с таймаутом
 	Diag.num_dmaOverrun = 0;                             // переполнений приёмника SPI
 
 	fullCOP = -1000;                                // Полный СОР  сотые -1000 признак невозможности расчета
@@ -865,6 +865,7 @@ char* HeatPump::get_optionHP(char *var, char *ret)
 	if(strcmp(var,option_TIME_CHART)==0)       {return _itoa(Option.tChart,ret);} else
 	if(strcmp(var,option_Charts_when_comp_on)==0){return _itoa(Charts_when_comp_on, ret);} else
 	if(strcmp(var,option_BEEP)==0)             {if(GETBIT(Option.flags,fBeep)) return strcat(ret,(char*)cOne); else return strcat(ret,(char*)cZero); }else            // Подача звукового сигнала
+	if(strcmp(var,option_SDMB)==0)             { return strcat(ret, (char*)(GETBIT(Option.flags,fSDMultiBlock) ? cOne : cZero)); } else    // многоблочное чтение SD
 	if(strcmp(var,option_NEXTION)==0)          { return strcat(ret, (char*)(GETBIT(Option.flags,fNextion) ? cOne : cZero)); } else         // использование дисплея nextion
 	if(strcmp(var,option_NEXTION_WORK)==0)     { return strcat(ret, (char*)(GETBIT(Option.flags,fNextionOnWhileWork) ? cOne : cZero)); } else         // использование дисплея nextion
 	if(strcmp(var,option_History)==0)          {if(GETBIT(Option.flags,fHistory)) return strcat(ret,(char*)cOne); else return strcat(ret,(char*)cZero);   }else            // Сбрасывать статистику на карту
@@ -926,6 +927,7 @@ static const ApiParam apiOhpTab[] = {
 	{ option_TIME_CHART, 0, 1, 65535, 0, 1, PT_CALL, 0, MK_INT, O_TCHART, 0 },         // смена периода очищает графики при работе ТН
 	{ option_Charts_when_comp_on, 0, 0, 1, 0, 1, PT_CALL, 0, MK_BOOL, O_CWCO, 0 },      // отдельная переменная, не поле Option
 	PN_BIT(option_BEEP,        OO(flags), fBeep,                PT_B16, 0, 0, 0, 0),
+	PN_BIT(option_SDMB,        OO(flags), fSDMultiBlock,        PT_B16, 0, 0, 0, 0),   // применяется при следующем чтении с карты (SD_ReadMode)
 	{ option_NEXTION, 0, 0, 1, 0, 1, PT_CALL, 0, MK_BOOL, O_NXT, 0 },                   // дисплей перенастраивается только при смене
 	PN_BIT(option_NEXTION_WORK, OO(flags), fNextionOnWhileWork, PT_B16, 0, O_NXTW, 0, 0),
 	PNH_U8(option_NEXT_SLEEP,   0, 255,    1,   OO(sleep),      0, O_NXTS),

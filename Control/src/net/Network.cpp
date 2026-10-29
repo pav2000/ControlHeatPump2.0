@@ -28,7 +28,7 @@
 #include "../../Constant.h"                       // Вся конфигурация и константы проекта Должен быть первым !!!!
 #include "utility/w5100.h"
 #include "utility/socket.h"
-#include "utility/spi_dma.h"   // счётчики таймаутов DMA драйвера W5500
+#include <SpiBus.h>            // счётчики таймаутов DMA общей шины SPI
 #include <ICMPPing.h>
 // ICMPPing.h заканчивается непарным "#pragma pack(1)" - без восстановления.
 // Всё, что объявлено ПОСЛЕ него в этой единице трансляции, пакуется, и
@@ -398,21 +398,18 @@ bool netChipSelfTest()
 	netSkips = 0;
 	netChipRead(&r);
 	const uint32_t spiMr = SPI0->SPI_MR, spiCsr3 = SPI0->SPI_CSR[3];      // общий SPI0: читаем в том же сеансе под замком
-#if USE_NATIVE_SAM3X_SPI
-	const uint32_t dmaT = spiDmaTimeouts, dmaO = spiDmaOverruns;
-#endif
+	const uint32_t dmaT = spiBusStat.dmaTimeouts, dmaO = spiBusStat.dmaOverruns, dmaL = spiBusStat.dmaLate;
 	SemaphoreGive(xWebThreadSemaphore);
 	const uint8_t anom = Spi0_Check(spiMr, spiCsr3);
 	if(anom != netSpiAnom) {                                              // писать только смену состояния
 		journal.jprintf_time("$SPI0 config %s: MR=%08X CSR3=%08X anomalies=%02X\n", anom ? "differs from shared" : "back to shared", (unsigned) spiMr, (unsigned) spiCsr3, anom);
 		netSpiAnom = anom;
 	}
-#if USE_NATIVE_SAM3X_SPI
-	if(dmaT != Diag.num_dmaTimeout || dmaO != Diag.num_dmaOverrun) {
-		journal.jprintf_time("$W5500 SPI DMA: timeouts %u, overruns %u\n", (unsigned) dmaT, (unsigned) dmaO);
-		Diag.num_dmaTimeout = dmaT; Diag.num_dmaOverrun = dmaO;
+	static uint32_t dmaLateShown = 0;                                     // «поздние» завершения - не ошибка, но в журнал: так видна гонка с таймаутом
+	if(dmaT != Diag.num_dmaTimeout || dmaO != Diag.num_dmaOverrun || dmaL != dmaLateShown) {
+		journal.jprintf_time("$SPI DMA: timeouts %u, overruns %u, late %u\n", (unsigned) dmaT, (unsigned) dmaO, (unsigned) dmaL);
+		Diag.num_dmaTimeout = dmaT; Diag.num_dmaOverrun = dmaO; dmaLateShown = dmaL;
 	}
-#endif
 #ifdef TEST_NETCHIP_FAULT
 	{	// стенд: после 3-й минуты работы на ДВА замера подряд подменяем прочитанный IP (чип «сбросился в значения по умолчанию»): путь расхождение -> журнал -> сброс
 		static uint8_t injected = 0;
@@ -489,7 +486,7 @@ void checkSockStatus()
 // Послать данные TCP (максимальный размер данных W5200_MAX_LEN. больше обрезается), при ожидании освобождения буфера отдает управление Free RTOS
 // Для разделения доступа к spi используется мютекс  (SemaphoreHandle_t xSPI)
 // возвращает число посланых байт (0-ничего не послано)
-// НЕ РАБОТАЕТ с КОНСТАНТАМИ!! их предварительно надо скопировать в ОЗУ т.к. используется DMA
+// Работает и с константами во флеш МК: шина SPI посылает их опросом (DMA - только для буферов в ОЗУ)
 // Если pause=0 то ждем подтверждения ACK пакета если pause>0 то просто ждем нужное значение (pause) мсек - работа без подтверждения
 // SEM-HOLD: xWebThreadSemaphore - одалживает замок вызывающего и возвращает его ему же
 uint16_t sendPacketRTOS(uint8_t thread, const uint8_t * buf, uint16_t len, uint16_t pause)
@@ -501,7 +498,7 @@ uint16_t sendPacketRTOS(uint8_t thread, const uint8_t * buf, uint16_t len, uint1
 	uint32_t tProgress = GetTickCount();        // когда место прибавлялось в последний раз
 
 	if(GETBIT(Socket[thread].flags, fLOCK_LOST)) return 0;   // замок уже потерян раньше в этом запросе: на шину и сокет не лезем
-	SPI_switchW5200();
+	spiBusDeselectAll();
 	if(len > W5200_MAX_LEN) ret = W5200_MAX_LEN;
 	else ret = len;
 
@@ -589,7 +586,7 @@ uint16_t sendPacketRTOS(uint8_t thread, const uint8_t * buf, uint16_t len, uint1
 // Послать данные TCP (максимальный размер данных не ограничен, может отправлять несколько пакетов),
 // Использует функцию sendPaketRTOS
 // возвращает число посланых байт (0-ничего не послано, или ошибка передачи)
-// НЕ РАБОТАЕТ с КОНСТАНТАМИ!! их предварительно надо скопировать в ОЗУ т.к. используется DMA
+// Работает и с константами во флеш МК: шина SPI посылает их опросом (DMA - только для буферов в ОЗУ)
 uint16_t sendBufferRTOS(uint8_t thread, const uint8_t * buf, uint16_t len)
 {
 	uint16_t i = 0;
@@ -612,19 +609,16 @@ uint16_t sendBufferRTOS(uint8_t thread, const uint8_t * buf, uint16_t len)
 }
 
 
-// Послать один пакет КОНСТАНТ!!!
-// Послать данные TCP (максимальный размер данных W5200_MAX_LEN. больше обрезается), при ожидании освобождения буфера отдает управление Free RTOS
-// Для разделения доступа к spi используется мютекс  (SemaphoreHandle_t xSPI)
+// Послать один пакет строки (обычно константы во флеш МК)
+// Послать данные TCP (максимальный размер данных W5200_MAX_LEN, больше - ничего не посылается), при ожидании освобождения буфера отдает управление Free RTOS
 // возвращает число посланых байт (0-ничего не послано)
-// РАБОТАЕТ С КОНСТАНТАМИ, идет предварительное копирование в буфер потока
-// Без always_inline: функция копирует строку в буфер сокета и уходит в
-// sendPacketRTOS, то есть в сетевую отправку - операцию миллисекундную.
-// Накладные расходы вызова на её фоне неизмеримы, а встраивание стоило места.
+// Строка уходит прямо из места, где лежит: шина SPI (SpiBus) отправляет константы во флеш МК опросом, DMAC их не читает.
+// Прежде её копировали в Socket[thread].outBuf ради DMA - это стоило strcpy на каждый заголовок и затирало буфер потока.
 uint16_t sendConstRTOS(uint8_t thread, const char * buf)
 {
-if (strlen(buf)>W5200_MAX_LEN) return 0;   // В один пакет не влезает выходим
-        strcpy(Socket[thread].outBuf,buf); 
-return  sendPacketRTOS(thread,(byte*)Socket[thread].outBuf,strlen(Socket[thread].outBuf),0);   
+	const size_t len = strlen(buf);
+	if(len > W5200_MAX_LEN) return 0;   // В один пакет не влезает выходим
+	return sendPacketRTOS(thread, (const byte*) buf, len, 0);
 }
 
  // Принт в сокет

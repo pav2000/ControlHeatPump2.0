@@ -21,8 +21,7 @@ extern uint8_t SPI_RATE; // делитель для SPI шины, 2=42MHz, 3=28M
 #define SPI_CS 10        // Ножка CS SPI для сети
 
 #define W5500_EXEC_CMD_TIMEOUT 30000  // ms
-//#define USE_ARDUINO_SPI_LIBRARY 0   // Стандартный  SPI
-#define  USE_NATIVE_SAM3X_SPI 1       // SPI DMA sam3x
+// Обмен с чипом - через общую шину SPI0 с DMA (Libraries/SpiBus/SpiBus.h), прежний выбор USE_NATIVE_SAM3X_SPI убран
 
 // Тип чипа сети
 //#define W5100_ETHERNET_SHIELD   // Arduino Ethenret Shield and Compatibles ...

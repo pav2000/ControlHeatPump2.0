@@ -326,6 +326,7 @@ uint8_t Spi0_Check(uint32_t mr, uint32_t csr3)
 	if(csr3 & (0xFUL << 4)) a |= SPI_ANOM_BITS;                        // BITS = 0: 8 бит
 	const uint32_t scbr = (csr3 >> 8) & 0xFF;
 	if(scbr < 2 || scbr > 8) a |= SPI_ANOM_SCBR;
+	if(csr3 & (0xFFUL << 24)) a |= SPI_ANOM_DLYBCT;                   // DLYBCT: 32 * DLYBCT / MCK после каждого байта
 	return a;
 }
 

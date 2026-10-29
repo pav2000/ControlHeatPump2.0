@@ -370,6 +370,7 @@ void get_txtSettings(uint8_t thread)
      for(uint8_t i = 0; i < DbgCount; i++) if(dbgFlags & DbgTable[i].bit) { strcat(Socket[thread].outBuf, DbgTable[i].name); strcat(Socket[thread].outBuf, " "); }
      STR_END;
      strcat(Socket[thread].outBuf,"Генерация звукового сигнала: "); HP.get_optionHP((char*)option_BEEP,Socket[thread].outBuf);STR_END;
+     strcat(Socket[thread].outBuf,"Многоблочное чтение SD карты: "); HP.get_optionHP((char*)option_SDMB,Socket[thread].outBuf);STR_END;
      strcat(Socket[thread].outBuf,"Использование Nextion дисплея: "); HP.get_optionHP((char*)option_NEXTION,Socket[thread].outBuf);STR_END;
      strcat(Socket[thread].outBuf,"Включать дисплей при пуске компрессора: "); HP.get_optionHP((char*)option_NEXTION_WORK,Socket[thread].outBuf);STR_END;
      strcat(Socket[thread].outBuf,"Время засыпания дисплея Nextion (мин.): "); HP.get_optionHP((char*)option_NEXT_SLEEP,Socket[thread].outBuf);STR_END;

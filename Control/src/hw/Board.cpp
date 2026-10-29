@@ -242,6 +242,21 @@ void getIDchip(char *outstr)
 }
 
 
+// Многоблочное чтение SD (CMD18). Флаг SdFat (sdMultiBlockRead) ставится из настройки, когда она меняется (ключ ohp.sdmb), - не на каждом
+// чтении: отказ CMD18 сбрасывает его внутри SdFat, и дальше карта читается поблочно, пока настройку не переключат. Зовётся перед
+// чтением с карты (readFileSD), там же отказ попадает в журнал - с задержкой до следующего запроса к карте.
+void SD_ReadMode(void)
+{
+	static uint8_t applied = 0xFF;
+	static uint32_t fails = 0;
+	if(sdMultiBlockFails != fails) {
+		fails = sdMultiBlockFails;
+		journal.jprintf_time("SD: multi-block read (CMD18) failed (%u), reading block by block until the setting is toggled\n", (unsigned) fails);
+	}
+	const uint8_t want = HP.get_SDMultiBlock();
+	if(want != applied) { applied = want; sdMultiBlockRead = want; }
+}
+
 // Инициализация СД карты
 // возврат true - если успешно, false - карты нет работаем без нее
 uint8_t initSD(void)
@@ -261,7 +276,7 @@ uint8_t initSD(void)
 		journal.jprintf("OK\n");
 	else {
 		HP.message.setMessage(pMESSAGE_SD, (char*) "Ошибка инициализации SD карты", 0);    // сформировать уведомление
-		SPI_switchW5200();
+		spiBusDeselectAll();
 		return false;
 	}
 
@@ -270,7 +285,7 @@ uint8_t initSD(void)
 	if(!card.card()->readCID(&cid)) {
 		journal.jprintf((char*) "$ERROR - readCID SD card failed!\n");
 		HP.message.setMessage(pMESSAGE_SD, (char*) "Ошибка чтения информации о карте (readCID)", 0); // сформировать уведомление
-		SPI_switchW5200();
+		spiBusDeselectAll();
 		return 0;
 	}
 	// вывод информации о карте
@@ -287,12 +302,12 @@ uint8_t initSD(void)
 	if(!card.exists(INDEX_FILE)) {
 		journal.jprintf((char*) " ERROR - Can't find %s file on SD card!\n", INDEX_FILE);
 		HP.message.setMessage(pMESSAGE_SD, (char*) "Файл индекса не найден на SD карте", 0); // сформировать уведомление
-		SPI_switchW5200();
+		spiBusDeselectAll();
 		return 1;
 	} // стартовый файл не найден
 	journal.jprintf((char*) " Found %s file\n", INDEX_FILE);
 
-	SPI_switchW5200();
+	spiBusDeselectAll();
 	return 2;
 }
 

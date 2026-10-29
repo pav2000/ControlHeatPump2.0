@@ -564,6 +564,7 @@ void adc_setup();
 
 // Инициализация носителей. Определены в Board.cpp.
 uint8_t initSD(void);
+void    SD_ReadMode(void);         // перед чтением с карты: настройка «Многоблочное чтение SD» -> SdFat, отказ CMD18 - в журнал
 uint8_t initSpiDisk(boolean show);
 
 // Диагностика и управление контроллером. Определены в Board.cpp.
