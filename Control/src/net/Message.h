@@ -29,7 +29,7 @@
 #define LEN_RETMAIL      128                // Длина ответа почты
 #define LEN_RETSMS       64                 // Длина ответа sms
 #define LEN_RETTEST      220                // Длина ответа от посылки тестового УВЕДОМЛЕНИЯ для экономии места он единый для писем и смс
-#define REPEAT_TIME      (3*60*60)          // Время посылки дублирующего сообщения (повтор одинаковых сообщений) сек
+#define REPEAT_TIME      (3*60*60)          // Повтор того же уведомления раньше не отправляется, сек (NotifyQueue.h, «ПОВТОРЫ»)
 
 // SMTP: константы протокола (RFC 5321/5322)
 #define SMTP_CRLF        "\r\n"             // ЕДИНСТВЕННЫЙ допустимый разделитель строк в SMTP, cStrEnd ("\n") здесь применять нельзя
@@ -49,7 +49,7 @@
 #define SMTP_POLL_SLOW    20                // Шаг опроса дальше, мсек (локальное реле отвечает за единицы мсек)
 #define SMTP_POLL_FAST_N  10                // Сколько первых итераций опрашивать часто
 // Повтор отправки при ВРЕМЕННОЙ ошибке (код 4xx или обрыв связи). При 5xx повтор бессмысленен
-#define MAIL_RETRY_MAX    3                 // Максимум попыток повторной отправки одного уведомления
+#define MAIL_RETRY_MAX    3                 // Максимум повторных попыток одного уведомления (почта и SMS)
 #define MAIL_RETRY_DELAY  300               // Пауза между попытками, сек
 // Возможности сервера, разобранные из ответа на EHLO (поле smtpCaps)
 #define fSMTP_AUTH_PLAIN  0                 // сервер предлагает механизм AUTH PLAIN
@@ -136,7 +136,7 @@ class Message
      uint8_t *get_save_addr(void) { return (uint8_t *)&messageSetting; } // Адрес структуры сохранения
      void api_dns_smtp() { dnsUpadateSMTP = true; }                         // после записи адреса сервера через веб-API: IP получить заново
      void api_dns_sms()  { dnsUpadateSMS = true; }
-     const char *api_ret() { return waitSend ? "wait response" : retTest; } // ответ на тестовое письмо или SMS
+     const char *api_ret() { return busy() ? "wait response" : retTest; }   // ответ на тестовое письмо или SMS
      uint16_t get_save_size(void) { return sizeof(messageSetting); } // Размер структуры сохранения
      int32_t save(int32_t adr);                                             // Записать настройки в eeprom i2c на входе адрес с какого, на выходе конечный адрес, число меньше 0 это код ошибки
      int32_t load(int32_t adr);                                             // Считать настройки из eeprom i2c на входе адрес с какого, на выходе конечный адрес, число меньше 0 это код ошибки 
@@ -144,23 +144,24 @@ class Message
      uint16_t get_crc16(uint16_t crc);                                      // Рассчитать контрольную сумму для данных на входе входная сумма на выходе новая
             
    private:
-    uint32_t sendTime;                                                       // время отправки последнего уведомления
     EthernetClient clientMessage;                                            // Клиент для отправки уведомлений
     boolean dnsUpadateSMS;                                                   // Флаг необходимости обновления через dns IP адреса для смс
     boolean dnsUpadateSMTP;                                                  // Флаг необходимости обновления через dns IP адреса для smtp
     // Уведомления
     type_messageHP     messageSetting;                                       // Структура для хранения НАСТРОЕК уведомлений
-    type_messageData   messageData;                                          // Структура для хранения уведомления (ДАННЫЕ): то, что отправляется сейчас
-    type_messageData   pend[NOTIFY_DEPTH];                                   // ожидающие своей очереди, пока отправляется messageData (раньше новое затирало неотправленное)
-    NotifyQueue        nq;                                                   // порядок и приоритет ожидающих
-    MESSAGE            lastQueuedMs;                                         // тип последнего принятого уведомления (для подавления повторов)
-    void               promotePending();                                     // отправка закончена: взять следующее из очереди
-    MESSAGE lastmessageSetting;                                              // последнее отправленное уведомление 
-    boolean waitSend;                                                        // true - есть не отправленные сообщения
+    type_messageData   pend[NOTIFY_SLOTS];                                   // тексты: отправляемое (nq.cur) и ожидающие
+    NotifyQueue        nq;                                                   // порядок, приоритет и отправляемое
+    NotifyRecent       recent;                                               // недавно принятые - подавление повторов
+    boolean busy() { return nq.cur >= 0; }                                   // есть что отправлять
+    const type_messageData &cur() { return pend[nq.cur]; }                   // отправляемое; только при busy()
+    void    startCurrent();                                                  // новое отправляемое: каналы и повторы с начала (под запретом прерываний)
+    void    finishCurrent();                                                 // отправка закончена: следующее из очереди
     boolean sendMail();                                                      // Отправить почту
-    boolean sendSMS();                                                       // Отправить SMS через sms.ru
-    boolean sendSMSC();                                                      // Отправить SMS через smsc.ru
-    boolean sendSMSCLUB();                                                   // Отправить SMS через smsclub.mobi (Ukraine)
+    NOTIFY_TRY sendSMS();                                                    // Отправить SMS через sms.ru
+    NOTIFY_TRY sendSMSC();                                                   // Отправить SMS через smsc.ru, smsc.ua
+    NOTIFY_TRY sendSMSCLUB();                                                // Отправить SMS через smsclub.mobi (Ukraine)
+    NOTIFY_TRY smsExchange(const char *host);                                // Общий транспорт SMS: запрос из mailBuf, тело ответа в mailBuf
+    NOTIFY_TRY smsVerdict(boolean ok);                                       // Итог по ответу сервиса: журнал и признак ошибки
     // Транспорт SMTP, все строки завершаются SMTP_CRLF
     void    setRetMail(const char *s);                                       // Скопировать ответ сервера в retMail с гарантированным нулем в конце
     void    setRetTest(const char *prefix, const char *var, const char *answer); // Собрать ответ на тестовое уведомление с контролем границ retTest
@@ -189,9 +190,9 @@ class Message
     uint8_t  smtpCaps;                   // возможности сервера из ответа EHLO, биты fSMTP_*
     int16_t  smtpCode;                   // числовой код последнего ответа сервера
     boolean  smtpSemLost;                // семафор сети потерян: трогать сокет и отдавать семафор НЕЛЬЗЯ
-    uint8_t  sendRetry;                  // сколько повторных попыток отправки письма уже сделано
+    uint8_t  sendCh;                     // каналы отправляемого, которые ещё предстоит пройти (NCH_*)
+    uint8_t  sendRetry;                  // сколько повторных попыток отправляемого уже сделано
     uint32_t sendRetryTime;              // unixtime, раньше которого повторять не начинаем
-    boolean  smsSent;                    // SMS по текущему уведомлению уже ушло (чтобы повтор письма его не продублировал)
     char retTest[LEN_RETTEST];           // ПОСЛЕДНИЙ ответ от посылки тестового УВЕДОМЛЕНИЯ для экономии места он единый для писем и смс. К сожалению ответ возвращается в запросе от любого потока и поэтому должен храниться отдельно.
     uint16_t WorkFlags;
   };

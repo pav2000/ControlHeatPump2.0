@@ -51,17 +51,15 @@ void Message::initMessage(uint8_t web_task)
   smtpCaps=0;
   smtpCode=0;
   smtpSemLost=false;
+  sendCh=0;
   sendRetry=0;
   sendRetryTime=0;
-  smsSent=false;
   // Инициализация переменных
   IPAddress zeroIP(0, 0, 0, 0);
-  lastmessageSetting = pMESSAGE_NONE;                                              // последнее отправленное уведомление
   dnsUpadateSMS = false;                                                           // Флаг необходимости обновления через dns IP адреса для смс
   dnsUpadateSMTP = false;                                                          // Флаг необходимости обновления через dns IP адреса для smtp
-  sendTime = 0;                                                                    // отправок уведомлений не было
-  NotifyQueue_Init(&nq);                                                           // очередь ожидающих пуста
-  lastQueuedMs = pMESSAGE_NONE;
+  NotifyQueue_Init(&nq);                                                           // отправлять нечего
+  NotifyRecent_Init(&recent);
 
   SETBIT0(messageSetting.flags, fMail );                                           // флаг уведомления скидывать на почту
   SETBIT1(messageSetting.flags, fMailAUTH);                                        // флаг необходимости авторизации на почтовом сервере
@@ -94,11 +92,18 @@ void Message::initMessage(uint8_t web_task)
   messageSetting.mTCOMP = 7000;                                                    // Критическая температура компрессора (если больше то генерится уведомление)
 
   // установка содержания уведомлений по умолчанию
-  messageData.ms = pMESSAGE_NONE;    // Тип уведомления
-  strcpy(messageData.data, "");      // Полезная информация
-  messageData.p1 = 0;                // первый параметр
-  messageData.number = 0;            // номер уведомления
   WorkFlags = 0;
+}
+
+// Адрес сервиса SMS - один на все места: DNS, Host запроса, журнал (Н-22)
+static const char *sms_host(uint8_t service)
+{
+	switch(service) {
+	case pSMSC_RU: return ADR_SMSC_RU;
+	case pSMSC_UA: return ADR_SMSC_UA;
+	case pSMSCLUB: return ADR_SMSCLUB;
+	default:       return ADR_SMS_RU;
+	}
 }
 
 // Обновление IP адресов серверов через dns
@@ -124,20 +129,7 @@ boolean Message::dnsUpdate() // запускается 0 потоке вебсе
 		if(xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) {
 			if(SemaphoreTake(xWebThreadSemaphore, (W5200_TIME_WAIT / portTICK_PERIOD_MS)) == pdFALSE) return false; // Захват семафора потока или ОЖИДАНИЕ W5200_TIME_WAIT, если семафор не получен то выходим
 		} else Watchdog_AliveHere();
-		switch(messageSetting.sms_service) {
-		case pSMS_RU:
-			ret = strcpy(tempBuf, ADR_SMS_RU);
-			break;
-		case pSMSC_RU:
-			ret = strcpy(tempBuf, ADR_SMSC_RU);
-			break;
-		case pSMSC_UA:
-			ret = strcpy(tempBuf, ADR_SMSC_UA);
-			break;
-		case pSMSCLUB:
-			ret = strcpy(tempBuf, ADR_SMSCLUB);
-			break;
-		}
+		strcpy(tempBuf, sms_host(messageSetting.sms_service));   // check_address нужна строка в ОЗУ
 		check_address(tempBuf, messageSetting.sms_serviceIP);// При не удаче возвращается 0, при удаче: 1 - IP на входе (были цифры, DNS не нужен), 2 - был запрос к DNS и адрес получен
 		dnsUpadateSMS = false;
 		if(xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) SemaphoreGive(xWebThreadSemaphore);
@@ -243,10 +235,10 @@ char* Message::get_messageSetting(char *var, char *ret)
 		_dtoa(ret, messageSetting.mTCOMP, 2);
 		return ret;
 	} else if(strcmp(var, mess_MAIL_RET) == 0) {
-		if(waitSend) return strcat(ret, (char*) "wait response");                // В зависимости готов ответ или нет
+		if(busy()) return strcat(ret, (char*) "wait response");                // В зависимости готов ответ или нет
 		else return strcat(ret, retTest);
 	} else if(strcmp(var, mess_SMS_RET) == 0) {
-		if(waitSend) return strcat(ret, (char*) "wait response");                // В зависимости готов ответ или нет
+		if(busy()) return strcat(ret, (char*) "wait response");                // В зависимости готов ответ или нет
 		else return strcat(ret, retTest);
 	} else return strcat(ret, (char*) cInvalid);
 
@@ -489,6 +481,7 @@ boolean Message::smtpCmdSecret(const char *cmd, uint32_t timeout)
 
 // Установить уведомление (сформировать для отправки но НЕ ОТПРАВЛЯТЬ)
 // Проверяется необходимость отправки уведомления в зависимости от установленных флагов
+// p1 - температура для pMESSAGE_TEMP, код ошибки для pMESSAGE_ERROR (по нему узнаётся повтор)
 // true - сообщение принято (или запрещено), false - сообщение отвергнуто т.к оно уже посылалось (дубль) или внутренняя ошибка
 boolean Message::setMessage(MESSAGE ms, char *c, int p1) // может запускаться из любого потока!!
 {
@@ -503,66 +496,63 @@ boolean Message::setMessage(MESSAGE ms, char *c, int p1) // может запу�
   if (((GETBIT(messageSetting.flags, fMessageWarning)) == 0) && (ms == pMESSAGE_WARNING))   return true;
 
   // Решение и запись - под запретом прерываний: функцию зовут задачи разных приоритетов (set_Error из ReadSensor, Web0 при
-  // этом отправляет). Копируется не больше 200 байт - микросекунды. Отправляемое сейчас (messageData) не трогается никогда:
-  // новое уведомление либо занимает messageData, когда отправлять нечего, либо встаёт в очередь.
-  // Дубли: тестовые сообщения и сигнал жизни можно посылать многократно подряд, остальные - с интервалом REPEAT_TIME.
+  // этом отправляет). Копируется не больше 200 байт - микросекунды. Место отправляемого (nq.cur) очередь не выдаёт.
+  // Тестовые сообщения и сигнал жизни можно посылать многократно подряд, остальные - не чаще REPEAT_TIME.
   const uint32_t now = rtcSAM3X8.unixtime();
   const bool repeatable = (ms == pMESSAGE_TESTMAIL) || (ms == pMESSAGE_TESTSMS) || (ms == pMESSAGE_LIFE);
   const uint8_t important = (ms != pMESSAGE_WARNING) && (ms != pMESSAGE_LIFE);   // предупреждения и сигнал жизни вытесняются первыми
+  const uint32_t key = Notify_Key(ms, ms == pMESSAGE_ERROR ? (uint16_t) p1 : calc_crc16((unsigned char*) c, strlen(c)));
   type_messageData *d = NULL;
   uint8_t evicted = 0;
-  bool dup, direct = false;
+  bool dup;
   uint32_t primask = __get_PRIMASK();
   __disable_irq();
-  dup = (now - sendTime < REPEAT_TIME) && (lastQueuedMs == ms) && !repeatable;
+  dup = !repeatable && Notify_Seen(&recent, key, now, REPEAT_TIME);
   if (!dup) {
-    if (!waitSend) { d = &messageData; direct = true; }
-    else {
-      int8_t s = NotifyQueue_Push(&nq, important, &evicted);
-      if (s >= 0) d = &pend[s];
+    int8_t s = NotifyQueue_Push(&nq, important, &evicted);
+    if (s >= 0) {
+      d = &pend[s];
+      d->ms = ms;
+      strncpy(d->data, c, sizeof(d->data) - 1);
+      d->data[sizeof(d->data) - 1] = 0;
+      // в сообщение pMESSAGE_TEMP добавить значение температуры
+      if (ms == pMESSAGE_TEMP && strlen(d->data) < sizeof(d->data) - 16) {
+        strcat(d->data, " t=");
+        _dtoa(d->data, p1, 2);
+      }
+      d->p1 = p1;
+      d->number = 0;
+      Notify_Remember(&recent, key, now);
+      if (!busy() && NotifyQueue_Next(&nq) >= 0) startCurrent();   // отправлять было нечего: уходит сразу
     }
   }
-  if (d) {                                                     // место есть: записать текст
-    d->ms = ms;
-    strncpy(d->data, c, sizeof(d->data) - 1);
-    d->data[sizeof(d->data) - 1] = 0;
-    // в сообщение pMESSAGE_TEMP добавить значение температуры
-    if (ms == pMESSAGE_TEMP && strlen(d->data) < sizeof(d->data) - 16) {
-      strcat(d->data, " t=");
-      _dtoa(d->data, p1, 2);
-    }
-    d->p1 = p1;
-    d->number = 0;
-    sendTime = now;                                            // запомнить время отправки
-    lastQueuedMs = ms;
-    if (direct) {                                              // отправлять было нечего: уходит сразу
-      sendRetry = 0;                                           // новое уведомление - счетчик повторов и признак ухода SMS сбрасываются
-      sendRetryTime = 0;
-      smsSent = false;
-      waitSend = true;                                         // выставить флаг необходимости отправки Уведомления
-    }
-  }
+  const bool queued = d && &cur() != d;
   __set_PRIMASK(primask);
 
   if (dup) return false;
   if (!d) { journal.jprintf("MSG dropped (queue full): #%d: %s\n", ms, c); return false; }
-  JOURNAL("MSG: #%d: %s%s\n", ms, c, direct ? "" : evicted ? " (queued, older dropped)" : " (queued)");
+  JOURNAL("MSG: #%d: %s%s\n", ms, c, !queued ? "" : evicted ? " (queued, older dropped)" : " (queued)");
   return true;
 }
 
-// Отправка закончена: следующее ожидающее становится отправляемым. Зовётся из sendMessage (Web0).
-void Message::promotePending()
+// Новое отправляемое: какие каналы пройти и повторы с нуля. Зовётся под запретом прерываний.
+void Message::startCurrent()
+{
+  sendCh = 0;
+  if (GETBIT(messageSetting.flags, fMail) && cur().ms != pMESSAGE_TESTSMS) sendCh |= NCH_MAIL;
+  if (GETBIT(messageSetting.flags, fSMS) && cur().ms != pMESSAGE_TESTMAIL) sendCh |= NCH_SMS;
+  sendRetry = 0;
+  sendRetryTime = 0;
+}
+
+// Отправка закончена: место освобождается и следующее ожидающее становится отправляемым - одним шагом,
+// иначе уведомление, пришедшее между ними из другой задачи, затиралось (С-15). Зовётся из sendMessage (Web0).
+void Message::finishCurrent()
 {
   uint32_t primask = __get_PRIMASK();
   __disable_irq();
-  int8_t s = NotifyQueue_Pop(&nq);
-  if (s >= 0) {
-    memcpy(&messageData, &pend[s], sizeof(messageData));
-    sendRetry = 0;
-    sendRetryTime = 0;
-    smsSent = false;
-    waitSend = true;                                           // отправится на следующем проходе
-  }
+  NotifyQueue_Done(&nq);
+  if (NotifyQueue_Next(&nq) >= 0) startCurrent();
   __set_PRIMASK(primask);
 }
 
@@ -589,14 +579,13 @@ boolean Message::setTestSMS() // может запускаться из любо
 }
 
 // Послать уведомление согласно выбранных настроек сформированное setMessage
-// проверяется наличие неотправленных уведомлений
+// Каналы проходятся по маске sendCh: прошедший (или с постоянной ошибкой) снимается, с временной ошибкой ждёт повтора.
 // true - уведомление отправлено или его не было false - при отправке произошли ошибки
 boolean Message::sendMessage()  // запуск из 0 потока
 {
   uint16_t i;
-  boolean retryMail = false;                             // письмо не ушло по временной причине, ждем следующей попытки
 
-  if (!waitSend) return true;                            // Отправлять нечего выходим
+  if (!busy()) return true;                              // Отправлять нечего выходим
   if (sendRetry && rtcSAM3X8.unixtime() < sendRetryTime) return true;  // время повторной попытки еще не пришло
   strcpy(retTest, "Ничего не отправлено. Проверьте флаг разрешения отправки сообщений.");
   if (HP.get_uptime() < cDELAY_START_MESSAGE) {
@@ -604,67 +593,51 @@ boolean Message::sendMessage()  // запуск из 0 потока
     return true;
   }
   clearBuf(); // очистка рабочих буферов
-  // Отправка Уведомления. Все таки отправлять придется -))
-  if ((GETBIT(messageSetting.flags, fMail)) && (messageData.ms != pMESSAGE_TESTSMS)) // Разрешены уведомления по почте и не тест SMS
+  const bool test = cur().ms == pMESSAGE_TESTMAIL || cur().ms == pMESSAGE_TESTSMS;   // итог теста нужен сразу: без повторов
+  if (sendCh & NCH_MAIL)
   {
     boolean ok = sendMail(); // Формирование ответа
     for (i = 0; i < strlen(retMail); i++) if (retMail[i] == '=') retMail[i] = ':'; // замена знака = на : т.к. это запрещенный знак в запросах
     setRetTest(ok ? "Тестовое письмо отправлено на " : "Тестовое письмо НЕ отправлено на ", mess_SMTP_RCPTTO, retMail);
-    // Ошибка с кодом 4xx или обрыв связи (smtpCode == 0) - временная, повтор имеет смысл.
-    // При 5xx повторять бессмысленно: нужна правка настроек. Тестовое письмо не повторяется: итог нужен сразу,
-    // иначе до конца повторов (3 x MAIL_RETRY_DELAY) ответ на тест скрыт за "wait response".
-    if (!ok && smtpCode < 500 && sendRetry < MAIL_RETRY_MAX && messageData.ms != pMESSAGE_TESTMAIL) {
-      sendRetry++;
-      sendRetryTime = rtcSAM3X8.unixtime() + MAIL_RETRY_DELAY;
-      retryMail = true;
-      journal.jprintf("Mail retry %d/%d in %d sec\n", sendRetry, MAIL_RETRY_MAX, MAIL_RETRY_DELAY);
-    } else sendRetry = 0;
+    // Ошибка с кодом 4xx или обрыв связи (smtpCode == 0) - временная, при 5xx нужна правка настроек
+    sendCh = Notify_AfterTry(sendCh, NCH_MAIL, Notify_TryResult(ok, smtpCode < 500, test));
   }
 
-  if ((!(GETBIT(messageSetting.flags, fMail))) && (messageData.ms == pMESSAGE_TESTMAIL)) // Почта не разрешена а отправляется тестовое письмо
+  if ((!(GETBIT(messageSetting.flags, fMail))) && (cur().ms == pMESSAGE_TESTMAIL)) // Почта не разрешена а отправляется тестовое письмо
   {
     strcpy(retTest, "Письмо не отправлено. Проверьте флаг разрешения отправки почты.");
   }
 
-  // !smsSent - чтобы повторная попытка отправить письмо не продублировала уже ушедшее SMS
-  if ((GETBIT(messageSetting.flags, fSMS)) && (messageData.ms != pMESSAGE_TESTMAIL) && !smsSent)
+  if (sendCh & NCH_SMS)
   {
-    boolean ok = false;
+    NOTIFY_TRY r;
     switch (messageSetting.sms_service)
     {
-      case pSMS_RU:
-        ok = sendSMS();
-        setRetTest(ok ? "Тестовое SMS отправлено на номер " : "Тестовое SMS НЕ отправлено на номер ", mess_SMS_PHONE, retSMS);
-        break;
-
+      case pSMS_RU:  r = sendSMS();     break;
       case pSMSC_RU:
-      case pSMSC_UA:
-        ok = sendSMSC();
-        setRetTest(ok ? "Тестовое SMS отправлено на номер " : "Тестовое SMS НЕ отправлено на номер ", mess_SMS_PHONE, retSMS);
-        break;
-
-      case pSMSCLUB:
-        ok = sendSMSCLUB();
-        setRetTest(ok ? "Тестовое SMS отправлено на номер " : "Тестовое SMS НЕ отправлено на номер ", mess_SMS_PHONE, retSMS);
-        break;
-
-      default:               // некорректная настройка сервиса: waitSend сбрасывается,
-        strcpy(retSMS, "Invalid SMS service");   // иначе отправка дергалась бы на каждом цикле
+      case pSMSC_UA: r = sendSMSC();    break;
+      case pSMSCLUB: r = sendSMSCLUB(); break;
+      default:                                   // некорректная настройка сервиса: повторять бессмысленно
+        strcpy(retSMS, "Invalid SMS service");
         journal.jprintf("%s: %d\n", retSMS, (int)messageSetting.sms_service);
+        r = NTRY_FAIL;
         break;
     }
-    smsSent = ok;          // ушло - при повторной попытке письма SMS больше не трогаем
+    setRetTest(r == NTRY_OK ? "Тестовое SMS отправлено на номер " : "Тестовое SMS НЕ отправлено на номер ", mess_SMS_PHONE, retSMS);
+    sendCh = Notify_AfterTry(sendCh, NCH_SMS, Notify_TryResult(r == NTRY_OK, r == NTRY_RETRY, test));
   }
 
-
-  if ((!(GETBIT(messageSetting.flags, fSMS))) && (messageData.ms == pMESSAGE_TESTSMS)) // SMS не разрешена а отправляется тестовое SMS
+  if ((!(GETBIT(messageSetting.flags, fSMS))) && (cur().ms == pMESSAGE_TESTSMS)) // SMS не разрешена а отправляется тестовое SMS
     strcpy(retTest, "SMS не отправлено. Проверьте флаг разрешения отправки SMS.");
 
-  if (retryMail) return false;   // waitSend оставляем взведенным - письмо будет повторено
-  waitSend = false;        // Сбросить флаг необходимости отправки уведомления
-  sendRetry = 0;
-  promotePending();        // ждавшее своей очереди уведомление становится отправляемым
-  return true;             // Послано
+  if (!Notify_Finished(sendCh, &sendRetry, MAIL_RETRY_MAX)) {   // остался канал с временной ошибкой
+    sendRetryTime = rtcSAM3X8.unixtime() + MAIL_RETRY_DELAY;
+    journal.jprintf("Notify retry %d/%d in %d sec:%s%s\n", sendRetry, MAIL_RETRY_MAX, MAIL_RETRY_DELAY,
+                    (sendCh & NCH_MAIL) ? " mail" : "", (sendCh & NCH_SMS) ? " SMS" : "");
+    return false;
+  }
+  finishCurrent();
+  return true;
 }
 
 // ---- Отправить почту ----
@@ -823,7 +796,7 @@ boolean Message::sendMail()
 	m_snprintf(tempBuf, LEN_TEMPBUF, "To: <%s>", messageSetting.smtp_RCPTTo);
 	smtpWriteBody(tempBuf);
 	// Тема письма
-	switch((int) messageData.ms)   // Заголовок уведомления - добавляем тип уведомления
+	switch((int) cur().ms)   // Заголовок уведомления - добавляем тип уведомления
 	{
 	case pMESSAGE_NONE:		type = "";			break;                     // Нет уведомлений
 	case pMESSAGE_TESTMAIL:	type = "TESTMAIL";	break;                     // Тестовое почта
@@ -874,7 +847,7 @@ boolean Message::sendMail()
 	smtpWriteBody(tempBuf);
 	m_snprintf(tempBuf, LEN_TEMPBUF, "Создание уведомления: %s %s", NowDateToStr(), NowTimeToStr());
 	smtpWriteBody(tempBuf);
-	smtpWriteBlock(messageData.data);      // само уведомление, буфер не изменяется (его ждет еще sendSMS)
+	smtpWriteBlock(cur().data);        // само уведомление, буфер не изменяется (его ждет еще sendSMS)
 
 	// 9. Дополнительная информация если требуется добавляется в уведомление
 	if(GETBIT(messageSetting.flags, fMailInfo)) get_mailState(mailBuf, LEN_MAILBUF);
@@ -931,46 +904,99 @@ smtp_error:
 	return false;
 }
 
-// ---- Отправить SMS sms.ru ----
-// true - была отправка смс false - не было отправки смс
-boolean Message::sendSMS()
+// ---- SMS: общая часть трёх сервисов ----
+// Пометка типа уведомления в начале текста SMS; NULL - тип неизвестен
+static const char *sms_type_tag(MESSAGE ms)
 {
-	uint16_t i;
-	uint8_t count = 0;
-	IPAddress zeroIP(0, 0, 0, 0);
-
-	if(SemaphoreTake(xWebThreadSemaphore, (W5200_TIME_WAIT / portTICK_PERIOD_MS)) == pdFALSE) {
-		return false; // Захват семафора потока или ОЖИДАНИЕ W5200_TIME_WAIT, если семафор не получен то выходим
+	switch((int) ms) {
+	case pMESSAGE_NONE:     return "";
+	case pMESSAGE_TESTMAIL: return "TESTMAIL+";
+	case pMESSAGE_TESTSMS:  return "TESTSMS+";
+	case pMESSAGE_RESET:    return "RESET+";
+	case pMESSAGE_ERROR:    return "ERROR+";
+	case pMESSAGE_LIFE:     return "LIFE+";
+	case pMESSAGE_TEMP:     return "TEMP+";
+	case pMESSAGE_SD:       return "ERROR+SD+";
+	case pMESSAGE_WARNING:  return "WARNING+";
+	default:                return NULL;
 	}
+}
 
-	strcpy(retSMS, ADR_SMS_RU); // Используется как временный буфер check_address с констанатми не работает??
-
-	if(messageSetting.sms_serviceIP == zeroIP) // возможно днс надо всегда обновлять
-	{
-		//обновляем IP адрес сервера
+// Транспорт: адрес сервиса, соединение, запрос из mailBuf, ожидание ответа. Тело ответа (без заголовков HTTP) кладётся
+// в mailBuf, его начало - в retSMS для морды. NTRY_RETRY - до сервиса не достучались, запрос не ушёл: повтор безопасен.
+// NTRY_FAIL - запрос ушёл, а ответа нет: повтор мог бы прислать платный дубль. NTRY_OK - ответ получен, смысл его решает отправитель.
+NOTIFY_TRY Message::smsExchange(const char *host)
+{
+	IPAddress zeroIP(0, 0, 0, 0);
+	if(SemaphoreTake(xWebThreadSemaphore, (W5200_TIME_WAIT / portTICK_PERIOD_MS)) == pdFALSE) return NTRY_RETRY;
+	if(messageSetting.sms_serviceIP == zeroIP) {
+		strcpy(retSMS, host);                                  // check_address нужна строка в ОЗУ
 		if(!check_address(retSMS, messageSetting.sms_serviceIP)) {
-			strcpy(retSMS, ADR_SMS_RU);  // Обновить адрес
 			strcat(retSMS, " DNS lookup failed!");
 			SemaphoreGive(xWebThreadSemaphore);
-			return false;
+			return NTRY_RETRY;
 		}
 	}
-
-	strcpy(retSMS, "");         // Обнулить ответ
-	if(clientMessage.connect(messageSetting.sms_serviceIP, 80, W5200_SOCK_SYS)) // Соединение по HTTP
-	{
-		JOURNAL("Connect server: %s port: %d\n", ADR_SMS_RU, 80);
-	} else {
-		if(!GETBIT(WorkFlags, fWF_SMSSendError)) journal.jprintf("Connect failed: %s port: %d\n", ADR_SMS_RU, 80);
-		strcpy(retSMS, "No connect ");
-		strcat(retSMS, ADR_SMS_RU);
+	if(!clientMessage.connect(messageSetting.sms_serviceIP, 80, W5200_SOCK_SYS)) {
+		if(!GETBIT(WorkFlags, fWF_SMSSendError)) journal.jprintf("Connect failed: %s port: %d\n", host, 80);
+		strcpy(retSMS, "No connect "); strcat(retSMS, host);
 		clientMessage.stop();
 		SETBIT1(WorkFlags, fWF_SMSSendError);
-		SemaphoreGive (xWebThreadSemaphore);
-		return false;
+		SemaphoreGive(xWebThreadSemaphore);
+		return NTRY_RETRY;
 	}
+	JOURNAL("Connect server: %s port: %d\n", host, 80);
+	clientMessage.write(mailBuf, strlen(mailBuf));
 
-	// посылка смс
+	for(uint8_t count = 0; !clientMessage.available(); count++) {     // ожидание ответа 5 сек
+		if(count >= 25) {
+			strcpy(retSMS, "SMS server not responding!");
+			if(!GETBIT(WorkFlags, fWF_SMSSendError)) journal.jprintf("%s\n", retSMS);
+			SETBIT1(WorkFlags, fWF_SMSSendError);
+			clientMessage.stop();
+			SemaphoreGive(xWebThreadSemaphore);
+			return NTRY_FAIL;
+		}
+		SemaphoreGive(xWebThreadSemaphore);
+		_delay(200);
+		if(SemaphoreTake(xWebThreadSemaphore, (W5200_TIME_WAIT / portTICK_PERIOD_MS)) == pdFALSE) return NTRY_FAIL;   // замок потерян: сокет не трогаем
+	}
+	uint16_t n = 0;
+	while(clientMessage.available() && n < LEN_MAILBUF - 1) {
+		int got = clientMessage.read((uint8_t*) mailBuf + n, LEN_MAILBUF - 1 - n);
+		if(got <= 0) break;
+		n += got;
+	}
+	mailBuf[n] = 0;
+	clientMessage.stop();
+	SemaphoreGive(xWebThreadSemaphore);
+	// Ответ на запрос HTTP/1.0 начинается с заголовков: ответ сервиса - только в теле
+	const char *body = http_body(mailBuf);
+	strncpy(retSMS, body, LEN_RETSMS - 1);
+	retSMS[LEN_RETSMS - 1] = 0;
+	str_replace(retSMS, '=', ':');                             // морда обрезает ответ по '='
+	if(body != mailBuf) memmove(mailBuf, body, strlen(body) + 1);
+	return NTRY_OK;
+}
+
+// Итог по ответу сервиса
+NOTIFY_TRY Message::smsVerdict(boolean ok)
+{
+	if(!ok) {
+		if(!GETBIT(WorkFlags, fWF_SMSSendError)) journal.jprintf("Error send SMS: %s\n", retSMS);
+		SETBIT1(WorkFlags, fWF_SMSSendError);
+		return NTRY_FAIL;
+	}
+	JOURNAL("server return: %s \n", retSMS);
+	SETBIT0(WorkFlags, fWF_SMSSendError);
+	return NTRY_OK;
+}
+
+// ---- Отправить SMS sms.ru ----
+NOTIFY_TRY Message::sendSMS()
+{
+	const char *tag = sms_type_tag(cur().ms);
+	if(!tag) { strcpy(retSMS, "ERROR TYPE"); return NTRY_FAIL; }
 	strcpy(mailBuf, "GET /sms/send?api_id=");                                 // Начало; адрес сервера уходит в заголовке Host
 	url_encode_append(mailBuf, LEN_MAILBUF, messageSetting.sms_p1);       // id
 	strcat(mailBuf, "&to=");
@@ -978,348 +1004,61 @@ boolean Message::sendSMS()
 	strcat(mailBuf, "&text=");
 	strcat(mailBuf, SendSMSTitle);
 	strcat(mailBuf, "+");
-	switch((int) messageData.ms)   // Заголовок уведомления - добавляем тип уведомления
-	{
-	case pMESSAGE_NONE:	break;                                                                                       // Нет уведомлений
-	case pMESSAGE_TESTMAIL:	strcat(mailBuf, "TESTMAIL+"); break;                                                         // Тестовое почта
-	case pMESSAGE_TESTSMS:	strcat(mailBuf, "TESTSMS+"); break;                                                         // Тестовое смс
-	case pMESSAGE_RESET:    strcat(mailBuf, "RESET+");	 break;                                                            // Уведомление Сброс
-	case pMESSAGE_ERROR:	strcat(mailBuf, "ERROR+");	break;                                                            // Уведомление Ошибка
-	case pMESSAGE_LIFE: 	strcat(mailBuf, "LIFE+");   break;                                                             // Уведомление Сигнал жизни
-	case pMESSAGE_TEMP:		strcat(mailBuf, "TEMP+");	break;                                                             // Уведомление Достижение граничной температуры
-	case pMESSAGE_SD:		strcat(mailBuf, "ERROR+SD+");	break;                                                         // Уведомление "Проблемы с sd картой"
-	case pMESSAGE_WARNING:	strcat(mailBuf, "WARNING+");  break;                                                          // Уведомление "Прочие уведомления"
-	default:
-		strcat(mailBuf, "ERROR+TYPE+");
-		clientMessage.stop();   // соединение уже открыто: без stop системный сокет оставался занятым
-		SemaphoreGive (xWebThreadSemaphore);
-		return false;
-	}
-	// Текст кодируется процентным кодированием в КОПИИ (сам messageData.data править нельзя, его использует и отправка почты):
-	// &, %, #, = и кириллица раньше шли в запрос как есть. Запрос - HTTP/1.0 с Host и Connection: close.
-	url_encode_append(mailBuf, LEN_MAILBUF, messageData.data);   // содержимое
-	if(!http_request_tail(mailBuf, LEN_MAILBUF, ADR_SMS_RU)) {
-		strcpy(retSMS, "SMS request too long");
-		clientMessage.stop();
-		SemaphoreGive(xWebThreadSemaphore);
-		return false;
-	}
-	clientMessage.write(mailBuf, strlen(mailBuf));
-
-
-	// Ожидание и получение ответа
-	while(!clientMessage.available()) // ожидание ответа 5 сек
-	{
-		SemaphoreGive (xWebThreadSemaphore);
-		_delay(200);
-		if(SemaphoreTake(xWebThreadSemaphore, (W5200_TIME_WAIT / portTICK_PERIOD_MS)) == pdFALSE) {
-			return false; // Захват семафора потока или ОЖИДАНИЕ W5200_TIME_WAIT, если семафор не получен то выходим
-		}
-		count++;
-		if(count > 25) {
-			strcpy(retSMS, "SMS server not responding!");
-			if(!GETBIT(WorkFlags, fWF_SMSSendError)) journal.jprintf("%s\n", retSMS);
-			SETBIT1(WorkFlags, fWF_SMSSendError);
-			clientMessage.stop();
-			SemaphoreGive(xWebThreadSemaphore);
-			return false;
-		}
-
-	}
-
-	// разбор ответа
-	byte thisByte;
-	// режем заголовок, он отделен последовательностью 0x0a 0x0d 0x0a от ответа
-	while(clientMessage.available()) {
-		thisByte = clientMessage.read();
-		if(thisByte == 0x0a) {
-			thisByte = clientMessage.read();
-			if(thisByte == 0x0d) {
-				thisByte = clientMessage.read();
-				if(thisByte == 0x0a) {
-					i = clientMessage.read((byte*) retSMS, LEN_RETSMS/* sizeof(retSMS)*/- 1); // получаем код ответа
-					retSMS[i] = 0;                                         // обрезаем строку
-					for(i = 0; i < strlen(retSMS); i++)
-						if(retSMS[i] == '=') retSMS[i] = ':'; // замена = на знак ":" веб морда глючит в ответах - обрезает по  =
-					JOURNAL("sms.ru return: %s \n", retSMS);
-					clientMessage.stop();
-					SETBIT0(WorkFlags, fWF_SMSSendError);
-					SemaphoreGive (xWebThreadSemaphore);
-					return true; // смс отправлено
-				}
-			}
-		}
-
-	}
-	clientMessage.stop();
-	SemaphoreGive (xWebThreadSemaphore);
-	return false;
+	strcat(mailBuf, tag);
+	url_encode_append(mailBuf, LEN_MAILBUF, cur().data);                  // содержимое
+	if(!http_request_tail(mailBuf, LEN_MAILBUF, sms_host(pSMS_RU))) { strcpy(retSMS, "SMS request too long"); return NTRY_FAIL; }
+	NOTIFY_TRY r = smsExchange(sms_host(pSMS_RU));
+	return r == NTRY_OK ? smsVerdict(true) : r;               // любой ответ sms.ru считается отправкой, как и прежде
 }
+
 // ---- Отправить SMS smsc.ru, smsc.ua ----
-
-boolean Message::sendSMSC()
+NOTIFY_TRY Message::sendSMSC()
 {
-  uint16_t i;
-  uint8_t count = 0;
-  IPAddress zeroIP(0, 0, 0, 0);
-
-  if (SemaphoreTake(xWebThreadSemaphore, (W5200_TIME_WAIT / portTICK_PERIOD_MS)) == pdFALSE)  {
-    return false; // Захват семафора потока или ОЖИДАНИЕ W5200_TIME_WAIT, если семафор не получен то выходим
-  }
-
-  switch (messageSetting.sms_service)
-  {
-    case pSMSC_RU:
-      strcpy(retSMS, ADR_SMSC_RU); // Используется как временный буфер check_address с констанатми не работает??
-      break;
-
-    case pSMSC_UA:
-      strcpy(retSMS, ADR_SMSC_UA); // Используется как временный буфер check_address с констанатми не работает??
-      break;
-    default: strcpy(retSMS, ADR_SMSC_RU); break; // Используется как временный буфер check_address с констанатми не работает??
-  }
-  if (messageSetting.sms_serviceIP == zeroIP) // возможно днс надо всегда обновлять
-  {
-    //обновляем IP адрес сервера
-    if (!check_address(retSMS, messageSetting.sms_serviceIP)) {
-      strcat(retSMS, " DNS lookup failed!");  // Обновить адрес
-      SemaphoreGive(xWebThreadSemaphore);
-      return false;
-    }
-  }
-
-  strcpy(retSMS, "");         // Обнулить ответ
-  if (clientMessage.connect(messageSetting.sms_serviceIP, 80, W5200_SOCK_SYS)) // Соединение по HTTP
-  {
-	  JOURNAL("Connect server: %s port: %d\n", messageSetting.sms_service == pSMSC_RU ? ADR_SMSC_RU : ADR_SMSC_UA, 80);
-  }
-  else
-  {
-	  if(!GETBIT(WorkFlags, fWF_SMSSendError)) journal.jprintf("Connect failed: %s port: %d\n", messageSetting.sms_service == pSMSC_RU ? ADR_SMSC_RU : ADR_SMSC_UA, 80);
-      strcpy(retSMS, "No connect "); strcat(retSMS, ADR_SMSC_RU);
-      clientMessage.stop();
-      SETBIT1(WorkFlags, fWF_SMSSendError);
-      SemaphoreGive(xWebThreadSemaphore);
-      return false;
-  }
-
-  // посылка смс
-  if ((messageSetting.sms_service) == pSMSC_RU) strcpy(mailBuf, "GET /sys/send.php?login=");         // Начало; адрес сервера уходит в заголовке Host
-  if ((messageSetting.sms_service) == pSMSC_UA) strcpy(mailBuf, "GET /sys/send.php?login=");         // Начало; адрес сервера уходит в заголовке Host
-  url_encode_append(mailBuf, LEN_MAILBUF, messageSetting.sms_p1);       // login
-  if(messageSetting.sms_p2[0] != '&') strcat(mailBuf, "&psw=");   // пароль без имени параметра; у того, кто вписал его вместе с "&psw=" - как было
-  strcat(mailBuf, messageSetting.sms_p2);                                   // password
-  strcat(mailBuf, "&phones=");
-  url_encode_append(mailBuf, LEN_MAILBUF, messageSetting.sms_phone);    // номер
-  strcat(mailBuf, "&mes=");
-  strcat(mailBuf, SendSMSTitle);
-  strcat(mailBuf, "+");
-  switch ((int)messageData.ms)   // Заголовок уведомления - добавляем тип уведомления
-  {
-    case pMESSAGE_NONE    : break;                                                                                       // Нет уведомлений
-    case pMESSAGE_TESTMAIL: strcat(mailBuf, "TESTMAIL+"); break;                                                         // Тестовое почта
-    case pMESSAGE_TESTSMS : strcat(mailBuf, "TESTSMS+");  break;                                                         // Тестовое смс
-    case pMESSAGE_RESET   : strcat(mailBuf, "RESET+"); break;                                                            // Уведомление Сброс
-    case pMESSAGE_ERROR   : strcat(mailBuf, "ERROR+"); break;                                                            // Уведомление Ошибка
-    case pMESSAGE_LIFE    : strcat(mailBuf, "LIFE+"); break;                                                             // Уведомление Сигнал жизни
-    case pMESSAGE_TEMP    : strcat(mailBuf, "TEMP+"); break;                                                             // Уведомление Достижение граничной температуры
-    case pMESSAGE_SD      : strcat(mailBuf, "ERROR+SD+"); break;                                                         // Уведомление "Проблемы с sd картой"
-    case pMESSAGE_WARNING : strcat(mailBuf, "WARNING+"); break;                                                          // Уведомление "Прочие уведомления"
-    default               : strcat(mailBuf, "ERROR+TYPE+"); clientMessage.stop(); SemaphoreGive(xWebThreadSemaphore); return false; break;    // ответ содержит ошибки
-  }
-  // Текст кодируется процентным кодированием в КОПИИ (сам messageData.data править нельзя, его использует и отправка почты).
-  // Запрос - HTTP/1.0 с Host и Connection: close. Пароль (sms_p2) остаётся как введён: в нём допустимо вписать "&psw=".
-  url_encode_append(mailBuf, LEN_MAILBUF, messageData.data);   // содержимое
-  if (!http_request_tail(mailBuf, LEN_MAILBUF, messageSetting.sms_service == pSMSC_UA ? ADR_SMSC_UA : ADR_SMSC_RU)) {
-    strcpy(retSMS, "SMS request too long");
-    clientMessage.stop();
-    SemaphoreGive(xWebThreadSemaphore);
-    return false;
-  }
-  clientMessage.write(mailBuf, strlen(mailBuf));
-
-
-  // Ожидание и получение ответа
-  while (!clientMessage.available()) // ожидание ответа 5 сек
-  {
-    SemaphoreGive(xWebThreadSemaphore);
-    _delay(200);
-    if (SemaphoreTake(xWebThreadSemaphore, (W5200_TIME_WAIT / portTICK_PERIOD_MS)) == pdFALSE)  {
-      return false; // Захват семафора потока или ОЖИДАНИЕ W5200_TIME_WAIT, если семафор не получен то выходим
-    }
-    count++;
-    if (count > 25)
-    {
-      strcpy(retSMS, "SMS server not responding!");
-      if(!GETBIT(WorkFlags, fWF_SMSSendError)) journal.jprintf("%s\n", retSMS);
-      clientMessage.stop();
-      SETBIT1(WorkFlags, fWF_SMSSendError);
-      SemaphoreGive(xWebThreadSemaphore);
-      return false;
-    }
-
-  }
-
-  // разбор ответа
-
-  while (clientMessage.available())
-  {
-    i = clientMessage.read((byte*)retSMS, LEN_RETSMS/* sizeof(retSMS)*/ - 1); // получаем код ответа
-    retSMS[i] = 0;                                         // обрезаем строку
-    for (i = 0; i < strlen(retSMS); i++) if (retSMS[i] == '=') retSMS[i] = ':'; // замена = на знак ":" веб морда глючит в ответах - обрезает по  =
-    clientMessage.stop();
-    SemaphoreGive(xWebThreadSemaphore);
-    if (strstr(retSMS, "ERROR")) {
-    	if(!GETBIT(WorkFlags, fWF_SMSSendError)) journal.jprintf("Error send SMS: %s\n", retSMS);
-    	SETBIT1(WorkFlags, fWF_SMSSendError);
-    	return false;
-    } else {
-        JOURNAL("server return: %s \n", retSMS);
-        SETBIT0(WorkFlags, fWF_SMSSendError);
-    	return true;
-    }
-  }
-
-  clientMessage.stop();
-  SemaphoreGive(xWebThreadSemaphore);
-  return false;
+	const char *tag = sms_type_tag(cur().ms);
+	if(!tag) { strcpy(retSMS, "ERROR TYPE"); return NTRY_FAIL; }
+	strcpy(mailBuf, "GET /sys/send.php?login=");                              // Начало; адрес сервера уходит в заголовке Host
+	url_encode_append(mailBuf, LEN_MAILBUF, messageSetting.sms_p1);       // login
+	if(messageSetting.sms_p2[0] != '&') strcat(mailBuf, "&psw=");         // пароль без имени параметра; у того, кто вписал его вместе с "&psw=" - как было
+	strcat(mailBuf, messageSetting.sms_p2);                                   // password
+	strcat(mailBuf, "&phones=");
+	url_encode_append(mailBuf, LEN_MAILBUF, messageSetting.sms_phone);    // номер
+	strcat(mailBuf, "&mes=");
+	strcat(mailBuf, SendSMSTitle);
+	strcat(mailBuf, "+");
+	strcat(mailBuf, tag);
+	url_encode_append(mailBuf, LEN_MAILBUF, cur().data);                  // содержимое
+	const char *host = sms_host(messageSetting.sms_service);
+	if(!http_request_tail(mailBuf, LEN_MAILBUF, host)) { strcpy(retSMS, "SMS request too long"); return NTRY_FAIL; }
+	NOTIFY_TRY r = smsExchange(host);
+	return r == NTRY_OK ? smsVerdict(!strstr(mailBuf, "ERROR")) : r;
 }
-// ---------------------------------------------------------------------------
+
 // ---- Отправить SMS smsclub.mobi ----
-
-boolean Message::sendSMSCLUB()
+NOTIFY_TRY Message::sendSMSCLUB()
 {
-  uint16_t headerLength;
-  char tmp_buf [10];
-  uint16_t i;
-  uint8_t count = 0;
-  IPAddress zeroIP(0, 0, 0, 0);
-
-  if (SemaphoreTake(xWebThreadSemaphore, (W5200_TIME_WAIT / portTICK_PERIOD_MS)) == pdFALSE)  {
-    return false; // Захват семафора потока или ОЖИДАНИЕ W5200_TIME_WAIT, если семафор не получен то выходим
-  }
-
-  strcpy(retSMS, ADR_SMSC_RU); // Используется как временный буфер check_address с констанатми не работает??
-
-  if (messageSetting.sms_serviceIP == zeroIP) // возможно днс надо всегда обновлять
-  {
-    //обновляем IP адрес сервера
-    if (!check_address(retSMS, messageSetting.sms_serviceIP)) {
-      strcat(retSMS, " DNS lookup failed!");  // Обновить адрес
-      SemaphoreGive(xWebThreadSemaphore);
-      return false;
-    }
-  }
-
-  strcpy(retSMS, "");         // Обнулить ответ
-  if (clientMessage.connect(messageSetting.sms_serviceIP, 80, W5200_SOCK_SYS)) // Соединение по HTTP
-  {
-    JOURNAL("Connect server: %s port: %d\n", ADR_SMSC_RU, 80);
-  }
-  else
-  {
-	if(!GETBIT(WorkFlags, fWF_SMSSendError)) journal.jprintf("Connect failed: %s port: %d\n", ADR_SMSC_RU, 80);
-    strcpy(retSMS, "No connect "); strcat(retSMS, ADR_SMSC_RU);
-    clientMessage.stop();
-    SETBIT1(WorkFlags, fWF_SMSSendError);
-    SemaphoreGive(xWebThreadSemaphore);
-    return false;
-
-  }
-  // посылка смс
-  strcpy(mailBuf, "POST /xml/ HTTP/1.1\r\nHost: gate.smsclub.mobi\r\nUser-Agent: HK 1.017\r\nConnection: close\r\nContent-Type: application/xml\r\nContent-Length:    ");      // заголовок POST запроса
-  strcat(mailBuf, "\r\n\r\n");
-  headerLength = strlen(mailBuf);			// длина заголовка
-  strcat(mailBuf, "<?xml version='1.0' encoding='utf-8'?>\r\n<request_sendsms>\r\n<username><![CDATA[");
-  strcat(mailBuf, messageSetting.sms_p1);
-  strcat(mailBuf, "]]></username>\r\n<password><![CDATA[");
-  strcat(mailBuf, messageSetting.sms_p2);
-  strcat(mailBuf, "]]></password>\r\n<from><![CDATA[infomir]]></from>\r\n<to><![CDATA[");
-  strcat(mailBuf, messageSetting.sms_phone);
-  strcat(mailBuf, "]]></to>\r\n<text><![CDATA[");
-  strcat(mailBuf, SendSMSTitle);
-  strcat(mailBuf, "+");
-
-  switch ((int)messageData.ms)   // Заголовок уведомления - добавляем тип уведомления
-  {
-    case pMESSAGE_NONE    : break;                                                                                       // Нет уведомлений
-    case pMESSAGE_TESTMAIL: strcat(mailBuf, "TESTMAIL+"); break;                                                         // Тестовое почта
-    case pMESSAGE_TESTSMS : strcat(mailBuf, "TESTSMS+");  break;                                                         // Тестовое смс
-    case pMESSAGE_RESET   : strcat(mailBuf, "RESET+"); break;                                                            // Уведомление Сброс
-    case pMESSAGE_ERROR   : strcat(mailBuf, "ERROR+"); break;                                                            // Уведомление Ошибка
-    case pMESSAGE_LIFE    : strcat(mailBuf, "LIFE+"); break;                                                             // Уведомление Сигнал жизни
-    case pMESSAGE_TEMP    : strcat(mailBuf, "TEMP+"); break;                                                             // Уведомление Достижение граничной температуры
-    case pMESSAGE_SD      : strcat(mailBuf, "ERROR+SD+"); break;                                                         // Уведомление "Проблемы с sd картой"
-    case pMESSAGE_WARNING : strcat(mailBuf, "WARNING+"); break;                                                          // Уведомление "Прочие уведомления"
-    default               : strcat(mailBuf, "ERROR+TYPE+"); clientMessage.stop(); SemaphoreGive(xWebThreadSemaphore); return false; break;    // ответ содержит ошибки
-  }
-  strcat(mailBuf, messageData.data);										// содержимое
-  strcat(mailBuf, "]]></text>\r\n</request_sendsms>\r\n");
-  itoa((strlen(mailBuf) - headerLength), tmp_buf, 10);							//длина контента
-  mailBuf[headerLength - 7] = tmp_buf[0];
-  mailBuf[headerLength - 6] = tmp_buf[1];
-  mailBuf[headerLength - 5] = tmp_buf[2];
-  clientMessage.write(mailBuf, strlen(mailBuf));
-
-  // Ожидание и получение ответа
-  while (!clientMessage.available()) // ожидание ответа 5 сек
-  {
-    SemaphoreGive(xWebThreadSemaphore);
-    _delay(200);
-    if (SemaphoreTake(xWebThreadSemaphore, (W5200_TIME_WAIT / portTICK_PERIOD_MS)) == pdFALSE)  {
-      return false; // Захват семафора потока или ОЖИДАНИЕ W5200_TIME_WAIT, если семафор не получен то выходим
-    }
-    count++;
-    if (count > 25)
-    {
-      strcpy(retSMS, "SMS server not responding!");
-      if(!GETBIT(WorkFlags, fWF_SMSSendError)) journal.jprintf("%s\n", retSMS);
-      clientMessage.stop();
-      SETBIT1(WorkFlags, fWF_SMSSendError);
-      SemaphoreGive(xWebThreadSemaphore);
-      return false;
-    }
-
-  }
-
-  // разбор ответа
-  byte thisByte;
-  while (clientMessage.available())
-  {
-    thisByte = clientMessage.read();
-    if (thisByte == 0x3c)
-    {
-      thisByte = clientMessage.read();
-      if (thisByte == 0x73)
-      {
-        thisByte = clientMessage.read();
-        if (thisByte == 0x74)
-        {
-          thisByte = clientMessage.read();
-          if (thisByte == 0x61)
-          {
-            i = clientMessage.read((byte*)retSMS, LEN_RETSMS/* sizeof(retSMS)*/ - 1); // получаем код ответа
-            retSMS[i] = 0;                                         // обрезаем строку
-            for (i = 0; i < strlen(retSMS); i++) if (retSMS[i] == '=') retSMS[i] = ':'; // замена = на знак ":" веб морда глючит в ответах - обрезает по  =
-            clientMessage.stop();
-            SemaphoreGive(xWebThreadSemaphore);
-            if (!strstr(retSMS, ">OK<")) {   // раньше условие было обратным: успех (">OK<") считался ошибкой
-            	if(!GETBIT(WorkFlags, fWF_SMSSendError)) journal.jprintf("Error send SMS: %s\n", retSMS);
-            	SETBIT1(WorkFlags, fWF_SMSSendError);
-            	return false;
-            } else {
-                JOURNAL("server return: %s \n", retSMS);
-                SETBIT0(WorkFlags, fWF_SMSSendError);
-            	return true;
-            }
-          }
-        }
-      }
-    }
-  }
-  clientMessage.stop();
-  SemaphoreGive(xWebThreadSemaphore);
-  return false;
+	const char *tag = sms_type_tag(cur().ms);
+	if(!tag) { strcpy(retSMS, "ERROR TYPE"); return NTRY_FAIL; }
+	strcpy(mailBuf, "POST /xml/ HTTP/1.1\r\nHost: ");
+	strcat(mailBuf, sms_host(pSMSCLUB));
+	strcat(mailBuf, "\r\nUser-Agent: HK 1.017\r\nConnection: close\r\nContent-Type: application/xml\r\nContent-Length:    \r\n\r\n");
+	uint16_t headerLength = strlen(mailBuf);
+	strcat(mailBuf, "<?xml version='1.0' encoding='utf-8'?>\r\n<request_sendsms>\r\n<username><![CDATA[");
+	strcat(mailBuf, messageSetting.sms_p1);
+	strcat(mailBuf, "]]></username>\r\n<password><![CDATA[");
+	strcat(mailBuf, messageSetting.sms_p2);
+	strcat(mailBuf, "]]></password>\r\n<from><![CDATA[infomir]]></from>\r\n<to><![CDATA[");
+	strcat(mailBuf, messageSetting.sms_phone);
+	strcat(mailBuf, "]]></to>\r\n<text><![CDATA[");
+	strcat(mailBuf, SendSMSTitle);
+	strcat(mailBuf, "+");
+	strcat(mailBuf, tag);
+	strcat(mailBuf, cur().data);                                              // содержимое
+	strcat(mailBuf, "]]></text>\r\n</request_sendsms>\r\n");
+	char len[6];
+	itoa(strlen(mailBuf) - headerLength, len, 10);                            // длина тела - в три пробела после Content-Length:
+	memcpy(mailBuf + headerLength - 7, len, strlen(len) < 3 ? strlen(len) : 3);
+	NOTIFY_TRY r = smsExchange(sms_host(pSMSCLUB));
+	return r == NTRY_OK ? smsVerdict(strstr(mailBuf, ">OK<") != NULL) : r;
 }
 // ---------------------------------------------------------------------------
 

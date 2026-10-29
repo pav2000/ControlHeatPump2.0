@@ -744,6 +744,13 @@ bool http_request_tail(char *dst, uint16_t cap, const char *host)
 	return true;
 }
 
+const char *http_body(const char *resp)
+{
+	if(strncmp(resp, "HTTP/", 5) != 0) return resp;
+	const char *b = strstr(resp, "\r\n\r\n");
+	return b ? b + 4 : resp + strlen(resp);
+}
+
 bool settings_len_ok(uint16_t size, int32_t avail)
 {
 	if(size < 2) return false;                                  // меньше контрольной суммы: size -= 2 заворачивается

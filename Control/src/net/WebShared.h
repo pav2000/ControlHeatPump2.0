@@ -73,6 +73,7 @@ uint8_t api_dispatch(uint8_t thread);   // новый API (/api/...), опред
 void          web_server(uint8_t thread);
 uint16_t      GetRequestedHttpResource(uint8_t thread);
 TYPE_RET_POST parserPOST(uint8_t thread, uint16_t size);
+bool          webUploadBusy(void);   // идёт заливка морды (чтение без замка: один байт фазы)
 void          readFileSD(char *filename, uint8_t thread);
 // Тест носителей и шины SPI (вкладка «SPI&Web», действие spi.test; TEST.SPI - то же в журнал). Зовётся из веб-потока под замком сети.
 // buf/chunk - рабочий буфер для чтения файлов (порция read()).

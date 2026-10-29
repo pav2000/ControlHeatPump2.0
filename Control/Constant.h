@@ -50,7 +50,7 @@
 #endif
 
 // ---- ОПЦИИ КОМПИЛЯЦИИ ПРОЕКТА ----
-#define VERSION			"2.30"	// Версия прошивки: общая шина SPI (Libraries/SpiBus) - флеш по DMA и Fast Read, W5500 и SD через шину, многоблочное чтение SD по настройке, TEST.FLASH/TEST.SPI
+#define VERSION			"2.31"	// Версия прошивки: исправления по разбору 27.10: единый учёт перезагрузок, очередь и повтор уведомлений, заливка морды
 // Версия формата, которой прошивка ПИШЕТ настройки в I2C память.
 // Должна совпадать с версией каркаса, которым пишутся настройки (150): иначе Option.ver по
 // умолчанию неверен, первое сохранение на чистом контроллере печатает
@@ -533,7 +533,6 @@ STRCONST(HEADER_FILE_CSS, "HTTP/1.1 200 OK\r\nContent-Type: text/css\r\nConnecti
 STRCONST(HEADER_ANSWER, "HTTP/1.1 200 OK\r\nContent-Type: text/ajax\r\nAccess-Control-Allow-Origin: *\r\n\r\n");    // начало ответа на запрос
 // Ответ /api: "HTTP/1.1 " + статус + HEADER_API_TAIL + длина + "\r\n\r\n" + тело JSON. Content-Length обязателен: по нему браузер отличает целый ответ от оборванного.
 STRCONST(HEADER_API_TAIL, "\r\nContent-Type: application/json; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-store\r\nConnection: close\r\nContent-Length: ");
-extern volatile uint8_t fWebUploadingFilesTo;              // Куда грузим файлы: 1 - SPI flash, 2 - SD card
 
 // ---- Константы регистров контроллера питания SOPC SAM3x ----
 // Регистр SMMR

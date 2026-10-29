@@ -104,8 +104,6 @@ SemaphoreHandle_t xModbusSemaphore;                 // Семафор Modbus, и
 SemaphoreHandle_t xWebThreadSemaphore;              // Семафор потоки вебсервера,  деление сетевой карты
 SemaphoreHandle_t xI2CSemaphore;                    // Семафор шины I2C, часы, память, мастер OneWire
 SemaphoreHandle_t xSPISemaphore;                    // Семафор шины SPI  сетевая карта, память. SD карта // пока не используется
-volatile uint8_t fWebUploadingFilesTo = 0;          // Куда грузим файлы: 1 - SPI flash, 2 - SD card; одна на всех, extern в Constant.h (раньше static в заголовке - у каждого модуля своя копия)
-SemaphoreHandle_t xLoadingWebSemaphore;             // Семафор загрузки веб морды в spi память
 uint16_t lastErrorFreeRtosCode;                     // код последней ошибки операционки нужен для отладки
 uint32_t startSupcStatusReg;                        // Состояние при старте SUPC Supply Controller Status Register - проверяем что с питание
 
@@ -887,8 +885,6 @@ x_I2C_init_std_message:
 	if ( xTaskCreate(vWeb3,"Web3", STACK_vWebX,NULL,1,&Tasks.xHandleUpdateWeb3)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY) set_Error(ERR_MEM_FREERTOS,(char*)nameFREERTOS);
 	Diag.mRTOS=Diag.mRTOS+64+4*STACK_vWebX;
 #endif
-	vSemaphoreCreateBinary(xLoadingWebSemaphore);           // Создание семафора загрузки веб морды в spi память
-	if (xLoadingWebSemaphore==NULL) set_Error(ERR_MEM_FREERTOS,(char*)nameFREERTOS);
 
 	xWebThreadSemaphore = xSemaphoreCreateMutex();   // мьютекс: сеть + шина SPI               // Создание мютекса
 	if (xWebThreadSemaphore==NULL) set_Error(ERR_MEM_FREERTOS,(char*)nameFREERTOS);
@@ -1072,7 +1068,10 @@ void vWeb0(void *)
 			// на шине одновременно). Настоящий дедлок поймает сторожевой таймер по отметкам
 			// задач: задача перестанет отмечаться, контроллер перезагрузится и запишет в
 			// журнал, кто именно встал. Здесь только диагностика: счётчики видны в get_sysInfo.
-			if(SemaphoreTake(xWebThreadSemaphore, ((3 + (fWebUploadingFilesTo != 0) * 30) * W5200_TIME_WAIT / portTICK_PERIOD_MS)) == pdFALSE) {
+			// Во время заливки морды замок подолгу держит приём файла: проверку пропускаем, а не ждём до 99 с (Н-25),
+			// и сетевую работу ниже (сброс чипа) не начинаем.
+			if(webUploadBusy()) active = false;
+			else if(SemaphoreTake(xWebThreadSemaphore, (3 * W5200_TIME_WAIT / portTICK_PERIOD_MS)) == pdFALSE) {
 				journal.jprintf_time("BUSY mutex xWebThread\n");
 				active = false;
 				Diag.num_resMutexSPI++;

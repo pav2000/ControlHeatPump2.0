@@ -85,7 +85,7 @@ void set_Error(int8_t _err, char *nam)
 		            NowTimeToStr(), nam, _err);
 		journal.jprintf_time("$ERROR source: %s, code: %d\n", nam, _err);
 		if(xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) HP.save_DumpJournal(true); // вывод отладочной информации для начала  если запущена freeRTOS
-		HP.message.setMessage(pMESSAGE_ERROR, HP.note_error, 0);    // сформировать уведомление об ошибке
+		HP.message.setMessage(pMESSAGE_ERROR, HP.note_error, _err); // уведомление об ошибке; повтор узнаётся по коду
 		// Сюда ставить надо останов ТН !!!!!!!!!!!!!!!!!!!!!
 		HP.process_error();
 	}

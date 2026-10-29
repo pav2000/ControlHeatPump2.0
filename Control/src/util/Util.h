@@ -238,6 +238,9 @@ void SockStat_Sample(SockStat *s, const uint8_t *sn_sr, uint8_t n, uint32_t now_
 // Хвост запроса HTTP/1.0 с заголовками Host и Connection: close (прежний запрос «GET url\n» был HTTP/0.9 без заголовков).
 // true - добавлен целиком, false - не поместился (dst не менялся).
 bool http_request_tail(char *dst, uint16_t cap, const char *host);
+// Тело ответа HTTP: за пустой строкой, отделяющей заголовки. Ответ без строки статуса «HTTP/» - уже тело;
+// с ней, но без конца заголовков (обрезан) - пустая строка: в заголовках искать ответ сервиса нельзя.
+const char *http_body(const char *resp);
 
 struct SettingsScan {
 	uint16_t records;      // записей разобрано (без END)

@@ -18,6 +18,7 @@
 #include <SerialFlash.h>
 
 #include "WebShared.h"    // Socket[], генерируемые файлы
+#include "WebUpload.h"    // состояние заливки морды
 #include "../core/HeatPump.h"     // HP - состояние и настройки
 #include "Network.h"      // транспорт, server1
 #include "../core/Rtos.h"         // _delay, SemaphoreTake/Give
@@ -655,30 +656,93 @@ const char LOAD_FLASH_END[]  = "*SPI_FLASH_END*"; // Идентификатор 
 const char LOAD_SD_START[]   = "*SD_CARD*";       // Идентификатор начала загрузки веб морды в SD (лежит в Title:)
 const char LOAD_SD_END[]     = "*SD_CARD_END*";   // Идентификатор кольца загрузки веб морды в SD (лежит в Title:)
 
-// Защита заливки веб-морды. Раньше цикл дочитывания файла ждал данные, пока соединение считалось открытым: оборвавшийся клиент
-// держал веб-поток (и общий замок xWebThreadSemaphore) бессрочно, а признак «заливка идёт» (xLoadingWebSemaphore) после сбоя снимался
-// только следующим запросом начала или перезагрузкой.
-#define WEB_UPLOAD_IDLE_MS   10000    // нет ни байта от клиента дольше - файл считается оборванным
-#define WEB_UPLOAD_STALE_MS  30000    // последняя активность заливки старше - признак «заливка идёт» устарел и новое начало его перехватывает
-static uint32_t webUploadTick = 0;    // millis() последней активности заливки (начало, начало файла, принятый пакет)
+// Заливка морды (WebUpload.h): состояние между запросами, меняется под замком сети
+static WebUpload webUpload;
 
-// SEM-HOLD: xLoadingWebSemaphore
-// Признак нарочно остаётся взятым при выходе true: он живёт между запросами «начало заливки» и «конец заливки» (см. parserPOST).
-// Взять признак «заливка идёт». false - занят свежей заливкой (признак при этом освобождается: повтор начала пройдёт, как и раньше);
-// устаревший признак перехватывается сразу.
-static bool webUploadBegin(void)
+bool webUploadBusy(void) { return WebUpload_Busy(&webUpload); }
+
+// Запись принятого куска на носитель: сколько записано
+typedef int32_t (*UploadWrite)(void *file, const uint8_t *p, int32_t n);
+
+static int32_t uploadWriteFlash(void *file, const uint8_t *p, int32_t n)
 {
-	if(SemaphoreTake(xLoadingWebSemaphore, 10) == pdFALSE) {
-		bool stale = (uint32_t)(millis() - webUploadTick) >= WEB_UPLOAD_STALE_MS;
-		journal.jprintf(stale ? "%s: stale upload dropped\n" : "%s: Upload already started\n", "webUploadBegin");
-		SemaphoreGive(xLoadingWebSemaphore);
-		if(!stale || SemaphoreTake(xLoadingWebSemaphore, 10) == pdFALSE) return false;
-	}
-	webUploadTick = millis();
-	return true;
+	spiBusDeselectAll();
+	return ((SerialFlashFile*) file)->write(p, n);
 }
 
-uint16_t numFilesWeb = 0;                   // Число загруженных файлов
+static int32_t uploadWriteSD(void *file, const uint8_t *p, int32_t n)
+{
+	for(uint16_t _timeout = 0; _timeout < 2000 && card.card()->isBusy(); _timeout++) _delay(1);
+	int32_t w = ((SdFile*) file)->write(p, n);
+	if(w != n) journal.jprintf("Error write (%d,%d) ", card.cardErrorCode(), (int)(card.cardErrorData()));
+	return w;
+}
+
+// Приём тела файла: первые buf_len байт уже в ptr, остальное дочитывается из сокета. Один цикл для обоих носителей.
+// Пакеты читаются в Socket[thread].inBuf: всё, что указывает в него (имя файла из заголовка), после приёма затёрто.
+// Каждый принятый пакет отмечает наблюдателя: медленный канал - не зависание (С-7). Возвращает, принят ли файл ровно lenFile байт.
+static bool uploadReceive(uint8_t thread, const uint8_t *ptr, int32_t buf_len, int32_t lenFile, UploadWrite wr, void *file)
+{
+	if(buf_len > lenFile) { journal.jprintf("%d bytes over length ", (int)(buf_len - lenFile)); return false; }   // Н-30
+	if(buf_len > 0 && wr(file, ptr, buf_len) != buf_len) return false;
+	int32_t got = buf_len;
+	uint16_t numPoint = 0;
+	uint32_t tIdle = millis();                                                         // последний принятый пакет
+	while(got < lenFile) {
+		_delay(2);                                                                     // время на приход данных
+		int32_t n = Socket[thread].client.get_ReceivedSizeRX();
+		if(n == 0) {
+			if(!Socket[thread].client.connected()) break;
+			if((uint32_t)(millis() - tIdle) > WEB_UPLOAD_IDLE_MS) { journal.jprintf("idle timeout "); break; }   // клиент замолчал
+			continue;
+		}
+		tIdle = millis();
+		WebUpload_Alive(&webUpload, tIdle);
+		Watchdog_AliveHere();
+		if(got + n > lenFile) { journal.jprintf("%d bytes over length ", (int)(got + n - lenFile)); return false; }
+		Socket[thread].client.read(Socket[thread].inBuf, n);
+		if(wr(file, Socket[thread].inBuf, n) != n) return false;
+		got += n;
+		if(++numPoint >= 20) { numPoint = 0; journal.jprintf("."); }                 // точка на 30 кб приема (20 пакетов по 1540)
+	}
+	if(got != lenFile) journal.jprintf("%db of %d, ", (int) got, (int) lenFile);
+	return got == lenFile;
+}
+
+// Файл заливки на SPI Flash; недописанный удаляется (место не освобождается, но мусор не отдаётся)
+static bool uploadFileFlash(uint8_t thread, const char *nameFile, const uint8_t *ptr, int32_t buf_len, int32_t lenFile)
+{
+	spiBusDeselectAll();
+	if(lenFile > (int32_t) SerialFlash.free_size()) { journal.jprintf("Not enough space, free: %d\n", (int) SerialFlash.free_size()); return false; }
+	int8_t e = SerialFlash.create(nameFile, lenFile);                                  // 0 - создан
+	if(e) { journal.jprintf("Error Create %d!\n", e); return false; }
+	SerialFlashFile ff = SerialFlash.open(nameFile);
+	if(!ff) { journal.jprintf("Error Open!\n"); return false; }
+	bool ok = uploadReceive(thread, ptr, buf_len, lenFile, uploadWriteFlash, &ff);
+	// nameFile лежит в inBuf, а приём пишет туда пакеты: после uploadReceive имя затёрто, удалять - по дескриптору
+	spiBusDeselectAll();
+	if(ok) journal.jprintf("Ok\n");
+	else journal.jprintf(SerialFlash.remove(ff) ? "Error, removed\n" : "Error, NOT removed\n");
+	ff.close();
+	return ok;
+}
+
+// Файл заливки на SD; недописанный удаляется
+static bool uploadFileSD(uint8_t thread, const char *nameFile, const uint8_t *ptr, int32_t buf_len, int32_t lenFile)
+{
+	for(uint16_t _timeout = 0; _timeout < 2000 && card.card()->isBusy(); _timeout++) _delay(1);
+	if(!wFile.opens(nameFile, O_CREAT | O_TRUNC | O_RDWR, &wfname)) {
+		journal.jprintf("Error create (%d,%d)!\n", card.cardErrorCode(), (int)(card.cardErrorData()));
+		return false;
+	}
+	wFile.timestamp(T_CREATE | T_ACCESS | T_WRITE, rtcSAM3X8.get_years(), rtcSAM3X8.get_months(), rtcSAM3X8.get_days(), rtcSAM3X8.get_hours(), rtcSAM3X8.get_minutes(), rtcSAM3X8.get_seconds());
+	bool ok = uploadReceive(thread, ptr, buf_len, lenFile, uploadWriteSD, &wFile);
+	WEB_STORE_DEBUG_INFO(58);
+	if(ok && !wFile.close()) { journal.jprintf("Error close file (%d,%d)! ", card.cardErrorCode(), (int)(card.cardErrorData())); ok = false; }
+	if(ok) journal.jprintf("Ok\n");
+	else journal.jprintf(wFile.isOpen() && wFile.remove() ? "Error, removed\n" : "Error, NOT removed\n");
+	return ok;
+}
 
 // Область профилей в файле настроек: длина вместе с END и контрольной суммой или -1, если область негодна. Проверка
 // ничего не записывает, поэтому идёт до применения настроек и до записи в EEPROM: испорченная область (чужая раскладка
@@ -714,14 +778,12 @@ static int32_t fileProfilesLen(const uint8_t *ptr, const uint8_t *file_end)
 // Сейчас реализована загрузка настроек и загрузка веб морды в спи диск
 // Возврат тип ответа (потом берется из массива строк)
 //
-// SEM-HOLD: xWebThreadSemaphore, xLoadingWebSemaphore
-// Оба замка удерживаются на выходе по замыслу, а не по недосмотру.
-// xWebThreadSemaphore одолжен у web_server(): он держит его на всё
-// обслуживание запроса и сам же отдаёт, поэтому parserPOST не имеет права
-// его отдавать - отдача из неё освободила бы шину SPI из-под владельца.
-// xLoadingWebSemaphore здесь вообще не замок по смыслу, а флаг состояния
-// загрузки веб-морды: он взводится запросом LOAD_*_START и снимается
-// запросом LOAD_*_END, то есть живёт между разными HTTP-запросами.
+// SEM-HOLD: xWebThreadSemaphore
+// Замок удерживается на выходе по замыслу, а не по недосмотру: он одолжен
+// у web_server(), который держит его на всё обслуживание запроса и сам же
+// отдаёт, поэтому parserPOST не имеет права его отдавать - отдача из неё
+// освободила бы шину SPI из-под владельца. Под этим замком меняется и
+// состояние заливки морды (webUpload).
 TYPE_RET_POST parserPOST(uint8_t thread, uint16_t size)
 {
 	byte *ptr, *pStart;
@@ -862,15 +924,17 @@ xLenErr:
 	// загрузка вебморды
 	 else if(HP.get_fSPIFlash() || HP.get_fSD())  { // если есть куда писать
 		WEB_STORE_DEBUG_INFO(53);
-		if(strcmp(nameFile, LOAD_FLASH_START) == 0) {  // начало загрузки вебморды в SPI Flash
-			if(!HP.get_fSPIFlash()) {
-				journal.jprintf("Upload: No SPI Flash installed!\n");
-				SemaphoreGive (xLoadingWebSemaphore);
+		const bool toFlash = strcmp(nameFile, LOAD_FLASH_START) == 0;
+		if(toFlash || strcmp(nameFile, LOAD_SD_START) == 0) {            // начало заливки
+			if(toFlash ? !HP.get_fSPIFlash() : !HP.get_fSD()) {
+				journal.jprintf(toFlash ? "Upload: No SPI Flash installed!\n" : "Upload: No SD card available!\n");
 				return pLOAD_ERR;
 			}
-			fWebUploadingFilesTo = 1;
-			if(!webUploadBegin()) return pLOAD_ERR;
-			numFilesWeb = 0;
+			if(!WebUpload_Begin(&webUpload, toFlash ? UPL_FLASH : UPL_SD, millis())) {
+				journal.jprintf("Upload already started\n");                 // идущая заливка не тронута
+				return pLOAD_ERR;
+			}
+			if(!toFlash) { journal.jprintf_time("Start upload to SD.\n"); return pNULL; }
 			journal.jprintf_time("Start upload, erase SPI disk ");
 			spiBusDeselectAll();                                  // все CS вверх: флеш выбирает свой драйвер
 			SerialFlash.eraseAll();
@@ -880,164 +944,44 @@ xLenErr:
 				if(SemaphoreTake(xWebThreadSemaphore, (3 * W5200_TIME_WAIT / portTICK_PERIOD_MS)) == pdFALSE) { // получить семафор веб морды
 					SETBIT1(Socket[thread].flags, fLOCK_LOST);
 					journal.jprintf("%s: Socket %d %s\n", (char*) __FUNCTION__, Socket[thread].sock, MutexWebThreadBusy);
-					SemaphoreGive(xLoadingWebSemaphore);                                       // заливка прервана: признак «идёт» не оставляем
-					return pLOAD_ERR;
-				} // если не удается захватить мютекс, то ошибка и выход
+					return pLOAD_ERR;            // состояние не трогаем без замка: брошенную заливку перехватит следующее начало
+				}
+				WebUpload_Alive(&webUpload, millis());
 				journal.jprintf(".");
 			}
+			WebUpload_Erased(&webUpload, millis());
 			journal.jprintf(" Ok, free %d bytes\n", (int)(SerialFlash.free_size()));
 			return pNULL;
-		} else if(strcmp(nameFile, LOAD_SD_START) == 0) {  // начало загрузки вебморды в SD
-			if(!HP.get_fSD()) {
-				journal.jprintf("Upload: No SD card available!\n");
-				SemaphoreGive (xLoadingWebSemaphore);
-				return pLOAD_ERR;
-			}
-			fWebUploadingFilesTo = 2;
-			if(!webUploadBegin()) return pLOAD_ERR;
-			numFilesWeb = 0;
-			journal.jprintf_time("Start upload to SD.\n");
-			return pNULL;
 		} else if(strcmp(nameFile, LOAD_FLASH_END) == 0 || strcmp(nameFile, LOAD_SD_END) == 0) {  // Окончание загрузки вебморды
-			if(SemaphoreTake(xLoadingWebSemaphore, 0) == pdFALSE) { // Семафор не захвачен (был захвачен ранее) все ок
-				journal.jprintf_time("Ok, %d files uploaded, free %.1f KB\n", numFilesWeb, fWebUploadingFilesTo == 1 ? (float)SerialFlash.free_size() / 1024 : (float)card.vol()->freeClusterCount() * card.vol()->blocksPerCluster() * 512 / 1024);
-				fWebUploadingFilesTo = 0;
-				SemaphoreGive (xLoadingWebSemaphore);
-				return pLOAD_OK;
-			} else { 	// семафор БЫЛ захвачен, ошибка, отдать обратно
+			const uint8_t media = webUpload.media;
+			if(!WebUpload_End(&webUpload)) {
 				journal.jprintf("%s: Unable to finish upload!\n", (char*) __FUNCTION__);
-				fWebUploadingFilesTo = 0;
-				SemaphoreGive (xLoadingWebSemaphore);
 				return pLOAD_ERR;
 			}
+			journal.jprintf_time("Ok, %d files uploaded, free %.1f KB\n", webUpload.files, media == UPL_FLASH ? (float)SerialFlash.free_size() / 1024 : (float)card.vol()->freeClusterCount() * card.vol()->blocksPerCluster() * 512 / 1024);
+			return pLOAD_OK;
 		} else { // загрузка отдельных файлов веб морды
-			if(SemaphoreTake(xLoadingWebSemaphore, 0) == pdFALSE) { // Семафор занят - загрузка файла
-				webUploadTick = millis();
-				if(lenFile == 0) {
-					journal.jprintf("Upload: %s length = %s!\n", nameFile, pStart);
-					return pLOAD_ERR;
-				}
-				// Файл может лежать во множестве пакетов. Если в SPI Flash, то считается что spi диск отформатирован и ожидает запись файлов с "нуля"
-				// Входные параметры:
-				// nameFile - имя файла
-				// lenFile - общая длина файла
-				// thread - поток веб сервера,который обрабатывает post запрос
-				// ptr - указатель на начало данных (файла) в буфере Socket[thread].inPtr.
-				// buf_len - размер данных в буфере ptr (по сети осталось принять lenFile-buf_len)
-				if(fWebUploadingFilesTo == 1) {
-					uint16_t numPoint = 0;
-					int32_t loadLen; // Обработанная (загруженная) длина
-					WEB_STORE_DEBUG_INFO(54);
-					journal.jprintf("%s (%d) ", nameFile, (int)(lenFile));
-					spiBusDeselectAll();
-					loadLen = SerialFlash.free_size();
-					if(lenFile > loadLen) {
-						journal.jprintf("Not enough space, free: %d\n", (int)(loadLen));
-						loadLen = 0;
-					} else {
-						loadLen = SerialFlash.create(nameFile, lenFile);
-						if(loadLen == 0) {
-							SerialFlashFile ff = SerialFlash.open(nameFile);
-							if(ff) {
-								if(buf_len > 0) loadLen = ff.write(ptr, buf_len); // первый пакет упаковали если он не нулевой
-								uint32_t tIdle = millis();                                 // последний принятый пакет
-								while(loadLen < lenFile)  // Чтение остальных пакетов из сети
-								{
-									_delay(2);                                                 // время на приход данных
-									buf_len = Socket[thread].client.get_ReceivedSizeRX(); // получить длину входного пакета
-									if(buf_len == 0) {
-										if(!Socket[thread].client.connected()) break;
-										if((uint32_t)(millis() - tIdle) > WEB_UPLOAD_IDLE_MS) { journal.jprintf("idle timeout "); break; }   // клиент замолчал
-										continue;
-									}
-									tIdle = webUploadTick = millis();
-									Watchdog_AliveHere();   // пакет пришёл: заливка по медленному каналу идёт, а не висит
-									Socket[thread].client.read(Socket[thread].inBuf, buf_len);        // прочитать буфер
-									spiBusDeselectAll();
-									loadLen = loadLen + ff.write(Socket[thread].inBuf, buf_len);             // записать
-									numPoint++;
-									if(numPoint >= 20) {                   // точка на 30 кб приема (20 пакетов по 1540)
-										numPoint = 0;
-										journal.jprintf(".");
-									}
-								}
-								ff.close();
-								if(loadLen == lenFile) journal.jprintf("Ok\n");
-								else { // Длины не совпали
-									journal.jprintf("%db, Error length!\n", (int)(loadLen));
-									loadLen = 0;
-								}
-							} else journal.jprintf("Error Open!\n");
-						} else journal.jprintf("Error Create %d!\n", (int)(loadLen));
-					}
-					if(loadLen == lenFile) {
-						numFilesWeb++;
-						return pNULL;
-					} else {
-						SemaphoreGive (xLoadingWebSemaphore);
-						return pLOAD_ERR;
-					}
-				} else if(fWebUploadingFilesTo == 2) { // Запись на SD,
-					WEB_STORE_DEBUG_INFO(54);
-					journal.jprintf("%s (%d) ", nameFile, (int)(lenFile));
-					for(uint16_t _timeout = 0; _timeout < 2000 && card.card()->isBusy(); _timeout++) _delay(1);
-					if(wFile.opens(nameFile, O_CREAT | O_TRUNC | O_RDWR, &wfname)) {
-						wFile.timestamp(T_CREATE | T_ACCESS | T_WRITE, rtcSAM3X8.get_years(), rtcSAM3X8.get_months(), rtcSAM3X8.get_days(), rtcSAM3X8.get_hours(), rtcSAM3X8.get_minutes(), rtcSAM3X8.get_seconds());
-						if((int32_t)wFile.write(ptr, buf_len) != buf_len) {
-							journal.jprintf("Error write file %s (%d,%d)!\n", nameFile, card.cardErrorCode(), (int)(card.cardErrorData()));
-						} else {
-							uint16_t numPoint = 0;
-							uint32_t tIdle = millis();                                                     // последний принятый пакет
-							while((lenFile -= buf_len) > 0)  // Чтение остальных пакетов из сети
-							{
-								_delay(2);                                                                 // время на приход данных
-								buf_len = Socket[thread].client.get_ReceivedSizeRX();                  // получить длину входного пакета
-								if(buf_len == 0) {
-									if(!Socket[thread].client.connected()) break;
-									if((uint32_t)(millis() - tIdle) > WEB_UPLOAD_IDLE_MS) { journal.jprintf("idle timeout "); break; }   // клиент замолчал
-									continue;
-								}
-								tIdle = webUploadTick = millis();
-								Watchdog_AliveHere();   // пакет пришёл: заливка по медленному каналу идёт, а не висит
-								Socket[thread].client.read(Socket[thread].inBuf, buf_len);                      // прочитать буфер
-								WEB_STORE_DEBUG_INFO(56);
-								for(uint16_t _timeout = 0; _timeout < 2000 && card.card()->isBusy(); _timeout++) _delay(1);
-								if((int32_t)wFile.write(Socket[thread].inBuf, buf_len) != buf_len) {
-									journal.jprintf("Error write file %s (%d,%d)!\n", nameFile, card.cardErrorCode(), (int)(card.cardErrorData()));
-									break;
-								}
-								WEB_STORE_DEBUG_INFO(57);
-								if(++numPoint >= 20) {// точка на 30 кб приема (20 пакетов по 1540)
-									numPoint = 0;
-									journal.jprintf(".");
-								}
-							}
-						}
-						WEB_STORE_DEBUG_INFO(58);
-						if(!wFile.close()) {
-							journal.jprintf("Error close file (%d,%d)!\n", card.cardErrorCode(), (int)(card.cardErrorData()));
-						}
-						if(lenFile == 0) journal.jprintf("Ok\n"); else journal.jprintf("Error - rest %d!\n", (int)(lenFile));
-					} else journal.jprintf("Error create (%d,%d)!\n", card.cardErrorCode(), (int)(card.cardErrorData()));
-					if(lenFile == 0) {
-						numFilesWeb++;
-						return pNULL;
-					} else {
-						SemaphoreGive (xLoadingWebSemaphore);
-						return pLOAD_ERR;
-					}
-				}
-			} else { // семафор БЫЛ захвачен, ошибка, отдать обратно
+			if(!WebUpload_File(&webUpload, millis())) {
 				uint8_t ip[4];
 				W5100.readSnDIPR(Socket[thread].sock, ip);
 				journal.jprintf("Unable to upload file %s (%d.%d.%d.%d)!\n", nameFile, ip[0], ip[1], ip[2], ip[3]);
-				SemaphoreGive (xLoadingWebSemaphore);
 				return pLOAD_ERR;
 			}
+			if(lenFile <= 0) {
+				journal.jprintf("Upload: %s length = %s!\n", nameFile, pStart);
+				WebUpload_FileDone(&webUpload, false);
+				return pLOAD_ERR;
+			}
+			// buf_len - сколько файла уже лежит в буфере после заголовков, остальное (lenFile - buf_len) дочитывается из сети
+			WEB_STORE_DEBUG_INFO(54);
+			journal.jprintf("%s (%d) ", nameFile, (int)(lenFile));
+			bool ok = webUpload.media == UPL_FLASH ? uploadFileFlash(thread, nameFile, ptr, buf_len, lenFile)
+			                                       : uploadFileSD(thread, nameFile, ptr, buf_len, lenFile);
+			WebUpload_FileDone(&webUpload, ok);
+			return ok ? pNULL : pLOAD_ERR;
 		}
 	} else {
 		journal.jprintf("%s: Upload: No web store!\n", (char*) __FUNCTION__);
-		SemaphoreGive (xLoadingWebSemaphore);
 		return pNO_DISK;
 	}
 	return pPOST_ERR; // До сюда добегать не должны

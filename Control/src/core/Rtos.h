@@ -36,7 +36,6 @@ extern SemaphoreHandle_t xModbusSemaphore;      // Modbus, инвертор и �
 extern SemaphoreHandle_t xWebThreadSemaphore;   // веб-потоки
 extern SemaphoreHandle_t xI2CSemaphore;         // шина I2C
 extern SemaphoreHandle_t xSPISemaphore;         // шина SPI
-extern SemaphoreHandle_t xLoadingWebSemaphore;  // загрузка веб-морды
 
 /*
  * Хендлы задач теплового насоса.
