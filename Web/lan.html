@@ -11,13 +11,6 @@
 .dn table.t th,.dn table.t td{padding:3px 8px}
 .dn table.t td{font-size:12.5px}
 .dn .tag{padding:1px 7px;font-size:10.5px}
-.dn .kv{display:grid;grid-template-columns:1fr auto;gap:2px 10px;font-size:12.5px;margin-top:6px}
-.dn .kv b{text-align:right}
-.dn .bt{padding:4px 11px;font-size:12px}
-.dn .spd{display:flex;align-items:center;gap:10px;margin-top:8px;padding-top:8px;border-top:1px solid var(--line)}
-.dn .spd i{flex:1;height:8px;border-radius:99px;background:var(--bg);overflow:hidden;min-width:40px}
-.dn .spd i b{display:block;height:100%;width:0;background:var(--acc)}
-.dn .spd span{font-weight:800;white-space:nowrap}
 </style>
 <script>
 // Сеть: адресация, безопасность (пароли скрыты, показ по значку), сетевой чип Wiznet W5xxx, состояние сокетов.
@@ -60,41 +53,6 @@ function sockets(d) {
 	}).join(''));
 }
 
-// ---- диагностика веб-сервера: sys.webstat (времена в мкс), сброс - действие reset.webstat ----
-function ms(v) { return v >= 100000 ? Math.round(v / 1000) + ' мс' : (v / 1000).toFixed(1).replace('.', ',') + ' мс'; }
-function webstat(d) {
-	var w = d['sys.webstat'];
-	if(!w || !w.req) return;
-	var row = function(t, a) { return '<tr><td class="n">' + t + '</td><td class="num">' + (a.n ? ms(a.avg) : '–') + '</td><td class="num">' + (a.n ? ms(a.max) : '–') + '</td></tr>'; };
-	put('ws-t', row('Запрос целиком', w.req) + row('stop() соединения', w.stop) + row('Ожидание мютекса', w.lock) + row('Чтение куска 6 КБ', w.file_read) + row('Отправка куска', w.file_send));
-	var z = w.samples ? 100 * w.listen[0] / w.samples : 0;
-	put('ws-z', '<span style="color:' + (z > 1 ? 'var(--bad)' : 'var(--ok)') + '">' + z.toFixed(1).replace('.', ',') + ' % · ' + w.zero_max_ms + ' мс</span>');
-	put('ws-n', w.req.n + ' · ' + w.slow_stop + ' · ' + w.lock_fail);
-}
-function webstatReset() { api['do']('reset.webstat', function(v, e) { if(e) stFail('Не сброшено', e); }); }
-
-// ---- тест скорости: браузер качает test.dat (2 МБ, контроллер отдаёт его потоком), шкала идёт по принятым байтам ----
-var spdXhr = null;
-function speedTest() {
-	if(spdXhr) { spdXhr.abort(); return; }
-	var x = spdXhr = new XMLHttpRequest(), t0 = Date.now(), bar = $('sp-bar'), res = $('sp-res'), btn = $('sp-btn');
-	var end = function(txt) { spdXhr = null; btn.textContent = 'Тест скорости'; res.textContent = txt; };
-	btn.textContent = 'Стоп';
-	bar.style.width = '0'; res.textContent = '0 %';
-	x.onprogress = function(e) { if(e.lengthComputable) { bar.style.width = (100 * e.loaded / e.total) + '%'; res.textContent = Math.round(100 * e.loaded / e.total) + ' %'; } };
-	x.onload = function() {
-		var sec = (Date.now() - t0) / 1000, kb = x.response ? x.response.size / 1024 : 0;
-		bar.style.width = '100%';
-		end(x.status == 200 && kb ? Math.round(kb / sec) + ' КБ/с' : 'ошибка ' + x.status);
-	};
-	x.onerror = function() { end('ошибка связи'); };
-	x.onabort = function() { bar.style.width = '0'; end('прервано'); };
-	x.open('GET', 'TEST.DAT');		// имя - заглавными, как его сверяет прошивка; с «?параметр» файл не отдаётся
-	x.setRequestHeader('Cache-Control', 'no-cache');
-	x.responseType = 'blob';
-	x.send();
-}
-
 window.onload = function() {
 	stPanel();
 	stFields('n1', [
@@ -124,7 +82,6 @@ window.onload = function() {
 	]);
 	stLoadK(function() { ru('k-net-nslp'); ru('k-net-nsls'); ru('k-net-nslr'); });
 	api.poll({k: ['sys.sockets', 'sys.socket_res']}, sockets);
-	api.poll({k: ['sys.webstat']}, webstat);
 };
 </script>
 </head>
@@ -139,13 +96,9 @@ window.onload = function() {
 	<section class="card c4"><h3>Сетевой чип Wiznet W5xxx</h3><div id="n2"></div></section>
 	<section class="card c4"><h3>Безопасность</h3><div id="n3"></div>
 		<div class="fnote"><b>Пользователь</b> видит главную, схему и «О контроллере»; <b>администратор</b> — всё. Пароли скрыты точками и показываются по значку глаза.</div></section>
-	<section class="card c8 dn"><h3>Сокеты сетевого чипа <span class="r" id="sock-res" style="color:var(--mute)"></span></h3>
+	<section class="card c12 dn"><h3>Сокеты сетевого чипа <span class="r" id="sock-res" style="color:var(--mute)"></span></h3>
 		<table class="t"><thead><tr><th>№</th><th>Статус</th><th>MAC-адрес</th><th>IP-адрес</th><th>Порт</th></tr></thead><tbody id="socks"></tbody></table>
 		<div class="fnote"><b>1.</b> Переходное состояние сокета. <b>2.</b> Сокеты-«кандидаты» на сброс.</div></section>
-	<section class="card c4 dn"><h3>Диагностика веб <span class="r"><button class="btn2 bt" onclick="webstatReset()">Сбросить</button></span></h3>
-		<table class="t"><thead><tr><th>Метрика</th><th>Средн.</th><th>Макс.</th></tr></thead><tbody id="ws-t"></tbody></table>
-		<div class="kv"><span>Без слушающего сокета</span><b id="ws-z">–</b><span>Замеров · медл. stop() · отказов мютекса</span><b id="ws-n">–</b></div>
-		<div class="spd"><button class="btn2 p bt" id="sp-btn" onclick="speedTest()">Тест скорости</button><i><b id="sp-bar"></b></i><span id="sp-res"></span></div></section>
 </div>
 </div>
 </body>

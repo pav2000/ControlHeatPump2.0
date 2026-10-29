@@ -38,10 +38,6 @@
 #include <stdint.h>
 
 // Идентификаторы задач. Порядок важен только для читаемости журнала.
-// Метка в GPBR[6] после перезагрузки по молчанию задачи: 'WD' + индекс задачи.
-// GPBR 0..5 заняты диагностикой (код отказа, имя задачи, хлебные крошки).
-#define WDT_STUCK_MARK  0x57440000UL
-
 enum {
 	WDT_ReadSensor = 0,
 	WDT_ServiceHP,
@@ -106,5 +102,61 @@ WatchdogVerdict Watchdog_Check(WatchdogTask *tasks, uint8_t n,
                                int8_t *stuck_out, uint32_t *record_mask = 0);
 
 void Watchdog_Init(WatchdogTask *t, uint32_t limit_ms, uint32_t now_ms);
+
+/*
+ * Учёт перезагрузок (С-18, Н-26).
+ *
+ * Карта GPBR. Восемь регистров переживают сброс, но не снятие питания: после подачи питания
+ * в них мусор, поэтому значения, которые читаются при старте, несут метку.
+ */
+enum {
+	GPBR_RTOS   = 0,   // FreeRTOS: номер текущей задачи << 8 | код аварии ядра (пишут tasks.c и errorBlink); GPBR_RTOS_READ - прочитан при старте
+	GPBR_TASK   = 1,   // 1..3: имя задачи при переполнении стека (vApplicationStackOverflowHook)
+	GPBR_DBG    = 4,   // точка отладки задач (STORE_DEBUG_INFO)
+	GPBR_WEBDBG = 5,   // точка отладки веба (WEB_STORE_DEBUG_INFO)
+	GPBR_REASON = 6,   // причина, записанная перед сбросом: RESET_*_MARK
+	GPBR_BOOT   = 7    // BOOT_MARK | аварийных перезагрузок подряд
+};
+#define GPBR_RTOS_READ      0x80000000UL   // снимает первое же переключение задач: признак стоит - планировщик после старта не работал
+#define RESET_STUCK_MARK    0x57440000UL   // 'WD' | индекс молчавшей задачи (Watchdog_Supervise)
+#define RESET_PLANNED_MARK  0x504C0000UL   // 'PL': сброс по команде (pRESET)
+#define RESET_ASSERT_MARK   0x41530000UL   // 'AS': провал assert
+#define BOOT_MARK           0xFA170000UL
+#define BOOT_MAX_RESETS     3              // аварийных перезагрузок подряд, после которых ТН сам не запускается
+#define BOOT_HEALTHY_S      600            // столько секунд работы без перезагрузки обнуляют счёт
+
+// Тип сброса из RSTC_SR.RSTTYP (SAM3X)
+enum : uint8_t { RST_GENERAL = 0, RST_BACKUP, RST_WATCHDOG, RST_SOFTWARE, RST_USER };
+
+// Причины с BOOT_KERNEL и дальше - аварийные: они считаются подряд и после BOOT_MAX_RESETS отменяют автопуск.
+enum BOOT_CAUSE : uint8_t {
+	BOOT_POWER,        // подача питания (регистры не читаются - в них мусор)
+	BOOT_USER,         // кнопка RESET
+	BOOT_PLANNED,      // сброс по команде
+	BOOT_KERNEL,       // авария ядра (errorBlink -> vApplicationFaultHook)
+	BOOT_STUCK,        // задача перестала отмечаться, наблюдатель отдал сброс аппаратному WDT
+	BOOT_HW_WDT,       // аппаратный WDT без причины от наблюдателя (встал сам наблюдатель)
+	BOOT_ASSERT,       // провал assert
+	BOOT_SOFT_UNKNOWN  // программный сброс, перед которым причину не записали
+};
+
+struct BootRegs {          // GPBR_RTOS, GPBR_REASON, GPBR_BOOT
+	uint32_t rtos, reason, boot;
+};
+
+struct BootInfo {
+	BOOT_CAUSE cause;
+	uint8_t  fault;        // код аварии ядра, 0 - не было
+	int16_t  task;         // BOOT_STUCK - индекс задачи наблюдателя, BOOT_KERNEL - номер задачи FreeRTOS; -1 - неизвестна (авария до планировщика)
+	uint16_t rtos;         // номер задачи << 8 | код - для диагностики
+	uint8_t  resets;       // аварийных перезагрузок подряд, включая эту
+};
+
+// Решение при старте: причина и счёт подряд. Регистры переписываются (причина прочитана, счёт обновлён),
+// запись их обратно в GPBR - за вызывающим. rsttyp - RST_*.
+BootInfo    Boot_Decide(BootRegs *r, uint8_t rsttyp);
+bool        Boot_Abnormal(BOOT_CAUSE c);
+bool        Boot_NoAutoStart(const BootInfo &b);   // аварии по кругу: не запускать компрессор, ждать человека
+const char *Boot_CauseText(BOOT_CAUSE c);
 
 #endif

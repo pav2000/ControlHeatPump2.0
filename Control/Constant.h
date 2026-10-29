@@ -27,6 +27,7 @@
 #include "src/hw/StepMotorPhase.h"
 #include "src/hw/GpioDirect.h"
 #include "src/core/ErrorCodes.h"
+#include "src/core/Watchdog.h"     // карта GPBR, причины сброса
 #include "src/core/ControlTypes.h"   // MODE_COMP, RULE_HP, структуры ПИД
 
 /*
@@ -971,15 +972,9 @@ static const char * const noteRemarkEEV[] = {	"Перегрев равен: те
 // Предупреждения
 #define WARNING_VALUE        1         // Попытка установить значение за границами диапазона запрос типа SET
 
-// GPBR  - восемь 32x битных регистров не обнуляющиеся при сбросе, Энергозависимы!
-// адреса - 0x90-0xDC General Purpose Backup Register GPBR
-// The System Controller embeds Eight general-purpose backup registers.
-// Карта использования GPBR в НК
-// GPBR->SYS_GPBR[0] текущую задача (сдвиг на 8 влево) +  номера ошибки RTOS
-// GPBR->SYS_GPBR[1] причина сброса контроллера
-// GPBR->SYS_GPBR[4] последня точка отладки перед сбросом максимальное значение точки отладки сейчас 56 (обновляем!)
-#define STORE_DEBUG_INFO(s) GPBR->SYS_GPBR[4] = s  // Сохранение номера точки отладки в энергозависимой памяти sam3
-#define WEB_STORE_DEBUG_INFO(s) GPBR->SYS_GPBR[5] = s  // Сохранение номера точки отладки в энергозависимой памяти sam3
+// Последняя точка отладки перед сбросом в GPBR. Карта GPBR - Watchdog.h.
+#define STORE_DEBUG_INFO(s) GPBR->SYS_GPBR[GPBR_DBG] = s
+#define WEB_STORE_DEBUG_INFO(s) GPBR->SYS_GPBR[GPBR_WEBDBG] = s
 
 // Коды ошибок, перечисление точек возврата TYPE_RET_HP и тексты к ним
 // лежат в ErrorCodes.h: их нужно видеть и модулям, которые Constant.h

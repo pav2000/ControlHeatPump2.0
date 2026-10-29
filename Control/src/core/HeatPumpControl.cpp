@@ -114,7 +114,7 @@ int8_t HeatPump::runCommand()
 			Stats.SaveStats(0);
 			Stats.SaveHistory(0);
 			_delay(500);            // задержка что бы вывести сообщение в консоль
-			Software_Reset() ;      // Сброс
+			Reset_Controller(RESET_PLANNED_MARK);   // плановый: в счёт аварийных перезагрузок не идёт
 			break;
 		case pREPEAT:
 			if(NO_Power) { // Нет питания - ожидание

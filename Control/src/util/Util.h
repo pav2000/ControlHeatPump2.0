@@ -203,6 +203,13 @@ bool   WebSock_Busy(int8_t sock, const int8_t *owners, uint8_t n);          // �
 struct StatAcc { uint32_t n; uint64_t sum; uint32_t max; };       // n значений, их сумма (64 бита: микросекунды за сутки переполнили бы 32) и наибольшее
 void     StatAcc_Add(StatAcc *a, uint32_t v);
 uint32_t StatAcc_Avg(const StatAcc *a);                           // среднее, 0 если значений нет
+
+// Замер чтения файла с носителя (TEST.FLASH, TEST.SD, вкладка «SPI&Web»): порция за порцией - байты, время внутри read(), CRC16.
+// res: 0 - не мерили (нет носителя или файла), 1 - прочитан, -1 - ошибка чтения.
+struct SpiReadStat { uint32_t size, us; uint16_t crc; int8_t res; };
+void SpiRead_Begin(SpiReadStat *r);
+// Учесть результат одного read(): n - вернул read(), us - сколько он длился. false - чтение закончено (конец файла или ошибка).
+bool SpiRead_Step(SpiReadStat *r, const uint8_t *buf, int n, uint32_t us);
 // Состояния сокета W5500 (Sn_SR) в порядке счётчиков SockStat.st[]
 #define SS_CLOSED  0   // закрыт, ждёт повторного открытия на приём
 #define SS_LISTEN  1   // слушает: принимает новое соединение

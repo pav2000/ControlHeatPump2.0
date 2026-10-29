@@ -33,7 +33,7 @@ var SHELL_MAP = [
 		{t: 'Время', p: [['time', 'Время']]},
 		{t: 'Файлы и обновление', p: [['files', 'Файлы и обновление']]},
 		{t: 'Состояние', p: [['system', 'Состояние'], ['const', 'Константы сборки']]},
-		{t: 'Диагностика', p: [['log', 'Журнал'], ['test', 'Тест'], ['freertos', 'Задачи RTOS'], ['modbus', 'Modbus'], ['debug', 'Флаги отладки']]}]}
+		{t: 'Диагностика', p: [['log', 'Журнал'], ['test', 'Тест'], ['freertos', 'Задачи RTOS'], ['modbus', 'Modbus'], ['spi', 'SPI&Web'], ['debug', 'Флаги отладки']]}]}
 ];
 // Страницы, доступные роли user (WebServer.cpp, HTTP_GET)
 var SHELL_USER_PAGES = {index: 1, plan: 1, about: 1};
@@ -42,7 +42,7 @@ var SHELL_HELP = {heating: 1, gvs: 1, profiles: 1, scheduler: 1, config: 1, lan:
 	time: 1, system: 1, files: 1, log: 1, test: 1, debug: 1, 'eev-set': 1,
 	index: 1, plan: 'index-help', charts: 1, 'charts-set': 'charts-help', stats: 'charts-help', history: 'charts-help',
 	sensorst: 'sensors-help', sensorsp: 'sensors-help', setsensors: 'sensors-help', eev: 1, invertor: 1, 'invertor-set': 'invertor-help',
-	relay: 1, modbus: 1, freertos: 1};
+	relay: 1, modbus: 1, freertos: 1, spi: 1};
 var SHELL_ICONS = {
 	home: 'M3 11l9-8 9 8M5 10v10h14V10M10 20v-6h4v6',
 	thermo: 'M10 14V5a2 2 0 0 1 4 0v9a4 4 0 1 1-4 0z',

@@ -613,6 +613,21 @@ bool WebSock_Busy(int8_t sock, const int8_t *owners, uint8_t n)
 	return false;
 }
 
+void SpiRead_Begin(SpiReadStat *r)
+{
+	r->size = 0; r->us = 0; r->crc = 0xFFFF; r->res = 1;
+}
+
+bool SpiRead_Step(SpiReadStat *r, const uint8_t *buf, int n, uint32_t us)
+{
+	r->us += us;
+	if(n < 0) { r->res = -1; return false; }
+	if(n == 0) { if(r->us == 0) r->us = 1; return false; }    // время 0 (крошечный файл) не даёт делить на ноль при подсчёте скорости
+	r->crc = calc_crc16((unsigned char *) buf, n, r->crc);
+	r->size += n;
+	return true;
+}
+
 uint8_t SD_BlockRun(uint32_t first, uint32_t last, uint32_t ram1, uint32_t ram2, uint8_t maxn)
 {
 	if(first == ram1 || first == ram2) return 0;

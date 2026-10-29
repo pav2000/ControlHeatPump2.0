@@ -270,12 +270,12 @@ void Watchdog_Supervise(uint32_t now_ms)
 		WDT_Restart(WDT);
 		return;
 	}
-	// Не сбрасываем - через WDT_TIME секунд контроллер перезагрузится. Индекс задачи
-	// сохраняем в GPBR[6], он переживает сброс (GPBR 0..5 заняты
-	// диагностикой: код отказа, имя задачи, хлебные крошки).
-	GPBR->SYS_GPBR[6] = WDT_STUCK_MARK | (uint32_t) stuck;
+	// Не сбрасываем - через WDT_TIME секунд контроллер перезагрузится. Причину с индексом задачи
+	// при старте прочитает Boot_Decide.
+	GPBR->SYS_GPBR[GPBR_REASON] = RESET_STUCK_MARK | (uint32_t) stuck;
 	journal.jprintf_time("WATCHDOG: task %s stuck, reboot\n",
 	                     stuck >= 0 ? wdtNames[stuck] : "?");
+	journal.FlushAll();             // до сброса строка должна дойти до EEPROM (Н-20)
 }
 
 /*
@@ -573,26 +573,25 @@ void setup() {
 	showID();                                                                  // информация о чипе
 	getIDchip((char*)Socket[0].inBuf);
 	journal.jprintf("Chip ID SAM3X8E: %s\n", Socket[0].inBuf);// информация об серийном номере чипа
-	if(GPBR->SYS_GPBR[0] & 0x80000000) GPBR->SYS_GPBR[0] = 0; else GPBR->SYS_GPBR[0] |= 0x80000000; // очистка старой причины
-	lastErrorFreeRtosCode = GPBR->SYS_GPBR[0] & 0x7FFFFFFF;         // Сохранение кода ошибки при страте (причину перегрузки)
+	// Причина прошлой перезагрузки и счёт аварийных подряд - одно решение для всех причин (С-18)
+	static_assert(RSTC_SOFTWARE_RESET == (RST_SOFTWARE << RSTC_SR_RSTTYP_Pos) && RSTC_USER_RESET == (RST_USER << RSTC_SR_RSTTYP_Pos), "RST_* - это RSTC_SR.RSTTYP");
+	BootRegs boot_regs = { GPBR->SYS_GPBR[GPBR_RTOS], GPBR->SYS_GPBR[GPBR_REASON], GPBR->SYS_GPBR[GPBR_BOOT] };
+	const BootInfo boot = Boot_Decide(&boot_regs, rstc_get_reset_cause(RSTC) >> RSTC_SR_RSTTYP_Pos);
+	GPBR->SYS_GPBR[GPBR_RTOS]   = boot_regs.rtos;
+	GPBR->SYS_GPBR[GPBR_REASON] = boot_regs.reason;
+	GPBR->SYS_GPBR[GPBR_BOOT]   = boot_regs.boot;
+	lastErrorFreeRtosCode = boot.rtos;
 	journal.jprintf("Last reason for reset SAM3x: %s\n", ResetCause());
-	// Причина перезагрузки по сторожевому таймеру: какая задача перестала
-	// отмечаться. Записывается в Watchdog_Supervise, переживает сброс.
-	if((GPBR->SYS_GPBR[6] & 0xFFFF0000UL) == WDT_STUCK_MARK) {
-		uint8_t wid = GPBR->SYS_GPBR[6] & 0xFF;
-		journal.jprintf("WATCHDOG: предыдущая перезагрузка - молчала задача %s\n",
-		                wid < WDT_TASK_COUNT ? wdtNames[wid] : "?");
-		GPBR->SYS_GPBR[6] = 0;          // причина прочитана
-	}
 	journal.jprintf("Last FreeRTOS task + error: 0x%04x", lastErrorFreeRtosCode);
-	if(GPBR->SYS_GPBR[4]) journal.jprintf(" (%d)", (int)(GPBR->SYS_GPBR[4]));
-	if(GPBR->SYS_GPBR[5]) journal.jprintf(" Web(%d)", (int)(GPBR->SYS_GPBR[5]));
+	if(GPBR->SYS_GPBR[GPBR_DBG]) journal.jprintf(" (%d)", (int)(GPBR->SYS_GPBR[GPBR_DBG]));
+	if(GPBR->SYS_GPBR[GPBR_WEBDBG]) journal.jprintf(" Web(%d)", (int)(GPBR->SYS_GPBR[GPBR_WEBDBG]));
 	journal.jprintf("\n");
-	// Авария ядра (vApplicationFaultHook, Board.cpp): причина в GPBR[0] (ResetCause), счёт сбросов подряд в GPBR[7].
-	// Оба регистра переживают сброс, но не снятие питания.
-	if((lastErrorFreeRtosCode & 0xFF) && Fault_Resets(GPBR->SYS_GPBR[7]))
-		journal.jprintf("$АВАРИЯ ЯДРА: %s; выходы выключены, перезагрузка %d подряд (предел %d)\n",
-		                ResetCause(), Fault_Resets(GPBR->SYS_GPBR[7]), FAULT_MAX_RESETS);
+	if(Boot_Abnormal(boot.cause)) {
+		const char *detail = boot.cause == BOOT_STUCK ? (boot.task < WDT_TASK_COUNT ? wdtNames[boot.task] : "?")
+		                   : boot.cause == BOOT_KERNEL ? ResetCause() : "";
+		journal.jprintf("$Аварийная перезагрузка: %s%s%s, %d подряд (предел %d)\n",
+		                Boot_CauseText(boot.cause), *detail ? " " : "", detail, boot.resets, BOOT_MAX_RESETS);
+	}
 
 #ifdef PIN_LED1                            // Включение (точнее индикация) питания платы если необходимо
 	pinMode(PIN_LED1,OUTPUT);
@@ -906,13 +905,13 @@ x_I2C_init_std_message:
 	journal.jprintf(" Create tasks - OK, size %d bytes\n",(int)(Diag.mRTOS));
 
 	if(HP.get_HP_ON()>0) {                           // если надо запустить ТН - отложенный старт
-		if(Fault_NoAutoStart(GPBR->SYS_GPBR[7])) {     // аварии ядра по кругу: не дёргать компрессор, ждать человека
-			journal.jprintf("$Delayed start canceled: %d kernel faults in a row\n", Fault_Resets(GPBR->SYS_GPBR[7]));
+		if(Boot_NoAutoStart(boot)) {
+			journal.jprintf("$Delayed start canceled: %d abnormal resets in a row\n", boot.resets);
 			// Поле ошибки занимает первая (Error_Claim), а при старте его часто уже заняла ошибка инициализации
 			// (на стенде -39 «инвертор не найден»): причину отмены не было бы видно в морде. Она важнее - вытесняем.
 			// Планировщик ещё не запущен, прямая запись безопасна; прежняя ошибка осталась в журнале.
 			HP.drop_error_at_boot();
-			set_Error(ERR_KERNEL_FAULT, (char*)nameFREERTOS);
+			set_Error(ERR_RESET_LOOP, (char*)nameFREERTOS);
 		} else HP.sendCommand(pRESTART);
 	}
 
@@ -1770,7 +1769,7 @@ void vServiceHP(void *)
 		register uint32_t t = xTaskGetTickCount();
 		if(t - timer_sec >= 1000) { // 1 sec
 			Watchdog_Supervise(t);
-			if(GPBR->SYS_GPBR[7] && t > FAULT_CLEAR_S * 1000UL) GPBR->SYS_GPBR[7] = 0;   // проработали без аварий - счёт сбросов подряд с нуля
+			if(GPBR->SYS_GPBR[GPBR_BOOT] && t > BOOT_HEALTHY_S * 1000UL) GPBR->SYS_GPBR[GPBR_BOOT] = 0;   // проработали без перезагрузки - счёт аварийных подряд с нуля
 			{	// Счётчик повторных пусков: час работы без ошибок - попытки снова все (раньше обнулялся только ручным пуском)
 				static RepeatWatch repeat_watch = { 0 };
 				if(Error_RepeatReset(repeat_watch, HP.num_repeat, HP.get_State() == pWORK_HP && HP.get_errcode() == OK, t, REPEAT_RESET_S * 1000UL)) {

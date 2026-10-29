@@ -32,6 +32,8 @@
 #include "../log/Statistics.h"   // Stats, имена файлов статистики
 #include "../hw/Clock.h"        // get_NTP_result: итог последней синхронизации времени
 #include "../util/Util.h"         // _itoa, ftoa, dptoa, byteToHex, addressToHex
+#include "../core/ErrorCodes.h"   // Spi0_Check - конфигурация SPI0 для вкладки «SPI&Web»
+#include <SerialFlash.h>          // объём флеш для sys.spi
 
 
 // Системная информация для разработчика: «подпись|значение;...», разделы - строки <b>…</b>. Источник ключа sys.info.
@@ -612,7 +614,7 @@ extern const ApiGroup ApiGrpEev;
 #endif     // у классов-владельцев
 
 // ---- группа sys: служебные данные для страниц системы ----
-enum { Y_SOCKETS = 1, Y_SOCKRES, Y_OWPIN, Y_LSTATS, Y_LHIST, Y_FREERAM, Y_INFO, Y_CONST, Y_CONST1, Y_WDT, Y_TASKS, Y_ERRORS, Y_ERRORS1, Y_LHISTOLD, Y_WEBSTAT };
+enum { Y_SOCKETS = 1, Y_SOCKRES, Y_OWPIN, Y_LSTATS, Y_LHIST, Y_FREERAM, Y_INFO, Y_CONST, Y_CONST1, Y_WDT, Y_TASKS, Y_ERRORS, Y_ERRORS1, Y_LHISTOLD, Y_WEBSTAT, Y_SPI };
 static const ApiParam apiSysTab[] = {
 	{ "sockets",    0, 0, 0, 0, 1, PT_CALL, PF_RO | PF_AR, MK_TABLE, Y_SOCKETS, 0 },    // состояние сокетов сетевого чипа
 	{ "socket_res", 0, 0, 0, 0, 1, PT_CALL, PF_RO | PF_AR, MK_INT,   Y_SOCKRES, 0 },    // сколько зависших сокетов сброшено
@@ -632,6 +634,7 @@ static const ApiParam apiSysTab[] = {
 	{ "errors",  0, 0, 0, 0, 1, PT_CALL, PF_RO | PF_AR, MK_TABLE, Y_ERRORS,  0 },
 	{ "errors1", 0, 0, 0, 0, 1, PT_CALL, PF_RO | PF_AR, MK_TABLE, Y_ERRORS1, 0 },
 	{ "webstat", 0, 0, 0, 0, 1, PT_CALL, PF_RO,         MK_TABLE, Y_WEBSTAT, 0 },    // метрики веб-сервера (WebShared.h), обнуляются действием reset.webstat
+	{ "spi",     0, 0, 0, 0, 1, PT_CALL, PF_RO,         MK_TABLE, Y_SPI,     0 },    // шина SPI: устройства, частоты, счётчики (вкладка «SPI&Web»), сброс - reset.spi
 };
 #define API_ERR_HALF 47
 static_assert(-ERR_ERRMAX + 1 <= 2 * API_ERR_HALF, "справочник ошибок не помещается в два ключа sys.errors/errors1: добавьте ключ");
@@ -698,6 +701,44 @@ static void api_put_webstat(ApiOut *o)
 	api_put(o, ",\"zero_max_ms\":"); api_put_int(o, (int32_t) s.zeroMax);
 	api_putc(o, '}');
 }
+// Шина SPI для вкладки «Диагностика -> SPI&Web». Подписи - в морде, здесь только данные. Ничего не читает с шины, кроме регистров SPI0:
+// объём и тип SD - из полей тома, заполненных при инициализации карты. Вызывается из веб-потока под замком сети.
+static void api_put_dev(ApiOut *o, const char *name, uint8_t cs, SpiDev d, int8_t st)
+{
+	api_putc(o, '"'); api_put(o, name); api_put(o, "\":{\"cs\":"); api_put_int(o, cs);
+	api_put(o, ",\"mhz\":"); api_put_int(o, spiBusMHz(d));
+	api_put(o, ",\"st\":"); api_put_int(o, st);
+}
+static void api_put_spi(ApiOut *o)
+{
+	SD_ReadMode();                                  // настройка «Многоблочное чтение SD» -> SdFat: иначе до первого чтения с карты multi_on был бы 0
+	api_putc(o, '{');
+	api_put_dev(o, "net", PIN_SPI_CS_W5XXX, SPIDEV_NET, 1);
+	api_put(o, ",\"chip\":"); api_put_str(o, nameWiznet); api_putc(o, '}');
+	api_putc(o, ',');
+	api_put_dev(o, "sd", PIN_SPI_CS_SD, SPIDEV_SD, HP.get_fSD());              // 0 - нет карты, 1 - карта без морды, 2 - карта с мордой
+	if(HP.get_fSD()) {
+		api_put(o, ",\"type\":"); api_put_int(o, card.card()->type());          // 1 - SD1, 2 - SD2, 3 - SDHC/SDXC
+		api_put(o, ",\"fat\":"); api_put_int(o, card.vol()->fatType());
+		api_put(o, ",\"mb\":"); api_put_int(o, (int32_t) (card.vol()->clusterCount() / 2048 * card.vol()->blocksPerCluster()));
+	}
+	api_put(o, ",\"multi\":"); api_put_int(o, HP.get_SDMultiBlock());        // настройка «Многоблочное чтение SD»
+	api_put(o, ",\"multi_on\":"); api_put_int(o, sdMultiBlockRead);          // действует сейчас (после отказа CMD18 - 0 до переключения)
+	api_putc(o, '}');
+#ifdef SPI_FLASH
+	api_putc(o, ',');
+	api_put_dev(o, "flash", PIN_SPI_CS_FLASH, SPIDEV_FLASH, HP.get_fSPIFlash());
+	api_put(o, ",\"size\":"); api_put_int(o, (int32_t) SerialFlash.Capacity);
+	api_putc(o, '}');
+#endif
+	api_put(o, ",\"dma_to\":"); api_put_int(o, (int32_t) spiBusStat.dmaTimeouts);
+	api_put(o, ",\"dma_ovr\":"); api_put_int(o, (int32_t) spiBusStat.dmaOverruns);
+	api_put(o, ",\"dma_late\":"); api_put_int(o, (int32_t) spiBusStat.dmaLate);
+	api_put(o, ",\"sd_busy\":"); api_put_int(o, sdBusyMaxMs);
+	api_put(o, ",\"cmd18\":"); api_put_int(o, (int32_t) sdMultiBlockFails);   // с загрузки: сброс не трогает (по нему SD_ReadMode пишет журнал)
+	api_put(o, ",\"spi0\":"); api_put_int(o, Spi0_Check(SPI0->SPI_MR, SPI0->SPI_CSR[3]));   // 0 - норма, иначе биты SPI_ANOM_*
+	api_putc(o, '}');
+}
 static int api_sys_table(uint8_t hook, ApiOut *o)
 {
 	if(o->cap - o->len < 4600) return AE_TOO_BIG;
@@ -722,6 +763,7 @@ static int api_get_sys(uint8_t hook, uint8_t, ApiOut *o)
 {
 	if(hook == Y_SOCKETS) socketInfoApi(o);
 	else if(hook == Y_WEBSTAT) api_put_webstat(o);
+	else if(hook == Y_SPI) api_put_spi(o);
 	else if(hook == Y_SOCKRES) api_put_int(o, HP.socketRes());
 	else if(hook == Y_LSTATS) api_put_year_files(o, 0);
 	else if(hook == Y_LHIST) api_put_year_files(o, 1);
@@ -1170,6 +1212,41 @@ static int apiAct_save_prepare_update(ApiOut *o, const char *)
 static int apiAct_reset_controller(ApiOut *o, const char *) { HP.sendCommand(pRESET); api_put(o, "\"ok\""); return AE_OK; }   // сначала штатный останов ТН: до минуты
 static int apiAct_reset_journal(ApiOut *o, const char *) { journal.Format(); api_put(o, "\"ok\""); return AE_OK; }
 static int apiAct_reset_webstat(ApiOut *o, const char *) { memset(&webStat, 0, sizeof(webStat)); api_put(o, "\"ok\""); return AE_OK; }   // замок сети у web_server
+// Счётчики шины SPI (вкладка «SPI&Web»). Отказы CMD18 не сбрасываются: по их росту SD_ReadMode пишет в журнал.
+static int apiAct_reset_spi(ApiOut *o, const char *)
+{
+	spiBusStat.dmaTimeouts = 0; spiBusStat.dmaOverruns = 0; spiBusStat.dmaLate = 0;
+	sdBusyMaxMs = 0;
+	api_put(o, "\"ok\"");
+	return AE_OK;
+}
+// Тест носителей и шины (spiTestRun, WebServer.cpp). Файлы читаются в свободную часть выходного буфера: ответ - меньше SPI_TEST_JSON байт,
+// он пишется в начало, рабочий буфер - за ним. Около 0,1 с, замок сети держится всё это время.
+#define SPI_TEST_JSON 400
+static int apiAct_spi_test(ApiOut *o, const char *)
+{
+	const int32_t room = (int32_t) o->cap - o->len - SPI_TEST_JSON - 1;
+	if(room < 1024) return AE_TOO_BIG;
+	SpiTest t;
+	spiTestRun(&t, (uint8_t *) (o->p + o->len + SPI_TEST_JSON), (uint16_t) (room > 6144 ? 6144 : room));
+	char h[5];
+	const SpiReadStat *rd[2] = { &t.flash, &t.sd };
+	const char *nm[2] = { "flash", "sd" };
+	api_put(o, "{\"file\":"); api_put_str(o, INDEX_FILE);
+	for(uint8_t i = 0; i < 2; i++) {
+		api_put(o, ",\""); api_put(o, nm[i]); api_put(o, "\":{\"res\":"); api_put_int(o, rd[i]->res);
+		api_put(o, ",\"size\":"); api_put_int(o, (int32_t) rd[i]->size);
+		api_put(o, ",\"us\":"); api_put_int(o, (int32_t) rd[i]->us);
+		m_snprintf(h, sizeof(h), "%04X", (unsigned) rd[i]->crc);
+		api_put(o, ",\"crc\":"); api_put_str(o, h); api_putc(o, '}');
+	}
+	api_put(o, ",\"reg8_ns\":"); api_put_int(o, (int32_t) t.reg8_ns);
+	api_put(o, ",\"reg16_ns\":"); api_put_int(o, (int32_t) t.reg16_ns);
+	api_put(o, ",\"open_us\":"); api_put_int(o, (int32_t) t.open_us);
+	api_put(o, ",\"read16_ns\":"); api_put_int(o, (int32_t) t.read16_ns);
+	api_putc(o, '}');
+	return AE_OK;
+}
 static int apiAct_reset_counters(ApiOut *o, const char *) { journal.jprintf("$RESET Season Counters. . .\n"); HP.resetCount(false); api_put(o, "\"ok\""); return AE_OK; }
 static int apiAct_reset_counters_all(ApiOut *o, const char *) { journal.jprintf("$RESET All Counters. . .\n"); HP.resetCount(true); api_put(o, "\"ok\""); return AE_OK; }
 static int apiAct_wdt_reset(ApiOut *o, const char *)       // обнулить замеры наблюдателя; таблицу замеров читают отдельно (sys.wdt)
@@ -1244,6 +1321,8 @@ static const ApiAction apiActions[] = {
 	{ "reset.journal",  0, apiAct_reset_journal },
 	{ "reset.counters", 0, apiAct_reset_counters },
 	{ "reset.webstat", 0, apiAct_reset_webstat },
+	{ "reset.spi",      0, apiAct_reset_spi },
+	{ "spi.test",       0, apiAct_spi_test },
 	{ "reset.counters_all", 0, apiAct_reset_counters_all },
 	{ "wdt.reset",      0, apiAct_wdt_reset },
 	{ "tasks.reset",    0, apiAct_tasks_reset },

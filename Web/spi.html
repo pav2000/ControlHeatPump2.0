@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>SPI&amp;Web. Народный контроллер ТН</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<script src="scripts.js"></script>
+<script src="settings.js"></script>
+<style>
+.dn table.t th,.dn table.t td{padding:3px 8px}
+.dn table.t td{font-size:12.5px}
+.dn .kv{display:grid;grid-template-columns:1fr auto;gap:2px 10px;font-size:12.5px;margin-top:6px}
+.dn .kv b{text-align:right}
+.dn .bt{padding:4px 11px;font-size:12px}
+.dn .spd{display:flex;align-items:center;gap:10px;margin-top:8px;padding-top:8px;border-top:1px solid var(--line)}
+.dn .spd i{flex:1;height:8px;border-radius:99px;background:var(--bg);overflow:hidden;min-width:40px}
+.dn .spd i b{display:block;height:100%;width:0;background:var(--acc)}
+.dn .spd span{font-weight:800;white-space:nowrap}
+.dn .ok{color:var(--ok)}.dn .bad{color:var(--bad)}.dn .mute{color:var(--mute)}
+.dn .sub{font-size:11.5px;color:var(--mute);font-weight:500}
+.dn .sec{font-size:11px;font-weight:800;color:var(--mute);text-transform:uppercase;letter-spacing:.04em;margin:12px 0 2px}
+</style>
+<script>
+// «Система -> Диагностика -> SPI&Web»: шина SPI (sys.spi, сброс reset.spi), тест носителей (действие spi.test),
+// диагностика веб-сервера (sys.webstat, сброс reset.webstat) и тест скорости по TEST.DAT - перенесены со страницы «Сеть».
+urlupdate = 2000;
+function ms(v) { return v >= 100000 ? Math.round(v / 1000) + ' мс' : (v / 1000).toFixed(1).replace('.', ',') + ' мс'; }
+function dec(v, d) { return num(v, d).replace('.', ','); }		// число с запятой (num - из scripts.js)
+function okbad(v, good) { return '<span class="' + (v == good ? 'ok' : 'bad') + '">' + v + '</span>'; }
+
+// ---- шина SPI ----
+var SD_TYPE = {1: 'SD1', 2: 'SD2', 3: 'SDHC/SDXC'};
+function devRow(name, chip, d, st) {
+	return '<tr><td class="n">' + name + '<div class="sub">' + chip + '</div></td><td class="num">D' + d.cs + '</td><td class="num">' + (d.mhz ? d.mhz + ' МГц' : '–') + '</td><td>' + st + '</td></tr>';
+}
+function bus(D) {
+	var b = D['sys.spi'];
+	if(!b || !b.net) return;
+	var sd = b.sd, f = b.flash, rows = devRow('Сеть', b.net.chip, b.net, '<span class="ok">работает</span>');
+	var mb = !sd.multi ? 'многоблочное чтение выкл' : sd.multi_on ? 'многоблочное чтение вкл' : '<span class="bad">многоблочное: отказ CMD18, поблочно</span>';
+	rows += devRow('SD-карта', sd.st ? (sd.mb >= 1024 ? Math.round(sd.mb / 1024) + ' ГБ' : sd.mb + ' МБ') + ', ' + (SD_TYPE[sd.type] || 'SD') + ', FAT' + sd.fat : '–', sd,
+		sd.st ? '<span class="ok">есть</span>' + (sd.st == 1 ? ' (без морды)' : '') + ' · ' + mb : '<span class="mute">нет карты</span>');
+	if(f) rows += devRow('Флеш', f.st ? Math.round(f.size / 1048576) + ' МБ' : '–', f, f.st ? '<span class="ok">есть</span>' : '<span class="mute">нет</span>');
+	put('sp-dev', rows);
+	put('sp-kv', '<span>Ошибки DMA: таймауты · переполнения</span><b>' + okbad(b.dma_to, 0) + ' · ' + okbad(b.dma_ovr, 0) + '</b>' +
+		'<span>Поздние завершения DMA <span class="mute">(не ошибка)</span></span><b>' + b.dma_late + '</b>' +
+		'<span>Самое долгое ожидание SD-карты</span><b>' + b.sd_busy + ' мс</b>' +
+		'<span>Отказы многоблочного чтения SD (CMD18) <span class="mute">с загрузки</span></span><b>' + okbad(b.cmd18, 0) + '</b>' +
+		'<span>Конфигурация SPI0</span><b>' + (b.spi0 ? '<span class="bad">замечания ' + b.spi0.toString(16).toUpperCase() + '</span>' : '<span class="ok">норма</span>') + '</b>');
+}
+function busReset() { api['do']('reset.spi', function(v, e) { if(e) stFail('Не сброшено', e); }); }
+
+// ---- тест носителей: spi.test читает index.html с флеш и с SD, меряет обмен по шине ----
+function rdRow(name, r) {
+	if(!r.res) return '<tr><td class="n">' + name + '</td><td colspan="4" class="mute">нет носителя или файла</td></tr>';
+	if(r.res < 0) return '<tr><td class="n">' + name + '</td><td colspan="4" class="bad">ошибка чтения</td></tr>';
+	return '<tr><td class="n">' + name + '</td><td class="num">' + dec(r.size / 1024, 1) + ' КБ</td><td class="num">' + dec(r.us / 1000, 1) + ' мс</td><td class="num"><b>' +
+		dec(r.size / r.us, 2) + ' МБ/с</b></td><td class="num">' + r.crc + '</td></tr>';
+}
+function testShow(t) {
+	put('mt-t', rdRow('Флеш', t.flash) + rdRow('SD-карта', t.sd));
+	put('mt-file', t.file);
+	put('mt-crc', t.flash.res == 1 && t.sd.res == 1 ? (t.flash.crc == t.sd.crc && t.flash.size == t.sd.size ? '<span class="ok">✓ содержимое на флеш и SD совпадает</span>' :
+		'<span class="bad">файлы на флеш и SD разные</span>') : '');
+	put('mt-kv', '<span>Регистр W5500, 1 байт · 2 байта</span><b>' + dec(t.reg8_ns / 1000, 1) + ' · ' + dec(t.reg16_ns / 1000, 1) + ' мкс</b>' +
+		(t.open_us ? '<span>Поиск файла в каталоге флеш (open)</span><b>' + t.open_us + ' мкс</b><span>Короткое чтение флеш, 16 байт</span><b>' + dec(t.read16_ns / 1000, 1) + ' мкс</b>' : ''));
+	put('mt-st', 'выполнен ' + new Date().toLocaleTimeString().slice(0, 5));
+}
+function mediaTest() {
+	var btn = $('mt-btn');
+	btn.disabled = true; put('mt-st', 'идёт…');
+	api['do']('spi.test', function(v, e) {
+		btn.disabled = false;
+		if(e || !v) { put('mt-st', ''); stFail('Тест не выполнен', e); return; }
+		testShow(v);
+	}, undefined, 10000);
+}
+
+// ---- диагностика веб-сервера: sys.webstat (времена в мкс), сброс - действие reset.webstat ----
+function webstat(d) {
+	var w = d['sys.webstat'];
+	if(!w || !w.req) return;
+	var row = function(t, a) { return '<tr><td class="n">' + t + '</td><td class="num">' + (a.n ? ms(a.avg) : '–') + '</td><td class="num">' + (a.n ? ms(a.max) : '–') + '</td></tr>'; };
+	put('ws-t', row('Запрос целиком', w.req) + row('stop() соединения', w.stop) + row('Ожидание мютекса', w.lock) + row('Чтение куска 6 КБ', w.file_read) + row('Отправка куска', w.file_send));
+	var z = w.samples ? 100 * w.listen[0] / w.samples : 0;
+	put('ws-z', '<span style="color:' + (z > 1 ? 'var(--bad)' : 'var(--ok)') + '">' + z.toFixed(1).replace('.', ',') + ' % · ' + w.zero_max_ms + ' мс</span>');
+	put('ws-n', w.req.n + ' · ' + w.slow_stop + ' · ' + w.lock_fail);
+}
+function webstatReset() { api['do']('reset.webstat', function(v, e) { if(e) stFail('Не сброшено', e); }); }
+
+// ---- тест скорости: браузер качает test.dat (2 МБ, контроллер отдаёт его потоком), шкала идёт по принятым байтам ----
+var spdXhr = null;
+function speedTest() {
+	if(spdXhr) { spdXhr.abort(); return; }
+	var x = spdXhr = new XMLHttpRequest(), t0 = Date.now(), bar = $('sp-bar'), res = $('sp-res'), btn = $('sp-btn');
+	var end = function(txt) { spdXhr = null; btn.textContent = 'Тест скорости'; res.textContent = txt; };
+	btn.textContent = 'Стоп';
+	bar.style.width = '0'; res.textContent = '0 %';
+	x.onprogress = function(e) { if(e.lengthComputable) { bar.style.width = (100 * e.loaded / e.total) + '%'; res.textContent = Math.round(100 * e.loaded / e.total) + ' %'; } };
+	x.onload = function() {
+		var sec = (Date.now() - t0) / 1000, kb = x.response ? x.response.size / 1024 : 0;
+		bar.style.width = '100%';
+		end(x.status == 200 && kb ? Math.round(kb / sec) + ' КБ/с' : 'ошибка ' + x.status);
+	};
+	x.onerror = function() { end('ошибка связи'); };
+	x.onabort = function() { bar.style.width = '0'; end('прервано'); };
+	x.open('GET', 'TEST.DAT');		// имя - заглавными, как его сверяет прошивка; с «?параметр» файл не отдаётся
+	x.setRequestHeader('Cache-Control', 'no-cache');
+	x.responseType = 'blob';
+	x.send();
+}
+
+window.onload = function() {
+	api.poll({k: ['sys.spi']}, bus);
+	api.poll({k: ['sys.webstat']}, webstat);
+};
+</script>
+</head>
+<body class="spi">
+<div id="menu" class="menu"><script src="menu.js"></script></div>
+<div class="content">
+<div class="grid">
+	<section class="card c6 dn"><h3>Шина SPI <span class="r"><button class="btn2 bt" onclick="busReset()">Сбросить</button></span></h3>
+		<table class="t"><thead><tr><th>Устройство</th><th>CS</th><th>Частота</th><th>Состояние</th></tr></thead><tbody id="sp-dev"></tbody></table>
+		<div class="sec">Счётчики с момента загрузки или сброса</div>
+		<div class="kv" id="sp-kv"></div></section>
+	<section class="card c6 dn"><h3>Тест носителей <span class="r mute" style="font-weight:600;font-size:12px" id="mt-st"></span></h3>
+		<table class="t"><thead><tr><th>Носитель</th><th>Размер</th><th>Время</th><th>Скорость</th><th>CRC16</th></tr></thead><tbody id="mt-t"><tr><td colspan="5" class="mute">Нажмите «Запустить тест»</td></tr></tbody></table>
+		<div class="kv"><span>Файл <b id="mt-file">index.html</b> читается с обоих носителей</span><b id="mt-crc"></b></div>
+		<div class="sec">Обмен по шине</div>
+		<div class="kv" id="mt-kv"></div>
+		<div class="spd"><button class="btn2 p bt" id="mt-btn" onclick="mediaTest()">Запустить тест</button><span class="sub" style="font-weight:500">около 0,1 с; веб на это время ждёт</span></div></section>
+	<section class="card c6 dn"><h3>Диагностика веб <span class="r"><button class="btn2 bt" onclick="webstatReset()">Сбросить</button></span></h3>
+		<table class="t"><thead><tr><th>Метрика</th><th>Средн.</th><th>Макс.</th></tr></thead><tbody id="ws-t"></tbody></table>
+		<div class="kv"><span>Без слушающего сокета</span><b id="ws-z">–</b><span>Замеров · медл. stop() · отказов мютекса</span><b id="ws-n">–</b></div>
+		<div class="spd"><button class="btn2 p bt" id="sp-btn" onclick="speedTest()">Тест скорости</button><i><b id="sp-bar"></b></i><span id="sp-res"></span></div></section>
+</div>
+</div>
+</body>
+</html>

@@ -22,6 +22,7 @@
 
 #include "../../Constant.h"
 #include "SdFat.h"   // SdFile и fname_t: заголовок обязан быть самодостаточным
+#include "../util/Util.h"   // SpiReadStat (spiTestRun)
 
 // Разделитель записей в ответе ajax
 #define ADD_WEBDELIM(str) strcat(str, WEBDELIM)
@@ -73,6 +74,10 @@ void          web_server(uint8_t thread);
 uint16_t      GetRequestedHttpResource(uint8_t thread);
 TYPE_RET_POST parserPOST(uint8_t thread, uint16_t size);
 void          readFileSD(char *filename, uint8_t thread);
+// Тест носителей и шины SPI (вкладка «SPI&Web», действие spi.test; TEST.SPI - то же в журнал). Зовётся из веб-потока под замком сети.
+// buf/chunk - рабочий буфер для чтения файлов (порция read()).
+struct SpiTest { SpiReadStat flash, sd; uint32_t reg8_ns, reg16_ns, open_us, read16_ns; };
+void          spiTestRun(SpiTest *t, uint8_t *buf, uint16_t chunk);
 
 // Генерируемые файлы и выгрузки. Определены в WebFiles.cpp.
 void     get_txtState(uint8_t thread, boolean header);

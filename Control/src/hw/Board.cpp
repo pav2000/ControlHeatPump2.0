@@ -33,7 +33,8 @@
 #include "Hardware.h"     // объявления этого модуля, eepromI2C, rtcI2C
 #include "../core/HeatPump.h"     // HP - опрос при инициализации карты
 #include "../core/Rtos.h"         // xI2CSemaphore, SemaphoreTake/Give, Watchdog_AliveHere
-#include "../core/ErrorCodes.h"   // Fault_Count, Fault_RelayOffLevel - аварийный хук
+#include "../core/ErrorCodes.h"   // Fault_RelayOffLevel - аварийный хук
+#include "../core/Watchdog.h"     // GPBR_REASON, RESET_*_MARK - причина сброса для Boot_Decide
 #include "../log/Statistics.h"   // card - карта памяти, cid_t, SD_SCK_MHZ
 #include <SerialFlash.h>  // микросхема flash на шине SPI
 
@@ -105,6 +106,15 @@ void Software_Reset() {
   while (true);
 }
 
+// Программный сброс с причиной для Boot_Decide и выгруженным журналом: последние строки перед сбросом
+// иначе остаются в кольце ОЗУ (Н-20). Аварийный хук сюда не ходит - ему нельзя журнал.
+void Reset_Controller(uint32_t reason)
+{
+	GPBR->SYS_GPBR[GPBR_REASON] = reason;
+	journal.FlushAll();
+	Software_Reset();
+}
+
 // ---------------------------------------------------------------------------
 // Своя обработка провала assert().
 //
@@ -128,18 +138,18 @@ extern "C" void __assert_func(const char *file, int line, const char *func, cons
 	journal.jprintf("$ERROR assert failed: %s\n", expr ? expr : "?");
 	journal.jprintf(" %s:%d, %s\n", file ? file : "?", line, func ? func : "?");
 	journal.jprintf(" Reset in 2 s\n");
-	delay(2000);                       // дать журналу дописаться в I2C и в консоль
-	Software_Reset();
+	delay(2000);                       // дать журналу дописаться в консоль
+	Reset_Controller(RESET_ASSERT_MARK);
 	while(1) ;                         // Software_Reset не возвращается, это для noreturn
 }
 
 // ---------------------------------------------------------------------------
 // Авария ядра FreeRTOS: зовётся из errorBlink (Libraries/FreeRTOS_ARM) при assert,
 // нехватке памяти, переполнении стека, HardFault и прочих отказах, прерывания уже
-// запрещены. Прежде выходы оставались как были - компрессор и ТЭНы работали без
-// защит, а контроллер висел (Config.h, STACK_vUpdate). Здесь нельзя ни журнала, ни
-// замков, ни объекта HP: память может быть разрушена. Только регистры и таблица
-// RelaySetup во флеше.
+// запрещены. Выходы - в безопасное состояние, затем сброс; код аварии errorBlink уже
+// записал в GPBR_RTOS, по нему Boot_Decide считает перезагрузки подряд (В-2, С-18).
+// Здесь нельзя ни журнала, ни замков, ни объекта HP: память может быть разрушена.
+// Только регистры и таблица RelaySetup во флеше.
 // ---------------------------------------------------------------------------
 extern "C" void vApplicationFaultHook(int n) __attribute__((noreturn));
 extern "C" void vApplicationFaultHook(int n)
@@ -156,7 +166,6 @@ extern "C" void vApplicationFaultHook(int n)
 #endif
 	for(uint8_t i = 0; i < RNUMBER; i++)                                 // выходы - первым делом: снять ХОД инвертора (RCOMP), ТЭНы, насосы
 		digitalWriteDirect(RelaySetup[i].pin, Fault_RelayOffLevel(relay_inv, r4way_inv, i == R4WAY));
-	GPBR->SYS_GPBR[7] = Fault_Count(GPBR->SYS_GPBR[7]);                  // аварийных сбросов подряд; причина уже в GPBR[0]
 	pinMode(PIN_LED_ERROR, OUTPUT);                                      // один цикл прежней индикации (n вспышек), затем сброс
 	for(int i = 0; i < n; i++) {
 		digitalWriteDirect(PIN_LED_ERROR, HIGH); delayMicroseconds(100000);
@@ -183,7 +192,7 @@ char* ResetCause(void)
 		switch(resetCause) {
 			case 1: strcat(_buf, "CONFIG");  break;
 			case 2: strcat(_buf, "MALLOC");  break;
-			case 3: strcpy(_buf, "MEM "); strncat(_buf, (char *)&GPBR->SYS_GPBR[1], 10);  break;
+			case 3: strcpy(_buf, "MEM "); strncat(_buf, (char *)&GPBR->SYS_GPBR[GPBR_TASK], 10);  break;
 			case 4: strcat(_buf, "HARD FAULT");  break;
 			case 5: strcat(_buf, "BUS FAULT");  break;
 			case 6: strcat(_buf, "USAGE FAULT");  break;

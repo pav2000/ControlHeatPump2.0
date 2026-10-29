@@ -160,7 +160,7 @@
 #define ERR_SD_WRITE		-90			// ошибка записи на SD карту
 #define ERR_FC_RCOMP		-91			// Не возможно остановить инвертор с помощью RCOMP
 #define ERR_FC_NO_LINK		-92			// Нет связи с инвертором по MODBUS (молчание шины дольше допустимого)
-#define ERR_KERNEL_FAULT	-93			// Аварии ядра (HardFault, стек, assert) повторяются подряд: автопуск ТН отменён
+#define ERR_RESET_LOOP		-93			// Аварийные перезагрузки (ядро, зависшая задача, сторож) повторяются подряд: автопуск ТН отменён
 
 #define ERR_ERRMAX			-93 		// Последняя ошибка
 
@@ -211,19 +211,8 @@ STOP_CHECK Error_StopCheck(bool running, uint8_t stage, uint32_t since_ms,
 enum INIT_STOP : uint8_t { INITSTOP_DONE, INITSTOP_WAIT, INITSTOP_FAIL };
 INIT_STOP Error_InitStopWait(bool stopped, bool lost, uint32_t elapsed_ms, uint32_t limit_ms);
 
-// Аварии ядра FreeRTOS (errorBlink: assert, нехватка памяти, переполнение стека,
-// HardFault и т.п.). Прежде контроллер уходил в вечное мигание с выходами в последнем
-// состоянии: компрессор и ТЭНы оставались включёнными без защит. Теперь аварийный хук
-// (vApplicationFaultHook, Board.cpp) выключает все реле, считает сбросы подряд в
-// GPBR[7] и перезагружает контроллер. После FAULT_MAX_RESETS сбросов подряд ТН сам не
-// запускается (ERR_KERNEL_FAULT), иначе авария по кругу дёргала бы компрессор.
-// Счётчик обнуляется после FAULT_CLEAR_S секунд нормальной работы.
-#define FAULT_MARK        0xFA170000UL   // метка в старшем слове GPBR[7]: без неё значение - мусор после подачи питания
-#define FAULT_MAX_RESETS  3
-#define FAULT_CLEAR_S     600
-uint32_t Fault_Count(uint32_t gpbr);       // новое значение GPBR[7] после ещё одной аварии
-uint8_t  Fault_Resets(uint32_t gpbr);      // аварийных сбросов подряд (0 - метки нет)
-bool     Fault_NoAutoStart(uint32_t gpbr); // отменить автопуск ТН после старта
+// Аварии ядра FreeRTOS (errorBlink: assert, нехватка памяти, переполнение стека, HardFault и т.п.): аварийный хук
+// (vApplicationFaultHook, Board.cpp) выключает все реле и перезагружает контроллер. Счёт перезагрузок подряд - Boot_Decide (Watchdog.h).
 // Уровень ноги, выключающий реле, - тот же, что ставят devRelay::initRelay и set_Relay(выкл).
 // Флаги сборки передаются параметрами: ErrorCodes не видит Config.h.
 bool     Fault_RelayOffLevel(bool relay_invert, bool r4way_invert, bool is_r4way);

@@ -22,8 +22,8 @@
  * ни к объектам проекта - только числа. Поэтому тест линкуется с этим файлом,
  * а не включает его копию (tests/test_watchdog.cpp).
  *
- * Всё, что общается с системой - опрос состояния задач, сброс WDT, запись
- * в GPBR - живёт в Control.ino.
+ * Всё, что общается с системой - опрос состояния задач, сброс WDT, чтение
+ * и запись GPBR - живёт в Control.ino.
  */
 #include "Watchdog.h"
 
@@ -76,3 +76,60 @@ void Watchdog_Init(WatchdogTask *t, uint32_t limit_ms, uint32_t now_ms)
 	t->max_silence_ms = 0;
 }
 
+
+BootInfo Boot_Decide(BootRegs *r, uint8_t rsttyp)
+{
+	BootInfo b;
+	const bool switched = !(r->rtos & GPBR_RTOS_READ);      // после прошлого старта планировщик переключал задачи
+	b.fault = (uint8_t) r->rtos;
+	b.rtos  = switched ? (uint16_t) r->rtos : b.fault;
+	b.task  = -1;
+	if(rsttyp == RST_GENERAL || rsttyp == RST_BACKUP) b.cause = BOOT_POWER;
+	else if(b.fault) {
+		b.cause = BOOT_KERNEL;
+		if(switched) b.task = (uint8_t)(r->rtos >> 8);
+	} else if((r->reason & 0xFFFF0000UL) == RESET_STUCK_MARK) {
+		b.cause = BOOT_STUCK;
+		b.task = (uint8_t) r->reason;
+	} else if(r->reason == RESET_ASSERT_MARK) b.cause = BOOT_ASSERT;
+	else if(rsttyp == RST_WATCHDOG) b.cause = BOOT_HW_WDT;
+	else if(rsttyp == RST_SOFTWARE) b.cause = r->reason == RESET_PLANNED_MARK ? BOOT_PLANNED : BOOT_SOFT_UNKNOWN;
+	else b.cause = BOOT_USER;
+	if(b.cause == BOOT_POWER) { b.fault = 0; b.rtos = 0; }
+
+	uint32_t n = 0;
+	if(b.cause != BOOT_POWER && (r->boot & 0xFFFF0000UL) == BOOT_MARK) n = r->boot & 0xFFFF;
+	if(n > 255) n = 255;
+	if(Boot_Abnormal(b.cause) && n < 255) n++;
+	b.resets = (uint8_t) n;
+
+	r->rtos   = GPBR_RTOS_READ;                              // код прочитан: авария до планировщика при следующем старте не смешается с этой
+	r->reason = 0;
+	r->boot   = n ? BOOT_MARK | n : 0;
+	return b;
+}
+
+bool Boot_Abnormal(BOOT_CAUSE c)
+{
+	return c >= BOOT_KERNEL;
+}
+
+bool Boot_NoAutoStart(const BootInfo &b)
+{
+	return b.resets >= BOOT_MAX_RESETS;
+}
+
+const char *Boot_CauseText(BOOT_CAUSE c)
+{
+	switch(c) {
+	case BOOT_POWER:        return "подача питания";
+	case BOOT_USER:         return "кнопка RESET";
+	case BOOT_PLANNED:      return "сброс по команде";
+	case BOOT_KERNEL:       return "авария ядра";
+	case BOOT_STUCK:        return "молчала задача";
+	case BOOT_HW_WDT:       return "аппаратный сторож";
+	case BOOT_ASSERT:       return "провал assert";
+	case BOOT_SOFT_UNKNOWN: return "программный сброс без причины";
+	}
+	return "?";
+}
