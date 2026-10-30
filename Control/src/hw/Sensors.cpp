@@ -278,6 +278,7 @@ int16_t sensorADC::get_Value()
 // Установить значение коэффициента преобразования напряжение (отсчеты ацп)-температура
 int8_t sensorADC::set_transADC(float p)
 {
+		if(p < PRESS_TRANS_MIN || p > PRESS_TRANS_MAX) return WARNING_VALUE;
 		clearBuffer();   // Суммы обнулить надо
 		cfg.transADC = rd(p, 1000);
 		return OK;
@@ -383,6 +384,12 @@ void InterruptFreq4() { HP.sFrequency[4].InterruptHandler(); }
 #endif
 #endif
 
+// После загрузки настроек: kf из старых или испорченных настроек сеттер бы не пропустил (С-13)
+void sensorFrequency::after_load(void)
+{
+	if(cfg.kfValue < FLOW_KF_MIN) cfg.kfValue = FrequencySetup[cfg.number].kf;
+}
+
 // Инициализация частотного датчика, на входе номер сенсора по порядку
 void sensorFrequency::initFrequency(int sensor)                     
 {
@@ -441,7 +448,7 @@ int8_t sensorFrequency::Read()
 #ifdef DEMO
 	Frequency=random(2500,9000);
 	count=0;
-	Value=Frequency * 360 / cfg.kfValue;// ЛИТРЫ В ЧАС (ИЛИ ТЫСЯЧНЫЕ КУБА) частота в тысячных, и коэффициент правим
+	Value = flow_lph(Frequency, cfg.kfValue);// ЛИТРЫ В ЧАС (ИЛИ ТЫСЯЧНЫЕ КУБА) частота в тысячных, и коэффициент правим
 #else
 	if(GetTickCount() - sTime >= (uint32_t)BASE_TIME_READ * 1000) {  // если только пришло время измерения
 		uint32_t tickCount, cnt;
@@ -461,7 +468,7 @@ int8_t sensorFrequency::Read()
 		__asm__ volatile ("" ::: "memory");
 		Frequency = flow_freq_mhz(cnt, tickCount - sTime); // ТЫСЯЧНЫЕ ГЦ время в миллисекундах частота в тысячных герца *2 (прерывание по обоим фронтам)!!!!!!!!
 		sTime = tickCount;
-		Value = Frequency * 360 / cfg.kfValue; // ЛИТРЫ В ЧАС (ИЛИ ТЫСЯЧНЫЕ КУБА) частота в тысячных, и коэффициент правим
+		Value = flow_lph(Frequency, cfg.kfValue); // ЛИТРЫ В ЧАС (ИЛИ ТЫСЯЧНЫЕ КУБА) частота в тысячных, и коэффициент правим
 		return 1;
 	}
 #endif
@@ -616,7 +623,7 @@ static const ApiParam apiPressTab[] = {
 	SR("min",     0,     MK_NUM, 100,  P_MIN, -327.68f, 327.67f),
 	SR("max",     0,     MK_NUM, 100,  P_MAX, -327.68f, 327.67f),
 	SR("zero",    0,     MK_INT, 1,    P_ZERO, -32768, 32767),    // отсчёты АЦП при нуле датчика
-	SA("trans",   0,     MK_NUM, 1000, P_TRANS),                  // коэффициент пересчёта АЦП в бар
+	SR("trans",   0,     MK_NUM, 1000, P_TRANS, PRESS_TRANS_MIN, PRESS_TRANS_MAX),   // коэффициент пересчёта АЦП в бар
 	SA("pin",     PF_RO, MK_INT, 1,    P_PIN),                    // канал АЦП
 	SA("test",    0,     MK_NUM, 100,  P_TEST),
 	SA("ecode",   PF_RO, MK_INT, 1,    P_ECODE),
@@ -674,7 +681,7 @@ static const ApiParam apiFlowTab[] = {
 	SA("value",   PF_RO, MK_NUM, 1000, F_VALUE),                  // м³/ч
 	SA("freq",    PF_RO, MK_NUM, 1000, F_FREQ),                   // Гц
 	SR("min",     0,     MK_NUM, 10,   F_MIN, 0.1f, 25.5f),          // м³/ч, контроль минимума
-	SR("kf",      0,     MK_NUM, 100,  F_KF,  0.01f, 327.67f),    // коэффициент пересчёта частоты; 0 - деление на ноль в расчёте расхода
+	SR("kf",      0,     MK_NUM, 100,  F_KF,  FLOW_KF_MIN / 100.0f, 327.67f),   // коэффициент пересчёта частоты, граница - та же, что у сеттера
 	SR("cap",     0,     MK_INT, 1,    F_CAP, 0, 5000),           // теплоёмкость теплоносителя
 	SR("test",    0,     MK_NUM, 1000, F_TEST, 0, 32.767f),
 	SA("pin",     PF_RO, MK_INT, 1,    F_PIN),
@@ -716,7 +723,7 @@ static int api_set_fl(uint8_t hook, uint8_t dev, const char *val)
 	if(x == ATOF_ERROR) return AE_BAD_VALUE;
 	switch(hook) {
 	case F_MIN:  s.set_minValue(x); return AE_OK;
-	case F_KF:   s.set_kfValue(rd(x, 100)); return AE_OK;
+	case F_KF:   return s.set_kfValue(rd(x, 100)) ? AE_OK : AE_RANGE;
 	case F_CAP:  return s.set_Capacity((uint16_t) x) == OK ? AE_OK : AE_RANGE;
 	case F_TEST: return s.set_testValue(rd(x, 1000)) == OK ? AE_OK : AE_RANGE;
 	}

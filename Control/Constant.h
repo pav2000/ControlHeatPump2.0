@@ -50,7 +50,7 @@
 #endif
 
 // ---- ОПЦИИ КОМПИЛЯЦИИ ПРОЕКТА ----
-#define VERSION			"2.31"	// Версия прошивки: исправления по разбору 27.10: единый учёт перезагрузок, очередь и повтор уведомлений, заливка морды
+#define VERSION			"2.32"	// Версия прошивки: исправления по разбору 27.10: аварийный останов компрессора одной функцией, границы kf и press.trans, предел частоты от генератора, мелочи
 // Версия формата, которой прошивка ПИШЕТ настройки в I2C память.
 // Должна совпадать с версией каркаса, которым пишутся настройки (150): иначе Option.ver по
 // умолчанию неверен, первое сохранение на чистом контроллере печатает
@@ -184,7 +184,7 @@ const uint16_t  defaultPort=80;
 #define MODBUS_PORT_CONFIG   SERIAL_8N1     // Конфигурация порта куда прицеплен инвертор и счетчик
 #define MODBUS_TIME_WAIT     2000           // Время ожидания захвата мютекса для modbus мсек
 #ifndef MODBUS_TIME_TRANSMISION
-#define MODBUS_TIME_TRANSMISION 4           // Не используется с 2.20: приём включается сразу после передачи (postTransmission)
+#define MODBUS_TIME_TRANSMISION 4           // пауза перед чтением обратно после modbus.write, x10 мс (api_modbus); на обмен с устройствами не влияет
 #endif
 #endif
 
@@ -707,7 +707,6 @@ STRCONST(sdm_VOLTAGE, "VOLT");          // Напряжение
 STRCONST(sdm_CURRENT, "CURRENT");          // Ток
 STRCONST(sdm_REPOWER, "REPOWER");          // Реактивная мощность
 STRCONST(sdm_ACPOWER, "ACPOWER");          // Активная мощность
-STRCONST(sdm_POWER, "POWER");              // Полная мощность
 STRCONST(sdm_POW_FACTOR, "PF");    // Коэффициент мощности
 STRCONST(sdm_PHASE, "PHASE");              // Угол фазы (градусы)
 STRCONST(sdm_FREQ, "FREQ");                // Частота
@@ -1042,15 +1041,15 @@ enum TYPE_COMMAND
   pRESTART,                      // 5 Пуск ТН после сброса контроллера (отличается от pREPEAT только задержкой)
   pREPEAT,                       // 6 Повторный пуск ТН (определяется числом попыток повторного пуска)
   pNETWORK,                      // 7 перегрузить сетевой контроллер
-  pJFORMAT,                      // 8 форматирование журнала в I2C флеше
-  pSAVE,                         // 9 запись настроек ТН
-  pWAIT,                         // 10 перевод в режим ожидания ТН (пустое расписание)
-  pRESUME,                       // 11 Восстановление работы из режима ожидания
-  pPROG_FC,                      // 12 Первоначальное программирование частотного преобразователя
+  pSAVE,                         // 8 запись настроек ТН
+  pWAIT,                         // 9 перевод в режим ожидания ТН (пустое расписание)
+  pRESUME,                       // 10 Восстановление работы из режима ожидания
+  pPROG_FC,                      // 11 Первоначальное программирование частотного преобразователя
   pEND14                         // Обязательно должен быть последним, добавляем ПЕРЕД!!!
 };
 
-static const char * const hp_commands_names[] = {"EMPTY", "START", "AUTOSTART", "STOP", "RESET", "RESTART", "REPEAT", "NETWORK", "JFORMAT", "SAVE", "WAIT", "RESUME", "PROG_FC", "UNKNOWN"};
+static const char * const hp_commands_names[] = {"EMPTY", "START", "AUTOSTART", "STOP", "RESET", "RESTART", "REPEAT", "NETWORK", "SAVE", "WAIT", "RESUME", "PROG_FC", "UNKNOWN"};
+static_assert(sizeof(hp_commands_names) / sizeof(hp_commands_names[0]) == pEND14 + 1, "имя на каждую команду и UNKNOWN последним");
 
 //  Перечисляемый тип -ТИПЫ уведомлений
 enum MESSAGE          

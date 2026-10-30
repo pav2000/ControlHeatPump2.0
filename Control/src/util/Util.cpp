@@ -709,6 +709,17 @@ uint32_t flow_freq_mhz(uint32_t edges, uint32_t dt_ms)
 	return f > 0xFFFFFFFFULL ? 0xFFFFFFFFUL : (uint32_t) f;
 }
 
+uint32_t flow_lph(uint32_t freq_mhz, uint16_t kf)
+{
+	return kf < FLOW_KF_MIN ? 0 : (uint32_t)((uint64_t) freq_mhz * 360 / kf);
+}
+
+int16_t fc_gen_clip(int16_t x, int16_t gen_max, int16_t min)
+{
+	int16_t top = gen_max > min ? gen_max : min;
+	return x > top ? top : x;
+}
+
 int16_t fc_gen_freq_fix(int16_t stored, int16_t def)
 {
 	return stored > 0 ? stored : def;

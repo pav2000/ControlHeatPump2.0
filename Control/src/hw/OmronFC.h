@@ -190,7 +190,7 @@ public:
   uint16_t get_dtTempBoiler(){return _data.dtTempBoiler;}        // Привышение температуры от уставок (подача) при которой срабатыват защита ГВС в сотых градуса
   uint16_t get_maxFreqGen(){return _data.maxFreqGen;}            // Максимальная частота инвертора при работе от генератора в 0.01
   #ifndef FC_ANALOG_CONTROL
-  int8_t   emergency_stop(){ return write_0x05_bit(MX2_START, false); } // СРАЗУ снять команду «Ход» по Modbus (set_Error при компрессоре на реле без FC_USE_RCOMP); без журнала и ожиданий
+  int8_t   emergency_stop(){ return write_0x05_bit(MX2_START, false); } // СРАЗУ снять команду «Ход» по Modbus (HeatPump::compressor_emergency_off без FC_USE_RCOMP); без журнала и ожиданий
   #endif
   void after_load(){ _data.maxFreqGen = fc_gen_freq_fix(_data.maxFreqGen, DEF_FC_MAX_FREQ_GEN); }  // после загрузки настроек: 0 из старых настроек -> значение по умолчанию
     

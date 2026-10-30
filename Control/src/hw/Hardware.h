@@ -43,6 +43,8 @@
 // Класс аналоговый датчик управление токовая петля + нагрузочный резистор + делитель
 // Может быть несколько датчиков
 // Значение хранится в СОТЫХ (БАРА)
+#define PRESS_TRANS_MIN  0.001f    // коэффициент пересчёта АЦП: хранится в тысячных в uint16, rd() считает в int16 -
+#define PRESS_TRANS_MAX  32.767f   // за этими границами значение заворачивалось (Н-14)
 class sensorADC : public Sensor
 {
   public:
@@ -163,7 +165,8 @@ public:
   uint16_t get_testValue(){return cfg.testValue;}            // Получить Состояние датчика в режиме теста
   int8_t  set_testValue(int16_t i);                      // Установить Состояние датчика в режиме теста
   float   get_kfValue(){return cfg.kfValue;}                 // Получить коэффициент пересчета
-  void    set_kfValue(uint16_t f) { cfg.kfValue=f; }         // Установить коэффициент пересчета
+  bool    set_kfValue(uint16_t f) { if(f < FLOW_KF_MIN) return false; cfg.kfValue=f; return true; } // Установить коэффициент пересчета, сотые
+  void    after_load(void);                                  // после загрузки настроек: недопустимый kf -> из FrequencySetup
   uint16_t get_Capacity(){return cfg.Capacity;}              // Получить теплоемкость
   int8_t set_Capacity(uint16_t c);                       // Установить теплоемкость больше 5000 не устанавливается
   TEST_MODE get_testMode(){return testMode;}             // Получить текущий режим работы

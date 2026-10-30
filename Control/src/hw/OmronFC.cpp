@@ -233,7 +233,7 @@ int8_t  devOmronMX2::set_target(int16_t x,boolean show, int16_t _min, int16_t _m
   #else   // Боевой вариант
   uint8_t i;
   if ((!get_present())||(GETBIT(flags,fErrFC))) return err;    // выходим если нет инвертора или он заблокирован по ошибке
-  if(GETBIT(HP.Option.flags, fBackupPower) && x > _data.maxFreqGen) x = _data.maxFreqGen;
+  if(GETBIT(HP.Option.flags, fBackupPower)) x = fc_gen_clip(x, _data.maxFreqGen, _min);
   if ((x>=_min)&&(x<=_max))                     // Проверка диапазона разрешенных частот
    {
   #ifndef FC_ANALOG_CONTROL                                    // Не аналоговое управление
@@ -745,7 +745,7 @@ int16_t devOmronMX2::read_tempFC()
     // Реализовано FC_NUM_READ попыток чтения/записи в инвертор
     int16_t  devOmronMX2::read_0x03_16(uint16_t cmd)
     {   uint8_t i;
-        uint16_t result;  
+        uint16_t result = 0;                                                     // попытки исчерпаны - 0, а не мусор со стека (Н-23)
         err=OK;
         if ((!get_present())||(GETBIT(flags,fErrFC))) return 0;                  // выходим если нет инвертора или он заблокирован по ошибке
     
@@ -767,7 +767,7 @@ int16_t devOmronMX2::read_tempFC()
     uint32_t devOmronMX2::read_0x03_32(uint16_t cmd)
     {
         uint8_t i;
-        uint32_t result;  
+        uint32_t result = 0;                                                     // попытки исчерпаны - 0, а не мусор со стека (Н-23)
         err=OK;
         if ((!get_present())||(GETBIT(flags,fErrFC))) return 0;            // выходим если нет инвертора или он заблокирован по ошибке
         for(i=0;i<FC_NUM_READ;i++)   // делаем FC_NUM_READ попыток чтения Чтение состояния инвертора, при ошибке генерация общей ошибки ТН и останов

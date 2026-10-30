@@ -138,7 +138,7 @@ boolean  devSDM::progConnect()
 // Прочитать инфо с счетчика, group: 0 - основная (расчет мощности), 2 - через SDM_READ_PERIOD
 int8_t devSDM::get_readState(uint8_t group)
 {
-	static float tmp;
+	float tmp;
 	if(!GETBIT(flags,fSDM) || !GETBIT(flags,fSDMLink)
 #ifdef USE_UPS
 		|| HP.NO_Power

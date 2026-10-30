@@ -231,6 +231,7 @@ public:
   int16_t  read_0x03_16(uint16_t cmd);             // Функция Modbus 0х03 прочитать 2 байта
   uint32_t read_0x03_32(uint16_t cmd);             // Функция Modbus 0х03 прочитать 4 байта
   int8_t   write_0x06_16(uint16_t cmd, uint16_t data);// Запись данных (2 байта) в регистр cmd возвращает код ошибки
+  int8_t   emergency_stop(){ return write_0x06_16(FC_CONTROL, FC_C_STOP); } // СРАЗУ стоп словом управления (HeatPump::compressor_emergency_off без FC_USE_RCOMP)
 #endif
   uint16_t nominal_power;							// Номинальная мощность двигателя Вт
 

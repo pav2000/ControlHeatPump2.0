@@ -52,26 +52,29 @@ boolean  Charts_when_comp_on = false;
 #define COMPRESSOR_ON   { if(dFC.get_present()) dFC.start_FC(); else dRelay[RCOMP].set_ON(); startCompressor = rtcSAM3X8.unixtime(); }  // Включить компрессор в зависимости от наличия инвертора
 #define COMPRESSOR_OFF  { if(dFC.get_present()) dFC.stop_FC(); else dRelay[RCOMP].set_OFF(); stopCompressor = rtcSAM3X8.unixtime(); } // Выключить компрессор в зависимости от наличия инвертора
 
+// Аварийный останов компрессора из set_Error: без журнала и ожиданий, способ выбирается так же, как в COMPRESSOR_OFF.
+// Реле RCOMP снимается всегда: это провод ХОД инвертора или пускатель компрессора без инвертора, а при управлении
+// инвертором по Modbus оно не используется (реле нет - set_OFF ничего не делает). Без провода ХОД инвертор
+// останавливается ещё и командой по шине (Н-24: прежде пускатель на RCOMP в такой сборке не снимался).
+// true - останов отдан.
+bool HeatPump::compressor_emergency_off()
+{
+	dRelay[RCOMP].set_OFF();
+#ifndef FC_USE_RCOMP
+	if(dFC.get_present()) return dFC.emergency_stop() == OK;
+#endif
+	return true;
+}
+
 
 // Установка критической ошибки для класса ТН вызывает останов ТН
 // Возвращает ошибку останова ТН
 void set_Error(int8_t _err, char *nam)
 {
 	if(HP.is_compressor_on())    // СРАЗУ Если компрессор включен, выключить  ГЛАВНАЯ ЗАЩИТА
-	{ // Выключить компрессор для обоих вариантов
+	{
 		journal.jprintf("$Compressor protection ");
-#ifdef FC_USE_RCOMP // Использовать отдельный провод для команды ход/стоп
-		HP.dRelay[RCOMP].set_OFF();
-#else
-#ifdef MODBUS_PORT_NUM
-#ifdef FC_VACON
-		if(HP.dFC.write_0x06_16(FC_CONTROL, FC_C_STOP) == OK) // подать команду ход/стоп через Modbus
-#else
-		if(HP.dFC.emergency_stop() == OK)                     // у Omron нет слова FC_CONTROL: стоп битом ХОД, write_0x05_bit закрыт
-#endif
-#endif
-#endif
-			HP.set_stopCompressor();
+		if(HP.compressor_emergency_off()) HP.set_stopCompressor();
 	}
 
 	// Занять поле ошибки одной атомарной операцией: задачи с разными приоритетами зовут set_Error одновременно,

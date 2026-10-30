@@ -295,6 +295,7 @@ class HeatPump
     boolean takeCommand();               // CommandHP: взять следующую команду из очереди, true - есть что выполнять
     uint8_t is_pause();					// Возвращает 1, если ТН в паузе
 	inline boolean is_compressor_on() { return dRelay[RCOMP].get_Relay() || dFC.isfOnOff(); }    // Проверка работает ли компрессор
+	bool    compressor_emergency_off();                                                           // аварийный останов компрессора (set_Error): true - останов отдан
 
     // Строковые функции
     char *StateToStr();                 // Получить состояние ТН в виде строки

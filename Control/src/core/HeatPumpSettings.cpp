@@ -137,6 +137,7 @@ xSkip:		load_struct(NULL, &buffer, 0); // skip unknown type
 #ifndef FC_VACON
 	dFC.after_load();                                // maxFreqGen: в старых настройках его нет
 #endif
+	for(uint8_t i = 0; i < FNUMBER; i++) sFrequency[i].after_load();
 	dbg_after_load();
 	journal.jprintf("OK\n");
 	return size + sizeof(crc);
@@ -471,6 +472,7 @@ xReadError:
 #ifndef FC_VACON
 	dFC.after_load();                                // maxFreqGen: в старых настройках его нет
 #endif
+	for(uint8_t i = 0; i < FNUMBER; i++) sFrequency[i].after_load();
 	dbg_after_load();
 	journal.jprintf(bad_struct ? "WARNING\n" : "OK\n");
 	if(bad_struct) load_warn(ERR_SETTINGS_STRUCT, from_RAM);
