@@ -88,7 +88,6 @@ boolean HeatPump::takeCommand()
 // Выполнить команду по управлению ТН true-команда выполнена
 int8_t HeatPump::runCommand()
 {
-	uint16_t i;
 	while(1) {
 		journal.jprintf_time("Run: %s\n", get_command_name(command));
 
@@ -169,7 +168,7 @@ xWait:
 			journal.jprintf("Unknown command: %d !!!", command);
 			break;
 		}
-		if(command != pSAVE && command != pNETWORK) command_completed = rtcSAM3X8.unixtime();
+		if(command != pSAVE && command != pNETWORK) command_completed = Uptime_s();
 		if(!takeCommand()) break;   // очередь пуста, command сброшен в pEMPTY
 		_delay(1);
 	}

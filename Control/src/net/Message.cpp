@@ -498,7 +498,7 @@ boolean Message::setMessage(MESSAGE ms, char *c, int p1) // может запу�
   // Решение и запись - под запретом прерываний: функцию зовут задачи разных приоритетов (set_Error из ReadSensor, Web0 при
   // этом отправляет). Копируется не больше 200 байт - микросекунды. Место отправляемого (nq.cur) очередь не выдаёт.
   // Тестовые сообщения и сигнал жизни можно посылать многократно подряд, остальные - не чаще REPEAT_TIME.
-  const uint32_t now = rtcSAM3X8.unixtime();
+  const uint32_t now = Uptime_s();                       // окно повторов - интервал, по времени работы (раздел 6.5)
   const bool repeatable = (ms == pMESSAGE_TESTMAIL) || (ms == pMESSAGE_TESTSMS) || (ms == pMESSAGE_LIFE);
   const uint8_t important = (ms != pMESSAGE_WARNING) && (ms != pMESSAGE_LIFE);   // предупреждения и сигнал жизни вытесняются первыми
   const uint32_t key = Notify_Key(ms, ms == pMESSAGE_ERROR ? (uint16_t) p1 : calc_crc16((unsigned char*) c, strlen(c)));
@@ -586,7 +586,7 @@ boolean Message::sendMessage()  // запуск из 0 потока
   uint16_t i;
 
   if (!busy()) return true;                              // Отправлять нечего выходим
-  if (sendRetry && rtcSAM3X8.unixtime() < sendRetryTime) return true;  // время повторной попытки еще не пришло
+  if (sendRetry && Uptime_s() < sendRetryTime) return true;  // время повторной попытки еще не пришло
   strcpy(retTest, "Ничего не отправлено. Проверьте флаг разрешения отправки сообщений.");
   if (HP.get_uptime() < cDELAY_START_MESSAGE) {
     // ждать не будем, ибо зачем? _delay(200);  // Прошло мало времени после старта возможно инет еще не поднят
@@ -631,7 +631,7 @@ boolean Message::sendMessage()  // запуск из 0 потока
     strcpy(retTest, "SMS не отправлено. Проверьте флаг разрешения отправки SMS.");
 
   if (!Notify_Finished(sendCh, &sendRetry, MAIL_RETRY_MAX)) {   // остался канал с временной ошибкой
-    sendRetryTime = rtcSAM3X8.unixtime() + MAIL_RETRY_DELAY;
+    sendRetryTime = Uptime_s() + MAIL_RETRY_DELAY;
     journal.jprintf("Notify retry %d/%d in %d sec:%s%s\n", sendRetry, MAIL_RETRY_MAX, MAIL_RETRY_DELAY,
                     (sendCh & NCH_MAIL) ? " mail" : "", (sendCh & NCH_SMS) ? " SMS" : "");
     return false;

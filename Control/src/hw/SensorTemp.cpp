@@ -263,7 +263,7 @@ Temp=b;                        // Последние показания датч
 RSSI=c;                        // Уровень сигнала датчика (-дБ)
 VCC=d;                         // Уровень напряжениея питания датчика (мВ)
 count=e;                       // Кольцевой счетчик пакетов с момента включения контрола
-stime=rtcSAM3X8.unixtime();    // Время получения последнего пакета
+stime=Uptime_s();    // Время получения последнего пакета
 ip=f;   
 return true;      
 }
@@ -279,7 +279,7 @@ if(strcmp(var,ip_SENSOR_USE)==0)      {if (GETBIT(cfg.flags,fUse)) return strcat
 if(strcmp(var,ip_SENSOR_RULE)==0)     {if (GETBIT(cfg.flags,fRule)) return strcat(ret,(char*)cOne); else return  strcat(ret,(char*)cZero);} else     
 if(strcmp(var,ip_SENSOR_IP)==0)       {return strcat(ret,IPAddress2String(ip));    } else  
 if(strcmp(var,ip_SENSOR_COUNT)==0)    {return _itoa(count,ret);                    } else     
-if(strcmp(var,ip_STIME)==0)           {if(stime==0) return strcat(ret,(char*)"none"); else return _itoa(rtcSAM3X8.unixtime()-stime,ret);} else  
+if(strcmp(var,ip_STIME)==0)           {if(stime==0) return strcat(ret,(char*)"none"); else return _itoa(Uptime_s()-stime,ret);} else  
 if(strcmp(var,ip_SENSOR)==0)          {return strcat(ret,(char*)"----");           } else   
 return strcat(ret,(char*)"E26");    
 }

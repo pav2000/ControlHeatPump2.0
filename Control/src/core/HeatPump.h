@@ -468,28 +468,25 @@ class HeatPump
 
       
    // Времена
-   void set_countNTP(uint32_t b) {countNTP=b;}             // Установить текущее время обновления по NTP, (секундах)
-   uint32_t get_countNTP()  {return countNTP;}             // Получить время последнего обновления по NTP (секундах)
    boolean get_updateNTP();                                // Получить флаг возможности синхронизации по NTP
    unsigned long get_saveTime(){return  DateTime.saveTime;}// Получить время сохранения текущих настроек
    char* get_serverNTP() {return DateTime.serverNTP;}      // Получить адрес сервера
-   void updateDateTime(int32_t  dTime);                    // После любого изменения часов необходимо пересчитать все времна которые используются
    boolean  get_updateI2C(){return GETBIT(DateTime.flags,fUpdateI2C);}// Получить необходимость обновления часов I2C
    unsigned long timeNTP;                                  // Время обновления по NTP в тиках (0-сразу обновляемся)
    
-   inline uint32_t get_uptime() {return rtcSAM3X8.unixtime()-timeON;} // Получить время с последней перезагрузки в секундах
-   uint32_t get_startDT(){return timeON;}                  // Получить дату и время последней перезагрузки
-   inline uint32_t get_startCompressor(){return startCompressor;} // Получить дату и время пуска компрессора! нужно для старта ЭРВ
-   inline uint32_t get_stopCompressor(){return stopCompressor;} // Получить дату и время останова компрессора!
-   void set_stopCompressor() { stopCompressor = rtcSAM3X8.unixtime(); }
-   uint32_t get_startTime(){return Prof.SaveON.startTime;} // Получить дату и время пуска ТН (не компрессора!)
-   inline uint32_t get_command_completed(){ return command_completed; } // Время выполнения команды
+   // Отметки времени ниже (кроме get_startTime) - время работы Uptime_s(), а не настенное (раздел 6.5): для показа даты - Uptime_ToWall
+   inline uint32_t get_uptime() {return Uptime_s();}       // Получить время с последней перезагрузки в секундах
+   uint32_t get_startDT(){return Uptime_ToWall(1, Uptime_s(), rtcSAM3X8.unixtime());}   // Настенные дата и время последней перезагрузки
+   inline uint32_t get_startCompressor(){return startCompressor;} // Время работы при пуске компрессора, 0 - не было; нужно для старта ЭРВ
+   inline uint32_t get_stopCompressor(){return stopCompressor;} // Время работы при останове компрессора, 0 - не было
+   void set_stopCompressor() { stopCompressor = Uptime_s(); }
+   uint32_t get_startTime(){return Prof.SaveON.startTime;} // Настенные дата и время пуска ТН (не компрессора!), хранятся в EEPROM
+   inline uint32_t get_command_completed(){ return command_completed; } // Время работы при выполнении команды
    inline type_motoHour *get_motoHour(){ return &motoHour; }// Получить счетчики
      
    void resetCount(boolean full);                          // Сборос сезонного счетчика моточасов
    void updateCount();                                     // Обновление счетчиков моточасов
    
-   void set_uptime(unsigned long ttime){timeON=ttime;}     // Установить текущее время как начало старта контроллера
   
     // Переменные
        
@@ -603,11 +600,10 @@ class HeatPump
      
     // Различные времена
     type_DateTimeHP DateTime;             // структура где хранится все что касается времени и даты
-    uint32_t timeON;                      // время включения контроллера для вычисления UPTIME
-    uint32_t countNTP;                    // число секунд с последнего обновления по NTP
-    uint32_t startCompressor;             // время пуска компрессора (для обеспечения минимального времени работы)
-    uint32_t stopCompressor;              // время останова компрессора (для обеспечения паузы)
-    uint32_t offBoiler;                   // время выключения нагрева ГВС ТН (необходимо для переключения на другие режимы на ходу)
+    // Времена работы Uptime_s() (раздел 6.5), 0 - не было
+    uint32_t startCompressor;             // пуск компрессора (для обеспечения минимального времени работы)
+    uint32_t stopCompressor;              // останов компрессора (для обеспечения паузы)
+    uint32_t offBoiler;                   // выключение нагрева ГВС ТН (необходимо для переключения на другие режимы на ходу)
     uint32_t startDefrost;                // время срабатывания датчика разморозки
     uint8_t  defrostFails;                // сколько оттаек подряд не закончилось за DEFROST_WAIT_MAX
     uint32_t startSalmonella;             // время начала обеззараживания

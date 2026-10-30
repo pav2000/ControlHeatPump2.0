@@ -202,7 +202,7 @@ public:
   int16_t	get_target() {return FC_target;}                    // Получить целевую скорость в сотых %
   int8_t	set_target(int16_t x,boolean show, int16_t _min, int16_t _max);// Установить целевую скорость в %, show - выводить сообщение или нет + границы
   int16_t	get_frequency() { return FC_curr_freq; }	// Получить текущую частоту в сотых Гц
-  inline uint32_t get_startTime(){return startCompressor;}// Получить время старта компрессора
+  inline uint32_t get_startTime(){return startCompressor;}// Время работы при старте компрессора (Uptime_s)
   int8_t	get_readState();                          // Прочитать (внутренние переменные обновляются) состояние Инвертора, возвращает или ОК или ошибку
   int8_t	start_FC();                                // Команда ход на инвертор (целевая скорость выставляется)
   int8_t	stop_FC();                                 // Команда стоп на инвертор
@@ -248,7 +248,7 @@ public:
   int16_t  state;									// Чтение: Состояние ПЧ регистр FC_STATUS
   int16_t  minFC;									// Минимальная скорость инвертора в 0.01 %
   int16_t  maxFC;									// Максимальная скорость инвертора в 0.01 %
-  uint32_t startCompressor;							// время старта компрессора
+  uint32_t startCompressor;							// время работы Uptime_s() при старте компрессора, 0 - не было
 
 #ifdef FC_ANALOG_CONTROL
   // Аналоговое управление
@@ -291,7 +291,11 @@ public:
 #endif
    } _data;
   // Формат EEPROM, см. пояснение в OmronFC.h. У Vacon группа на 6 байт длиннее.
-  static_assert(sizeof(_data) == 46, "изменилась раскладка настроек Vacon - это формат EEPROM");  // Структура для сохранения настроек
+#ifdef FC_ANALOG_CONTROL
+  static_assert(sizeof(_data) == 50, "изменилась раскладка настроек Vacon (аналоговое управление) - это формат EEPROM");
+#else
+  static_assert(sizeof(_data) == 46, "изменилась раскладка настроек Vacon - это формат EEPROM");
+#endif  // Структура для сохранения настроек
    uint16_t flags;  					// рабочие флаги
    int16_t ReturnOilTimer;
   // Функции работы с Modbus

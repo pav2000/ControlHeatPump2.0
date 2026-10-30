@@ -143,6 +143,13 @@ extern "C" void __assert_func(const char *file, int line, const char *func, cons
 	while(1) ;                         // Software_Reset не возвращается, это для noreturn
 }
 
+// Хук тика FreeRTOS (configUSE_TICK_HOOK), из прерывания: только счёт времени работы (Watchdog.h)
+static_assert(configTICK_RATE_HZ == 1000, "Uptime_Tick считает тики миллисекундами");
+extern "C" void vApplicationTickHook(void)
+{
+	Uptime_Tick();
+}
+
 // ---------------------------------------------------------------------------
 // Авария ядра FreeRTOS: зовётся из errorBlink (Libraries/FreeRTOS_ARM) при assert,
 // нехватке памяти, переполнении стека, HardFault и прочих отказах, прерывания уже

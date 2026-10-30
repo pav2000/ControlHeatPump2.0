@@ -49,7 +49,8 @@ NtpPacket Ntp_Parse(const uint8_t *p, int len, uint32_t *unix_s)
 	uint32_t ntp = ((uint32_t) p[40] << 24) | ((uint32_t) p[41] << 16) | ((uint32_t) p[42] << 8) | p[43];
 	if(ntp == 0) return NTP_PKT_NOTIME;
 	const uint64_t NTP_TO_UNIX = 2208988800ULL;                         // секунд от 1900 до 1970
-	if((uint64_t) ntp < NTP_TO_UNIX + NTP_MIN_UNIX || (uint64_t) ntp >= NTP_TO_UNIX + NTP_MAX_UNIX) return NTP_PKT_RANGE;
+	// Верхнюю границу NTP_MAX_UNIX (2100 год) 32-битные секунды NTP не достают: их эра кончается в 2036
+	if((uint64_t) ntp < NTP_TO_UNIX + NTP_MIN_UNIX) return NTP_PKT_RANGE;
 	*unix_s = (uint32_t) ((uint64_t) ntp - NTP_TO_UNIX);                // вычитание в 64 битах: в 32 битных меньшее значение заворачивалось в 2036 год
 	return NTP_PKT_OK;
 }
@@ -182,11 +183,14 @@ char*  DecodeTimeDate(uint32_t idt,char *ret)
   }
 // формирование строки
   x=hours;
-  if (x<10) strcat(ret,"0"); else strcat(ret,"");  _itoa(x,ret); strcat(ret,":");
+  if (x<10) strcat(ret,"0");
+  _itoa(x,ret); strcat(ret,":");
   x=minutes;
-  if (x<10) strcat(ret,"0");   _itoa(x,ret); strcat(ret,":");
-   x=seconds;
-  if (x<10) strcat(ret,"0");   _itoa(x,ret); 
+  if (x<10) strcat(ret,"0");
+  _itoa(x,ret); strcat(ret,":");
+  x=seconds;
+  if (x<10) strcat(ret,"0");
+  _itoa(x,ret);
   strcat(ret," "); 
   m_snprintf(ret + m_strlen(ret), 16, FORMAT_DATE_STR, (int)(days + 1), (int)(month+1), (int)(year));
   return ret;   

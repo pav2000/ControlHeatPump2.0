@@ -210,7 +210,7 @@ void Watchdog_AliveHere(void)
 	if(!wdtReady) { WDT_Restart(WDT); return; }
 	TaskHandle_t cur = xTaskGetCurrentTaskHandle();
 	for(uint8_t i = 0; i < WDT_TASK_COUNT; i++) {
-		if(wdtHandles[i] && *wdtHandles[i] == cur) { wdtTasks[i].beat++; return; }
+		if(wdtHandles[i] && *wdtHandles[i] == cur) { Watchdog_Beat(i); return; }   // через Watchdog_Beat: test.wdt глушит и эту отметку
 	}
 	WDT_Restart(WDT);   // вызов не из зарегистрированной задачи - как раньше
 }
@@ -1332,11 +1332,9 @@ void vReadSensor(void *)
 		{
 			if(GetTickCount() - oldTime > (uint32_t)TIME_I2C_UPDATE) // время пришло обновляться надо Период синхронизации внутренних часов с I2C часами (сек)
 			{
-				oldTime = rtcSAM3X8.unixtime();
 				uint32_t t = TimeToUnixTime(getTime_RtcI2C());       // Прочитать время из часов i2c тут проблема
 				if(t) {
-					rtcSAM3X8.set_clock(t);                		 // Установить внутренние часы по i2c
-					HP.updateDateTime(t > oldTime ? t - oldTime : -(oldTime - t));  // Обновить переменные времени с новым значением часов
+					rtcSAM3X8.set_clock(t);                		 // Установить внутренние часы по i2c; интервалы по Uptime_s сдвига не требуют
 					journal.jprintf((const char*) "Sync from I2C RTC: %s %s\n", NowDateToStr(), NowTimeToStr());
 				} else {
 					journal.jprintf("Error read I2C RTC\n");
@@ -1612,7 +1610,7 @@ void vUpdateEEV(void *)
 	// проходит один раз: и ожидание delayOnPid, и цикл ПИД ниже замкнуты
 	// внутри витка. Подробности - у Watchdog_Sleep.
 	for(;;) {
-		while(!(HP.get_startCompressor() && (rtcSAM3X8.unixtime() - HP.get_startCompressor() > HP.dEEV.get_delayOnPid() && HP.dEEV.get_delayOnPid() != 255))) { // ЭРВ контролирует если прошла задержка после включения компрессора (пауза перед началом работы ПИД) и задержка != 255
+		while(!(HP.get_startCompressor() && (Uptime_s() - HP.get_startCompressor() > HP.dEEV.get_delayOnPid() && HP.dEEV.get_delayOnPid() != 255))) { // ЭРВ контролирует если прошла задержка после включения компрессора (пауза перед началом работы ПИД) и задержка != 255
 			// delayOnPid == 255 означает "ПИД ЭРВ отключён совсем", и условие
 			// выхода выше при этом не становится истинным никогда. Без явной
 			// проверки задача не доходит до ветки останова и продолжает двигать

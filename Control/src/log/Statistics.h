@@ -91,7 +91,6 @@ STRCONST(history_old_header_axes, "Время;TTOUT;TTIN;TTBOILER;TTCOMP;TTEVAIN
 STRCONST(history2_file_start, "hist2_");		// текущий формат: метка с секундами, строка-описание раскладки в потоке
 extern uint8_t stats_buffer[SD_BLOCK];
 extern uint8_t history_buffer[SD_BLOCK];
-static fname_t open_fname;
 
 class Statistics
 {

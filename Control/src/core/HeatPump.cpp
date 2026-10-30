@@ -49,8 +49,8 @@ boolean  Charts_when_comp_on = false;
 #define PUMPS_ON          Pumps(true, DELAY_AFTER_SWITCH_RELAY)               // Включить насосы
 #define PUMPS_OFF         Pumps(false, DELAY_AFTER_SWITCH_RELAY)              // Выключить насосы
 // Макросы по работе с компрессором в зависимости от наличия инвертора
-#define COMPRESSOR_ON   { if(dFC.get_present()) dFC.start_FC(); else dRelay[RCOMP].set_ON(); startCompressor = rtcSAM3X8.unixtime(); }  // Включить компрессор в зависимости от наличия инвертора
-#define COMPRESSOR_OFF  { if(dFC.get_present()) dFC.stop_FC(); else dRelay[RCOMP].set_OFF(); stopCompressor = rtcSAM3X8.unixtime(); } // Выключить компрессор в зависимости от наличия инвертора
+#define COMPRESSOR_ON   { if(dFC.get_present()) dFC.start_FC(); else dRelay[RCOMP].set_ON(); startCompressor = Uptime_s(); }  // Включить компрессор в зависимости от наличия инвертора
+#define COMPRESSOR_OFF  { if(dFC.get_present()) dFC.stop_FC(); else dRelay[RCOMP].set_OFF(); stopCompressor = Uptime_s(); } // Выключить компрессор в зависимости от наличия инвертора
 
 // Аварийный останов компрессора из set_Error: без журнала и ожиданий, способ выбирается так же, как в COMPRESSOR_OFF.
 // Реле RCOMP снимается всегда: это провод ХОД инвертора или пускатель компрессора без инвертора, а при управлении
@@ -502,7 +502,7 @@ boolean HeatPump::switchBoiler(boolean b)
 		journal.jprintf(" Pause %ds, Boiler->House\n", Option.delayBoilerSW);
 		Watchdog_SleepHere(Option.delayBoilerSW * 1000); // выравниваем температуру в контуре отопления/ГВС что бы сразу защиты не сработали
 	}
-	offBoiler = b ? 0 : rtcSAM3X8.unixtime(); // запомнить время выключения ГВС (нужно для переключения)
+	offBoiler = b ? 0 : Uptime_s(); // запомнить время выключения ГВС (нужно для переключения)
 	return onBoiler = b;
 }
 // Проверка и если надо включение EVI если надо то выключение возвращает состояние реле
@@ -533,7 +533,7 @@ if(b && (get_modWork() & pBOILER)){
 		Watchdog_SleepHere(Option.delayBoilerSW * 1000);    // выравниваем температуру в контуре отопления/ГВС что бы сразу защиты не сработали
 	      }
     	onBoiler = false;
-		offBoiler = rtcSAM3X8.unixtime();			// запомнить время выключения ГВС (нужно для переключения)
+		offBoiler = Uptime_s();			// запомнить время выключения ГВС (нужно для переключения)
 	}
 #endif
 
@@ -940,26 +940,26 @@ boolean HeatPump::boilerAddHeat()
 	if((GETBIT(Prof.SaveON.flags, fBoilerON)) && (GETBIT(Prof.Boiler.flags, fSalmonella))) // Сальмонелла не взирая на расписание если включен бойлер (запрет ТЭНа на генераторе проверен выше)
 	{
 		if(ClimateSalmonellaStart(rtcSAM3X8.get_day_of_week(), rtcSAM3X8.get_hours(), rtcSAM3X8.get_minutes(), SALMONELLA_DAY, SALMONELLA_HOUR,
-				onSalmonella, doneSalmonella, rtcSAM3X8.unixtime())) { // Надо начитать процесс обеззараживания
-			startSalmonella = rtcSAM3X8.unixtime();
+				onSalmonella, doneSalmonella, Uptime_s())) { // Надо начитать процесс обеззараживания
+			startSalmonella = Uptime_s();
 			onSalmonella = true;
 			journal.jprintf(" Cycle start salmonella, %.2dC°\n", sTemp[TBOILER].get_Temp());
 		}
 		if(onSalmonella) {   // Обеззараживание нужно
-			if(startSalmonella + SALMONELLA_TIME > rtcSAM3X8.unixtime()) { // Время цикла еще не исчерпано
+			if(startSalmonella + SALMONELLA_TIME > Uptime_s()) { // Время цикла еще не исчерпано
 				if(T < SALMONELLA_TEMP) return true; // Включить обеззараживание
 				if(GETBIT(Prof.Boiler.flags, fSalmonellaHold)) return ClimateDecideSalmonellaHold(T, SALMONELLA_TEMP, dRelay[RBOILER].get_Relay()); // Длительная обработка: стабилизация температуры обеззараживания, гистерезис 0.5 градуса
 				else {  // Обычная обработка: только до достижения температуры и сразу выключение
 					onSalmonella = false;
 					startSalmonella = 0;
-					doneSalmonella = rtcSAM3X8.unixtime();
+					doneSalmonella = Uptime_s();
 					journal.jprintf(" Salmonella cycle finished, %.2dC°\n", sTemp[TBOILER].get_Temp());
 					return false;
 				}
 			} else {  // Время вышло, выключаем, и идем дальше по алгоритму
 				onSalmonella = false;
 				startSalmonella = 0;
-				doneSalmonella = rtcSAM3X8.unixtime();
+				doneSalmonella = Uptime_s();
 				journal.jprintf(" Salmonella cycle end, %.2dC°\n", sTemp[TBOILER].get_Temp());
 			}
 		}
@@ -1081,7 +1081,7 @@ MODE_COMP  HeatPump::UpdateBoiler()
 	if(GETBIT(Prof.Boiler.flags,fResetHeat))    // Стоит требуемая опция - Сброс тепла в СО
 	{
 		if(Status.prev == pBdis) {
-			if(offBoiler + Prof.Boiler.Reset_Time < rtcSAM3X8.unixtime()) {
+			if(offBoiler + Prof.Boiler.Reset_Time < Uptime_s()) {
 				journal.jprintf(" Boiler: Discharged Ok\n");
 				switchBoiler(true);    // Переключиться на ходу на ГВС
 			} else {
@@ -1125,7 +1125,7 @@ MODE_COMP  HeatPump::UpdateBoiler()
 	in.r4way_check      = false;
 	in.r4way_on         = false;
 
-	in.now              = rtcSAM3X8.unixtime();
+	in.now              = Uptime_s();
 	in.off_boiler       = offBoiler;
 	in.start_compressor = startCompressor;
 	in.fc_start_time    = dFC.get_startTime();
@@ -1241,7 +1241,7 @@ MODE_COMP HeatPump::UpdateHeat()
 	in.r4way_check      = false;
 	in.r4way_on         = false;
 #endif
-	in.now              = rtcSAM3X8.unixtime();
+	in.now              = Uptime_s();
 	in.off_boiler       = offBoiler;
 	in.start_compressor = startCompressor;
 	in.fc_start_time    = dFC.get_startTime();
@@ -1337,7 +1337,7 @@ MODE_COMP HeatPump::UpdateCool()
 	in.r4way_check      = false;   // в исходнике проверка 4-ходового закомментирована
 	in.r4way_on         = false;
 
-	in.now              = rtcSAM3X8.unixtime();
+	in.now              = Uptime_s();
 	in.off_boiler       = offBoiler;
 	in.start_compressor = startCompressor;
 	in.fc_start_time    = dFC.get_startTime();
@@ -1458,14 +1458,14 @@ void HeatPump::vUpdate()
 				startPump = true;                                 // Поставить признак запуска задачи насос
 				if(get_workPump()) journal.jprintf(" %s: Pumps in pause %s. . .\n", (char*) __FUNCTION__, "ON");     // Включить задачу насос конденсатора выключение в переключении насосов
 			}
-			command_completed = rtcSAM3X8.unixtime(); // поменялся режим
+			command_completed = Uptime_s(); // поменялся режим
 		}
 	} else if(!(Status.modWork & pCONTINUE)) { // Начало режимов, Включаем задачу насос, конфигурируем 3 и 4-х клапаны включаем насосы и потом включить компрессор
 		if(startPump)                                     // Остановить задачу насос
 		{
 			startPump = false;                            // Поставить признак останова задачи насос
 			if(get_workPump()) journal.jprintf(" %s: Pumps in pause %s. . .\n",(char*)__FUNCTION__, "OFF");
-		    command_completed = rtcSAM3X8.unixtime(); // поменялся режим
+		    command_completed = Uptime_s(); // поменялся режим
 		}
 		if(!check_compressor_pause()) {
 			if(configHP(Status.modWork)) {                   // Конфигурируем насосы
@@ -1650,8 +1650,8 @@ boolean HeatPump::Switch_R4WAY(boolean fCool)
 // проверка на паузу между включениями, возврат true - в паузе
 boolean HeatPump::check_compressor_pause()
 {
-	if(stopCompressor && rtcSAM3X8.unixtime() - stopCompressor < Option.pause) {
-		if(!compressor_in_pause) journal.jprintf_time("Waiting compressor, pause %d s...\n", (int)(Option.pause - (rtcSAM3X8.unixtime() - stopCompressor)));
+	if(stopCompressor && Uptime_s() - stopCompressor < Option.pause) {
+		if(!compressor_in_pause) journal.jprintf_time("Waiting compressor, pause %d s...\n", (int)(Option.pause - (Uptime_s() - stopCompressor)));
 		return compressor_in_pause = true;
 	}
 	return compressor_in_pause = false;
@@ -1667,7 +1667,6 @@ void HeatPump::compressorON()
 
 	if(is_compressor_on()) return;                                  // Компрессор уже работает
 	if(is_next_command_stop()) {
-xNextStop:
 		journal.jprintf(" Next command stop in queue, skip start");
 		return;
 	}
@@ -1786,7 +1785,7 @@ xNextStop:
 #endif	
 		resetPID(); 										// Инициализировать переменные ПИД регулятора
 		if(Charts_when_comp_on) task_updstat_chars = 0;
-	    command_completed = rtcSAM3X8.unixtime();
+	    command_completed = Uptime_s();
 	  	COMPRESSOR_ON;                                      // Включить компрессор
 		if(error || dFC.get_err()) return; // Ошибка - выходим
 	} else { // if (get_errcode()==OK)
@@ -1856,7 +1855,7 @@ void HeatPump::compressorOFF()
 	journal.jprintf(" Stop control EEV\n");
 #endif
 
-	command_completed = rtcSAM3X8.unixtime();
+	command_completed = Uptime_s();
 	if(is_compressor_on()) {
 		COMPRESSOR_OFF;                                             // Компрессор выключить
 	}
@@ -1865,7 +1864,7 @@ void HeatPump::compressorOFF()
 	PUMPS_OFF;                                                          // выключить насосы + задержка
 
 	onBoiler = false;
-	offBoiler = rtcSAM3X8.unixtime();
+	offBoiler = Uptime_s();
 
 #ifdef EEV_DEF
 	if(dEEV.get_EevClose())                                 // Разбираемся с ЭРВ
@@ -1921,7 +1920,7 @@ void HeatPump::defrost()
       }
 #else          // Алгоритм разморозки по температуре
   if (sTemp[TOUT].get_Temp()>TEMP_NO_DEFROST) return;                      // Если температура на улице выше TEMP_NO_DEFROST ТН не обмерзает
-  if ((is_compressor_on()) && (rtcSAM3X8.unixtime()-startCompressor<15*60)) return;   // компрессор работает, но прошло менее 15 минут - размораживать не надо
+  if ((is_compressor_on()) && (Uptime_s()-startCompressor<15*60)) return;   // компрессор работает, но прошло менее 15 минут - размораживать не надо
   if (sTemp[TEVAIN].get_Temp()-sTemp[TOUT].get_Temp()>-1200) {startDefrost=0;return;  }   // размораживать не надо - условие не наступило
   journal.jprintf("Next step, defrost . . .\n");
   // организация задержки перед включением

@@ -99,7 +99,6 @@ int8_t devOmronMX2::initFC()
   	  pin = PIN_DEVICE_FC;                // Ножка куда прицеплено FC
   	  analogWriteResolution(12);        // разрешение ЦАП 12 бит;
   	  analogWrite(pin,dac);
-  	  ChartPower.init(false);                 // инициалазация графика
   #else									// НЕ Аналоговое управление
       err=Modbus.LinkTestOmronMX2();     // проверка связи с инвертором  xModbusSemaphore не используем так как в один поток
       check_blockFC();   
@@ -231,7 +230,6 @@ int8_t  devOmronMX2::set_target(int16_t x,boolean show, int16_t _min, int16_t _m
     {FC=x; if(show) journal.jprintf(" Set %s: %.2f [Hz]\r\n",name,FC/100.0);   return err;} // установка частоты OK  - вывод сообщения если надо
      else { journal.jprintf("%s: Wrong frequency %.2f\n",name,x/100.0); return WARNING_VALUE; } 
   #else   // Боевой вариант
-  uint8_t i;
   if ((!get_present())||(GETBIT(flags,fErrFC))) return err;    // выходим если нет инвертора или он заблокирован по ошибке
   if(GETBIT(HP.Option.flags, fBackupPower)) x = fc_gen_clip(x, _data.maxFreqGen, _min);
   if ((x>=_min)&&(x<=_max))                     // Проверка диапазона разрешенных частот
@@ -239,7 +237,7 @@ int8_t  devOmronMX2::set_target(int16_t x,boolean show, int16_t _min, int16_t _m
   #ifndef FC_ANALOG_CONTROL                                    // Не аналоговое управление
 	  	  if(testMode == NORMAL || testMode == HARD_TEST) {
 			  // Запись в регистры инвертора установленной частоты
-			  for(i=0;i<FC_NUM_READ;i++)  // Делаем FC_NUM_READ попыток
+			  for(uint8_t i=0;i<FC_NUM_READ;i++)  // Делаем FC_NUM_READ попыток
 				{
 				  err=write_0x10_32(MX2_TARGET_FR,x);
 				  if (err==OK) break;                     // Команда выполнена
@@ -321,7 +319,6 @@ void  devOmronMX2::check_blockFC()
 // Вызывается из задачи чтения датчиков период FC_TIME_READ
 int8_t devOmronMX2::get_readState()
 {
-uint8_t i;
 if(testMode != NORMAL && testMode != HARD_TEST) {
 	SETBIT0(flags, fErrFC);
 	state = 0;
@@ -331,7 +328,7 @@ if ((!get_present())||(GETBIT(flags,fErrFC))) return err;  // выходим е�
 err=OK;
 #ifndef FC_ANALOG_CONTROL                                    // Не аналоговое управление
   // Чтение состояния инвертора, при ошибке генерация общей ошибки ТН и останов
-  for(i=0;i<FC_NUM_READ;i++)   // делаем FC_NUM_READ попыток чтения
+  for(uint8_t i=0;i<FC_NUM_READ;i++)   // делаем FC_NUM_READ попыток чтения
       { 
         state=read_0x03_16(MX2_STATE);                     // прочитать состояние
         err=Modbus.get_err();                              // Скопировать ошибку
@@ -367,7 +364,7 @@ err=OK;
     case STOPCHK_DONE: stopStage=0; break;                  // остановился (или тормозит постоянным током)
     case STOPCHK_FALLBACK:                                  // RCOMP снят, а инвертор вращается: останавливаем частотой 0
          journal.jprintf(" %s: still running %d s after RCOMP off, set 0 Hz via Modbus\n",name,(int)(since/1000));
-         for(i=0;i<FC_NUM_READ;i++) { err=write_0x10_32(MX2_TARGET_FR,0); if(err==OK) break; _delay(100); }
+         for(uint8_t i=0;i<FC_NUM_READ;i++) { err=write_0x10_32(MX2_TARGET_FR,0); if(err==OK) break; _delay(100); }
          stopStage=2; stopTick=GetTickCount();
          break;
     case STOPCHK_FAIL:                                      // не остановился и так
@@ -415,7 +412,7 @@ err=OK;
              #ifdef FC_USE_RCOMP   // Использовать отдельный провод для команды ход/стоп
                  HP.dRelay[RCOMP].set_ON();                // ПЛОХО через глобальную переменную
              #endif // FC_USE_RCOMP   
-            if (err==OK) {SETBIT1(flags,fOnOff);startCompressor=rtcSAM3X8.unixtime(); journal.jprintf(" %s ON\n",name);}
+            if (err==OK) {SETBIT1(flags,fOnOff);startCompressor=Uptime_s(); journal.jprintf(" %s ON\n",name);}
             else {state=ERR_LINK_FC; SETBIT1(flags,fErrFC); set_Error(Error_LinkCode(err),name);}               // генерация ошибки
       #else // DEMO
              // Боевая часть
@@ -432,7 +429,7 @@ err=OK;
                 err= write_0x05_bit(MX2_START, true);   // Команда Ход
             #endif    
             }
-            if (err==OK) {SETBIT1(flags,fOnOff);startCompressor=rtcSAM3X8.unixtime(); journal.jprintf(" %s ON\n",name);}
+            if (err==OK) {SETBIT1(flags,fOnOff);startCompressor=Uptime_s(); journal.jprintf(" %s ON\n",name);}
             else {state=ERR_LINK_FC; SETBIT1(flags,fErrFC); set_Error(Error_LinkCode(err),name);}               // генерация ошибки
       #endif
   #else  //  FC_ANALOG_CONTROL
@@ -440,7 +437,7 @@ err=OK;
             #ifdef FC_USE_RCOMP   // Использовать отдельный провод для команды ход/стоп
                  HP.dRelay[RCOMP].set_ON();                // ПЛОХО через глобальную переменную
             #endif // FC_USE_RCOMP   
-            SETBIT1(flags,fOnOff);startCompressor=rtcSAM3X8.unixtime(); journal.jprintf(" %s ON\n",name);
+            SETBIT1(flags,fOnOff);startCompressor=Uptime_s(); journal.jprintf(" %s ON\n",name);
         #else // DEMO
              // Боевая часть
             if (((testMode==NORMAL)||(testMode==HARD_TEST))&&(((!get_present())||(GETBIT(flags,fErrFC))))) return err;   // выходим если нет инвертора или он заблокирован по ошибке
@@ -453,7 +450,7 @@ err=OK;
                 state=ERR_LINK_FC; err=ERR_FC_CONF_ANALOG; SETBIT1(flags,fErrFC); set_Error(err,name);// Ошибка конфигурации
             #endif    
             }
-            SETBIT1(flags,fOnOff);startCompressor=rtcSAM3X8.unixtime(); journal.jprintf(" %s ON\n",name);
+            SETBIT1(flags,fOnOff);startCompressor=Uptime_s(); journal.jprintf(" %s ON\n",name);
       #endif 
   #endif    
 return err;

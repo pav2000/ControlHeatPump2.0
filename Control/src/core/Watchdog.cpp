@@ -119,6 +119,21 @@ bool Boot_NoAutoStart(const BootInfo &b)
 	return b.resets >= BOOT_MAX_RESETS;
 }
 
+static volatile uint32_t uptime_sec = 1;
+static uint16_t uptime_ms;
+
+void Uptime_Tick(void)
+{
+	if(++uptime_ms >= 1000) { uptime_ms = 0; uptime_sec++; }
+}
+
+uint32_t Uptime_s(void) { return uptime_sec; }
+
+uint32_t Uptime_ToWall(uint32_t t, uint32_t now_uptime, uint32_t now_wall)
+{
+	return t ? now_wall - (now_uptime - t) : 0;
+}
+
 const char *Boot_CauseText(BOOT_CAUSE c)
 {
 	switch(c) {

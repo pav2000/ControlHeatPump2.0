@@ -85,9 +85,6 @@ private:
 #endif
 	uint32_t change_time(uint32_t _now);
 	uint32_t change_date(uint32_t _now);
-	uint32_t _current_time;
-	uint32_t _current_date;
-	uint32_t _utime; // current unix time
 };
 
 #endif

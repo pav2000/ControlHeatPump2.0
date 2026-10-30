@@ -592,7 +592,7 @@ int8_t Profile::check_crc16_eeprom(int8_t num)
 // Проверить контрольную сумму в буфере для данных на выходе ошибка, длина определяется из заголовка
 int8_t  Profile::check_crc16_buf(int32_t adr, byte* buf)   
 {
-  uint16_t i, readCRC, crc=0xFFFF;
+  uint16_t readCRC, crc=0xFFFF;
   byte x;
   memcpy((byte*)&x,buf+adr,sizeof(x)); adr=adr+sizeof(x);                                              // заголовок
   if (x!=0xaa)   return OK;                                                                           // профиль пустой, или его вообще нет, контрольная сумма не актуальна
@@ -786,7 +786,6 @@ char *Profile::get_info(char *c,int8_t num)
   // Всё из кеша: профили и так в оперативной памяти.
   if (num<0 || num>=I2C_PROFIL_NUM) {strcat(c,"Error read profile"); return c; }
   if (cache_magic[num]!=0xaa)  {strcat(c,"Empty profile"); return c;}
-  uint16_t crc16temp = cache_crc[num];
   memcpy(&temp_prof, &cache[num].dataProfile, sizeof(temp_prof));
     // прочли формируем строку с описанием
     if(GETBIT(temp_prof.flags, fEnabled)) strcat(c,"* ");                         // отметка об использовании в списке
@@ -842,9 +841,7 @@ int8_t Profile::set_list(int8_t num)
 // такое будет тогда когда текущий профиль не отмечен что участвует в списке
 int8_t Profile::update_list(int8_t num)
 {
-  byte xx;
   uint8_t i;
-  int32_t adr;
   strcpy(list,"");                                                                              // стереть список
   char *p = list;
   for (i=0;i<I2C_PROFIL_NUM;i++)                                                                // перебор по всем профилям

@@ -14,9 +14,6 @@ uint8_t meztime;
 
 RTC_clock::RTC_clock(int source)
 {
-	_current_time = 0;
-	_utime = 0;
-	_current_date = 0;
 	if(source) {
 		pmc_switch_sclk_to_32kxtal(0);
 
@@ -44,7 +41,6 @@ void RTC_clock::set_time(uint8_t hour, uint8_t minute, uint8_t second)
 {
 
 	RTC_SetTime(RTC, hour, minute, second);
-	_utime = 0;
 }
 
 /*
@@ -78,7 +74,6 @@ void RTC_clock::set_time(char *time)
 {
 
 	RTC_SetTime(RTC, conv2d(time), conv2d(time + 3), conv2d(time + 6));
-	_utime = 0;
 }
 
 // Based on https://github.com/PaulStoffregen/Time.cpp
@@ -124,7 +119,6 @@ void RTC_clock::set_clock(unsigned long timestamp, int timezone)
 
 	RTC_SetTime(RTC, _hour, _minute, _second);
 	RTC_SetDate(RTC, (uint16_t) _year, (uint8_t) _month, (uint8_t) _day, (uint8_t) _day_of_week);
-	_utime = 0;
 
 }
 
@@ -238,7 +232,6 @@ uint8_t RTC_clock::calculate_day_of_week(uint16_t _year, uint8_t _month, uint8_t
 void RTC_clock::set_date(uint8_t day, uint8_t month, uint16_t year)
 {
 	RTC_SetDate(RTC, year, month, day, calculate_day_of_week(year, month, day));
-	_utime = 0;
 }
 
 // Based on https://github.com/adafruit/RTClib/blob/master/RTClib.cpp
@@ -276,7 +269,6 @@ void RTC_clock::set_date(char *date)
 	uint16_t _year = conv2d(date + 9);
 
 	RTC_SetDate(RTC, _year, _month, _day, calculate_day_of_week(_year, _month, _day));
-	_utime = 0;
 }
 
 int RTC_clock::date_already_set()
@@ -326,7 +318,6 @@ uint32_t RTC_clock::change_time(uint32_t now)
 	RTC->RTC_CR &= (uint32_t) (~RTC_CR_UPDTIM);
 	RTC->RTC_SCCR |= RTC_SCCR_SECCLR;
 
-	_utime = 0;
 
 	return (int) (RTC->RTC_VER & RTC_VER_NVTIM);
 }
@@ -373,7 +364,6 @@ uint32_t RTC_clock::change_date(uint32_t now)
 	RTC->RTC_CR &= (uint32_t) (~RTC_CR_UPDCAL);
 	RTC->RTC_SCCR |= RTC_SCCR_SECCLR;
 
-	_utime = 0;
 
 	return (int) (RTC->RTC_VER & RTC_VER_NVCAL);
 }
@@ -437,46 +427,21 @@ uint32_t RTC_clock::unixtime(int timezone)
 uint32_t RTC_clock::unixtime(void)
 #endif
 {
-	uint32_t cd = current_date();
-	uint32_t ct = current_time();
-	if(_utime && _current_date == cd) {
-		if(_current_time == ct) {
-			return _utime;
-		} else {
-			uint32_t tst = _current_time ^ ct;
-			if(!(tst & 0x3F0000)) { // hours is not changed
-				if((tst & 0x7F00)) { // min changed
-					_utime += ((int) (((ct & 0x7000) >> 12) * 10 + ((ct & 0xF00) >> 8)) - (((_current_time & 0x7000) >> 12) * 10 + ((_current_time & 0xF00) >> 8))) * 60;
-				}
-				if((tst & 0x7F)) { // sec changed
-					_utime += (int) (((ct & 0x70) >> 4) * 10 + (ct & 0xF)) - (((_current_time & 0x70) >> 4) * 10 + ((_current_time & 0xF)));
-				}
-				_current_time = ct;
-				return _utime;
-			}
-		}
-	} else _current_date = cd;
-	_current_time = ct;
+	// Без кэша. Прежний кэш (_utime, _current_time) правился без замка, а unixtime зовут задачи разных
+	// приоритетов: вытеснение посреди обновления прибавляло разницу секунд дважды, и время врало до смены
+	// часа. Расчёт с нуля дёшев: дни до начала года - формулой, а не циклом с 1970-го.
+	uint32_t cd, ct;
+	do {                                     // дата и время - два регистра: в полночь между чтениями
+		cd = current_date();                 // можно получить вчерашнюю дату с сегодняшним временем
+		ct = current_time();
+	} while(cd != current_date());
 
-	//_day_of_week = ((_current_date >> 21) & 0x7);
-	uint8_t _month = ((((_current_date >> 20) & 1) * 10) + ((_current_date >> 16) & 0xF));
+	uint8_t _month = ((((cd >> 20) & 1) * 10) + ((cd >> 16) & 0xF));
+	uint16_t _year = ((((cd >> 4) & 0x7) * 1000) + ((cd & 0xF) * 100) + (((cd >> 12) & 0xF) * 10) + ((cd >> 8) & 0xF));
 
-	//_year 4 digits
-	uint16_t _year = ((((_current_date >> 4) & 0x7) * 1000) + ((_current_date & 0xF) * 100) + (((_current_date >> 12) & 0xF) * 10) + ((_current_date >> 8) & 0xF));
-
-	//_year 2 digits
-	//_year   = (((_current_date >> 12) & 0xF) * 10) + ((_current_date >> 8) & 0xF);
-
-	// Based on https://github.com/punkiller/workspace/blob/master/string2UnixTimeStamp.cpp
-	// days of the years between start of unixtime and now
-	uint16_t _days = 365 * (_year - 1970);
-
-	// add days from switch years in between except year from date
-	for(int i = 1970; i < _year; i++) {
-		if(switch_years(i)) {
-			_days++;
-		}
-	}
+	// дни от 1970 до начала года: високосные годы до него минус високосные до 1970
+	uint32_t y = _year - 1;
+	uint32_t _days = 365 * (_year - 1970) + (y / 4 - y / 100 + y / 400) - (1969 / 4 - 1969 / 100 + 1969 / 400);
 
 	// Based on https://github.com/adafruit/RTClib/blob/master/RTClib.cpp
 	for(int i = 1; i < _month; ++i)
@@ -484,16 +449,15 @@ uint32_t RTC_clock::unixtime(void)
 
 	if(_month > 2 && switch_years(_year)) ++_days;
 
-	_days += ((((_current_date >> 28) & 0x3) * 10) + ((_current_date >> 24) & 0xF)) - 1; // day
+	_days += ((((cd >> 28) & 0x3) * 10) + ((cd >> 24) & 0xF)) - 1; // day
 
-	uint32_t _ticks = ((_days * 24 + (((_current_time & 0x00300000) >> 20) * 10 + ((_current_time & 0x000F0000) >> 16))) * 60
-			+ (((_current_time & 0x00007000) >> 12) * 10 + ((_current_time & 0x00000F00) >> 8))) * 60 + (((_current_time & 0x00000070) >> 4) * 10 + ((_current_time & 0x0000000F)));
+	// в беззнаковых: в int произведение переполнялось бы в 2038 году
+	uint32_t _ticks = ((_days * 24 + (((ct & 0x00300000) >> 20) * 10 + ((ct & 0x000F0000) >> 16))) * 60
+			+ (((ct & 0x00007000) >> 12) * 10 + ((ct & 0x00000F00) >> 8))) * 60 + (((ct & 0x00000070) >> 4) * 10 + ((ct & 0x0000000F)));
 
 #ifdef RTC_USE_UTC_TIME
 	_ticks = _ticks - (int)time_zone_adjustment(timezone);
 #endif
-
-	_utime = _ticks;
 
 	return _ticks;
 }

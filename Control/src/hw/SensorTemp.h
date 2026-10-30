@@ -47,7 +47,7 @@ class sensorIP
     boolean set_DataIP(int16_t a,int16_t b,int16_t c,int16_t d,uint32_t e,IPAddress f);  // Запомнить данные (обновление данных)
     char* get_sensorIP(char *var, char *ret);                    // Получить параметр в виде строки
     inline int16_t get_Temp(){return Temp;}                           // Получение последний температуры датчика  если данные не достоверны или датчик не работает возврат -10000 (-100 градусов)
-    inline uint32_t get_update(){return rtcSAM3X8.unixtime()-stime;}  // Получение времени прошедшего с последнего пакета
+    inline uint32_t get_update(){return Uptime_s()-stime;}  // Получение времени прошедшего с последнего пакета
     inline boolean get_fUse(){return GETBIT(cfg.flags,fUse);}             // Получить  флаг разрешить использование датчика
     inline boolean get_fRule(){return GETBIT(cfg.flags,fRule);}           // Получить  флаг Правило использования датчика 0 - использование удаленного датчика 1- усреднение с основным
     inline int8_t get_link(){return cfg.link;}                            // Получение номера датчика (из массива датчиков температуры),c которым связан удаленный датчик
@@ -70,7 +70,7 @@ class sensorIP
     int16_t RSSI;                                              // Уровень сигнала датчика (-дБ)
     uint16_t VCC;                                              // Уровень напряжениея питания датчика (мВ)
     uint32_t count;                                            // Кольцевой счетчик пакетов с момента включения контрола
-    uint32_t stime;                                            // Время получения последнего пакета
+    uint32_t stime;                                            // Время работы Uptime_s() при получении последнего пакета, 0 - не было
     // Группа сохранения, названа ради проверки раскладки на сборке.
     struct { // Save GROUP
     uint8_t number;												// номер

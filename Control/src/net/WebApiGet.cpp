@@ -86,9 +86,11 @@ static void sysInfoText(char *strReturn)
 	strcat(strReturn,"<b> Времена</b>|;");
 	strcat(strReturn,"Текущее время|"); DecodeTimeDate(rtcSAM3X8.unixtime(),strReturn); strcat(strReturn,";");
 	strcat(strReturn,"Время последнего включения ТН|");DecodeTimeDate(HP.get_startTime(),strReturn);strcat(strReturn,";");
-	strcat(strReturn,"Время текущего состояния ТН|");DecodeTimeDate(HP.get_command_completed(),strReturn);strcat(strReturn,";");
-	strcat(strReturn,"Время старта компрессора|");DecodeTimeDate(HP.get_startCompressor(),strReturn);strcat(strReturn,";");
-	strcat(strReturn,"Время останова компрессора|");DecodeTimeDate(HP.get_stopCompressor(),strReturn);strcat(strReturn,";");
+	// Отметки ниже - время работы (Uptime_s), в дату их переводит Uptime_ToWall
+	const uint32_t up = Uptime_s(), wall = rtcSAM3X8.unixtime();
+	strcat(strReturn,"Время текущего состояния ТН|");DecodeTimeDate(Uptime_ToWall(HP.get_command_completed(), up, wall),strReturn);strcat(strReturn,";");
+	strcat(strReturn,"Время старта компрессора|");DecodeTimeDate(Uptime_ToWall(HP.get_startCompressor(), up, wall),strReturn);strcat(strReturn,";");
+	strcat(strReturn,"Время останова компрессора|");DecodeTimeDate(Uptime_ToWall(HP.get_stopCompressor(), up, wall),strReturn);strcat(strReturn,";");
 	strcat(strReturn,"Время сохранения текущих настроек ТН|");DecodeTimeDate(HP.get_saveTime(),strReturn);strcat(strReturn,";");
 
 	strcat(strReturn,"<b> Счетчики ошибок</b>|;");
@@ -525,7 +527,7 @@ static int api_get_state(uint8_t hook, uint8_t, ApiOut *o)
 	case S_CPU:     api_put_int(o, Diag.CPU_LOAD); break;
 	case S_LASTCMD: {
 		uint32_t c = HP.get_command_completed();
-		if(!c) api_put(o, "null"); else { TimeIntervalToStr(rtcSAM3X8.unixtime() - c, t, 1); api_put_str(o, t); }
+		if(!c) api_put(o, "null"); else { TimeIntervalToStr(Uptime_s() - c, t, 1); api_put_str(o, t); }
 		break; }
 	case S_STATUS:
 		if(HP.get_errcode() == OK) HP.get_StateModworkStr(t); else { strcpy(t, "Error "); _itoa(HP.get_errcode(), t); }
@@ -1311,6 +1313,21 @@ static int api_modbus(ApiOut *o, const char *p, bool wr)
 static int apiAct_modbus_read(ApiOut *o, const char *p) { return api_modbus(o, p, false); }
 static int apiAct_modbus_write(ApiOut *o, const char *p) { return api_modbus(o, p, true); }
 static int apiAct_ntp_update(ApiOut *o, const char *) { HP.timeNTP = 0; api_put(o, "\"ok\""); return AE_OK; }     // 0 - обновить сразу, в ближайшем проходе основного цикла
+#ifdef TEST_WATCHDOG
+// Проверка наблюдателя (С-18): задача p (Watchdog.h) перестаёт отмечаться живой, наблюдатель обязан
+// записать причину и сбросить контроллер. p=-1 - отменить.
+extern volatile int8_t wdtHangTask;
+static int apiAct_test_wdt(ApiOut *o, const char *p)
+{
+	char *end;
+	long n = strtol(p, &end, 10);
+	if(end == p || *end || n < -1 || n >= WDT_TASK_COUNT) return AE_BAD_VALUE;
+	wdtHangTask = (int8_t) n;
+	journal.jprintf_time("TEST: task %ld stops watchdog beats\n", n);
+	api_put(o, "\"ok\"");
+	return AE_OK;
+}
+#endif
 static const ApiAction apiActions[] = {
 	{ "power.on",       1, apiAct_power_on },
 	{ "net.apply",      0, apiAct_net_apply },
@@ -1342,6 +1359,9 @@ static const ApiAction apiActions[] = {
 #endif
 	{ "test.mail",      0, apiAct_test_mail },
 	{ "test.sms",       0, apiAct_test_sms },
+#ifdef TEST_WATCHDOG
+	{ "test.wdt",       0, apiAct_test_wdt },
+#endif
 #ifdef MQTT
 	{ "test.narodmon",  0, apiAct_test_narodmon },
 #endif

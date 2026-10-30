@@ -56,6 +56,7 @@ Stats_Data Stats_data[STATS_DATA_COUNT] = {
 };
 uint8_t stats_buffer[SD_BLOCK];
 uint8_t history_buffer[SD_BLOCK];
+static fname_t open_fname;
 Statistics Stats;
 
 #include "../core/HeatPump.h"

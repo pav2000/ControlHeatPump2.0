@@ -279,6 +279,7 @@ int16_t devEEV::set_Overheat(boolean fHeating)
 	} // ЭРВ в конфиге нет
 	int16_t tPEVA = HP.sADC[PEVA].get_present() ? PressToTemp(PEVA) : OVERHEAT_NO_PRESS;
 #ifdef DEMO
+	(void) fHeating;                     // перегрев в демо случайный
 	Overheat = random(100,400);
 #else
 	// Сбор входа: наличие датчиков в сборке и в конфигурации разрешается здесь,
@@ -549,7 +550,7 @@ void devEEV::CorrectOverheat(void)
 #endif
 					- DEF_OHCor_OverHeatStart);
 	if(fPause || !GETBIT(_data.flags, fCorrectOverHeat)) return;
-	if(rtcSAM3X8.unixtime() - HP.get_startCompressor() > _data.OHCor_Delay && ++OverHeatCor_period >= _data.OHCor_Period) {
+	if(Uptime_s() - HP.get_startCompressor() > _data.OHCor_Delay && ++OverHeatCor_period >= _data.OHCor_Period) {
 		OverHeatCor_period = 0;
 		t = (HP.sTemp[TCOMP].get_Temp() - t) - OHCor_tdelta;
 		if(t > _data.OHCor_TDIS_TCON_Thr) { // Разница большая - уменьшаем перегрев. o = omin + d_curr * (ost - omin) / d_max

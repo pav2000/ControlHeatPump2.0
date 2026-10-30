@@ -401,7 +401,9 @@ xReadError:
 	// static_assert ниже: маски по одному биту на датчик.
 	static_assert(TNUMBER <= 32 && ANUMBER <= 32 && IPNUMBER <= 32, "маски after_load рассчитаны на 32 датчика");
 	uint32_t afterT = 0, afterA = 0, afterIP = 0;
+#ifdef EEV_DEF
 	bool afterEEV = false;
+#endif
 	// Контрольная сумма сошлась, но каркас записей может быть нарушен (обрубленная
 	// запись, нет END, лишний тег). Из файла такой блок не принимаем, из I2C
 	// читаем что получится: ТН должен стартовать.
@@ -579,26 +581,6 @@ void HeatPump::updateCount()
 	                     motohour_IN_work, motohour_OUT_work);
 }
 
-// После любого изменения часов необходимо пересчитать все времна которые используются
-// параметр изменение времени - корректировка
-void HeatPump::updateDateTime(int32_t dTime)
-{
-	if(dTime != 0 && dTime != int32_t(0x80000000))                                   // было изменено время, надо скорректировать переменные времени
-	{
-		Prof.SaveON.startTime = Prof.SaveON.startTime + dTime; // время пуска ТН (для организации задержки включения включение ЭРВ)
-		if(timeON > 0) timeON = timeON + dTime;                               // время включения контроллера для вычисления UPTIME
-		if(startCompressor > 0) startCompressor = startCompressor + dTime;             // время пуска компрессора
-		if(stopCompressor > 0) stopCompressor = stopCompressor + dTime;               // время останова компрессора
-		if(countNTP > 0) countNTP = countNTP + dTime;                           // число секунд с последнего обновления по NTP
-		if(offBoiler > 0) offBoiler = offBoiler + dTime;                         // время выключения нагрева ГВС ТН (необходимо для переключения на другие режимы на ходу)
-		// startDefrost здесь НЕ сдвигается: он хранится в тиках (xTaskGetTickCount), а не по настенным часам, и от смены часов не зависит.
-		// Прежний сдвиг прибавлял к тикам секунды.
-		if(startSalmonella > 0) startSalmonella = startSalmonella + dTime;             // время начала обеззараживания
-		if(doneSalmonella > 0) doneSalmonella = doneSalmonella + dTime;                // время окончания прошлого цикла
-
-	}
-}
-      
 
 // ---------------------------------------------------------------------------
 // ---- НАСТРОЙКИ ТН ----
@@ -651,8 +633,6 @@ void HeatPump::resetSettingHP()
 
 	// Инициализация различных времен
 	DateTime.saveTime = 0;                          // дата и время сохранения настроек в eeprom
-	timeON = 0;                                     // время включения контроллера для вычисления UPTIME
-	countNTP = 0;                                   // число секунд с последнего обновления по NTP
 	startCompressor = 0;                            // время пуска компрессора
 	stopCompressor = 0;                             // время останова компрессора
 	offBoiler = 0;                                  // время выключения нагрева ГВС ТН (необходимо для переключения на другие режимы на ходу)
@@ -782,13 +762,11 @@ char* HeatPump::get_network(char *var,char *ret)
 boolean HeatPump::set_datetime(char *var, char *c)
 {
 	int16_t buf[3];
-	uint32_t oldTime = rtcSAM3X8.unixtime(); // запомнить время
-	int32_t dTime = 0;
+	// Интервалы считаются по времени работы (Uptime_s) и смены часов не замечают (раздел 6.5): сдвигать нечего
 	if(strcmp(var, time_TIME) == 0) {
 		if(!parseInt16_t(c, ':', buf, 2, 10)) return false;
 		rtcSAM3X8.set_time(buf[0], buf[1], 0);  // внутренние
 		setTime_RtcI2C(rtcSAM3X8.get_hours(), rtcSAM3X8.get_minutes(), rtcSAM3X8.get_seconds()); // внешние
-		dTime = rtcSAM3X8.unixtime() - oldTime; // получить изменение времени
 	} else if(strcmp(var, time_DATE) == 0) {
 		uint8_t i = 0, f = 0;
 		char ch;
@@ -803,7 +781,6 @@ boolean HeatPump::set_datetime(char *var, char *c)
 		if(f != 2 || !parseInt16_t(c, ch, buf, 3, 10)) return false;
 		rtcSAM3X8.set_date(buf[0], buf[1], buf[2]); // внутренние
 		setDate_RtcI2C(rtcSAM3X8.get_days(), rtcSAM3X8.get_months(), rtcSAM3X8.get_years()); // внешние
-		dTime = rtcSAM3X8.unixtime() - oldTime; // получить изменение времени
 	} else if(strcmp(var, time_NTP) == 0) {
 		if(strlen(c) == 0) return false;                                                 // пустая строка
 		if(strlen(c) > NTP_SERVER_LEN) return false;                                     // слишком длиная строка
@@ -817,7 +794,6 @@ boolean HeatPump::set_datetime(char *var, char *c)
 			return true;
 		} else if(strcmp(c, cOne) == 0) {
 			SETBIT1(DateTime.flags, fUpdateNTP);
-			countNTP = 0;
 			return true;
 		} else return false;
 	} else if(strcmp(var, time_UPDATE_I2C) == 0) {
@@ -826,12 +802,9 @@ boolean HeatPump::set_datetime(char *var, char *c)
 			return true;
 		} else if(strcmp(c, cOne) == 0) {
 			SETBIT1(DateTime.flags, fUpdateI2C);
-			countNTP = 0;
 			return true;
 		} else return false;
 	} else return false;
-
-	updateDateTime(dTime);    // было изменено время, надо скорректировать переменные времени
 	return true;
 }
 
@@ -1156,11 +1129,6 @@ static int api_set_time(uint8_t hook, uint8_t, const char *val)
 	if(hook == TM_DATE) return HP.set_datetime((char*) time_DATE, (char*) val) ? AE_OK : AE_BAD_VALUE;
 	return AE_FAIL;
 }
-static void api_after_time(uint8_t hook)
-{
-	// при ВКЛЮЧЕНИИ синхронизации: считаем с нуля
-	if((hook == TM_NTPUPD && GETBIT(HP.api_datetime()->flags, fUpdateNTP)) || (hook == TM_I2CUPD && GETBIT(HP.api_datetime()->flags, fUpdateI2C))) HP.set_countNTP(0);
-}
-static const ApiOps apiOpsTime = { api_base_time, api_get_time, api_set_time, api_after_time, 0, 0, 0, 0 };
+static const ApiOps apiOpsTime = { api_base_time, api_get_time, api_set_time, 0, 0, 0, 0, 0 };
 extern const ApiGroup ApiGrpTime;
 const ApiGroup ApiGrpTime = { "time", apiTimeTab, sizeof(apiTimeTab) / sizeof(apiTimeTab[0]), &apiOpsTime };

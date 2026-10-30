@@ -197,14 +197,14 @@ int8_t devVaconFC::get_readState()
 				uint16_t reg = read_0x03_16(FC_ERROR);
 				journal.jprintf("%s, Fault: %s(%d) - ", name, err ? cError : get_fault_str(reg), err ? err : reg);
 				err = ERR_FC_FAULT;
-			} else if(get_startTime() && rtcSAM3X8.unixtime() - get_startTime() > FC_ACCEL_TIME / 100 && ((state & (FC_S_RDY | FC_S_RUN | FC_S_DIR)) != (FC_S_RDY | FC_S_RUN))) {
+			} else if(get_startTime() && Uptime_s() - get_startTime() > FC_ACCEL_TIME / 100 && ((state & (FC_S_RDY | FC_S_RUN | FC_S_DIR)) != (FC_S_RDY | FC_S_RUN))) {
 				err = ERR_MODBUS_STATE;
 			}
 			if(err) {
 				set_Error(err, name); // генерация ошибки
 			}
 		} else if(state & FC_S_RUN) { // Привод работает, а не должен - останавливаем через Modbus
-			if(rtcSAM3X8.unixtime() - HP.get_stopCompressor() > FC_DEACCEL_TIME / 100) {
+			if(Uptime_s() - HP.get_stopCompressor() > FC_DEACCEL_TIME / 100) {
 				journal.jprintf_time("Compressor running - stop via Modbus!\n");
 				err = write_0x06_16(FC_CONTROL, FC_C_STOP); // подать команду ход/стоп через Modbus
 				if(err) return err;
@@ -388,7 +388,7 @@ int8_t devVaconFC::start_FC()
 #endif // FC_USE_RCOMP
     if(err == OK) {
         SETBIT1(flags, fOnOff);
-        startCompressor = rtcSAM3X8.unixtime();
+        startCompressor = Uptime_s();
         journal.jprintf(" %s ON\n", name);
     }
     else {
@@ -431,7 +431,7 @@ int8_t devVaconFC::start_FC()
     if(err == OK) {
 xStarted:
     	SETBIT1(flags, fOnOff);
-        startCompressor = rtcSAM3X8.unixtime();
+        startCompressor = Uptime_s();
         journal.jprintf(" %s[%s] ON\n", name, Ret_Text(HP.get_ret()));
     } else {
         SETBIT1(flags, fErrFC);
@@ -444,7 +444,7 @@ xStarted:
 #endif // FC_USE_RCOMP
 xStarted:
     SETBIT1(flags, fOnOff);
-    startCompressor = rtcSAM3X8.unixtime();
+    startCompressor = Uptime_s();
     journal.jprintf(" %s ON\n", name);
 #else // DEMO
     // Боевая часть
@@ -464,7 +464,7 @@ xStarted:
     }
 xStarted:
     SETBIT1(flags, fOnOff);
-    startCompressor = rtcSAM3X8.unixtime();
+    startCompressor = Uptime_s();
     journal.jprintf(" %s ON\n", name);
 #endif //DEMO
 #endif //FC_ANALOG_CONTROL

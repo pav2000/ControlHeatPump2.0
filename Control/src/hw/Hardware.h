@@ -572,7 +572,7 @@ uint8_t initSpiDisk(boolean show);
 
 // Диагностика и управление контроллером. Определены в Board.cpp.
 void showID();                           // идентификатор чипа в журнал
-void Software_Reset();                   // программный сброс SAM3X
+void Software_Reset() __attribute__((noreturn));                   // программный сброс SAM3X
 void Reset_Controller(uint32_t reason);  // сброс с причиной RESET_*_MARK (Watchdog.h) и выгрузкой журнала
 void SupplyMonitorON(uint32_t voltage);  // монитор питания на заданном пороге
 void freeRamShow();

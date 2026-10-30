@@ -103,15 +103,20 @@ void str_replace(char *str, char find, char replace)
 
 // При ошибке возвращает магическое число -9876543.00
 //#define ATOF_ERROR -9876543.00
+// Цифры копятся целым числом, дробная часть - одним делением в конце: деление точных чисел
+// округляется правильно, и "0.001" даёт ровно 0.001f. Прежнее деление множителя на 10 после
+// каждой цифры копило ошибку: "0.001" выходило меньше 0.001f, и граница реестра SR(..., 0.001f, ...)
+// отвергала собственное значение.
 float my_atof(const char* s){
-  float rez = 0, fact = 1;
+  float rez = 0, div = 1;
+  bool neg = false;
   uint8_t digits = 0;                   // была ли хоть одна цифра
-  if (*s == '-') { s++;   fact = -1; }; // Знак минус
+  if (*s == '-') { s++;   neg = true; }; // Знак минус
   for (int point_seen = 0; *s; s++){
     if (*s == '.'){  point_seen = 1;  continue;  }; // Дробная часть
     int d = *s - '0';
     if (d >= 0 && d <= 9){
-      if (point_seen) fact /= 10.0f;
+      if (point_seen) div *= 10.0f;
       rez = rez * 10.0f + (float)d;
       digits++;
     }
@@ -122,7 +127,7 @@ float my_atof(const char* s){
   // от удалённого датчика проверяется только на диапазон, а ноль в него попадает, и
   // пустое поле записалось бы как правдоподобные 0.00 °C.
   if (!digits) return ATOF_ERROR;
-  return rez * fact;
+  return (neg ? -rez : rez) / div;
 };
 
 // Decimal (дробное приведенное к целому) в строку, precision: 1..10000
@@ -803,9 +808,11 @@ void profile_scan(const uint8_t *p, const uint8_t *p_max, uint16_t tag, uint16_t
 }
 
 // Round float * mul, mul: 10, 100, 1000
+// Округление к ближайшему, половина - от нуля. Прежде к num*mul прибавлялось 0.0005/0.005/0.05 вместо 0.5 -
+// это почти усечение: «32.767» (32766.998 во float) сохранялось как 32766.
 int16_t rd(float num, int16_t mul)
 {
-	return num * mul + (mul == 1000 ? 0.0005 : mul == 100 ? 0.005 : mul == 10 ? 0.05 : 0.0005) * (num < 0 ? -1 : 1);
+	return num * mul + (num < 0 ? -0.5f : 0.5f);
 }
 
 // format int/div value to string with decimal point
