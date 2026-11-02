@@ -27,6 +27,7 @@
 #include "../core/HeatPump.h"     // HP, датчики, PressToTemp
 #include "../hw/Hardware.h"     // eepromI2C, I2C-обёртки
 #include "Journal.h"      // journal
+#include "HistoryBlock.h"   // операции над блоком истории в ОЗУ
 #include "../net/Network.h"      // sendPacketRTOS, sendConstRTOS, переключатели SPI
 #include "../core/Rtos.h"         // _delay, замки шин, Watchdog_AliveHere
 #include "../util/Util.h"         // _itoa, my_atof, int_to_dec_str
@@ -412,7 +413,7 @@ void Statistics::Update()
 		if(SaveStats(2) == OK) {
 			Reset();
 			if(year != rtcSAM3X8.get_years()) NewYearFlag = 1; // waiting to switch a next year
-			journal.jprintf("=== %s\n", NowDateToStr()); // Новый день.
+			{ char d_[NOW_DATE_LEN]; journal.jprintf("=== %s\n", NowDateToStr(d_)); } // Новый день.
 		}
 	}
 	int32_t newval = 0;
@@ -741,7 +742,11 @@ void Statistics::SendFileData(uint8_t thread, SdFile *File, char *filename, bool
 		const uint8_t room = (W5200_MAX_LEN - readed) / SD_BLOCK;
 		uint8_t nb = SD_BlockRun(i, bend, CurrentBlock, HistoryCurrentBlock, sdMultiBlockRead ? room : 1);
 		if(nb == 0) {
-			memcpy(_buffer_ + readed, i == CurrentBlock ? stats_buffer : history_buffer, SD_BLOCK);
+			if(i == CurrentBlock) memcpy(_buffer_ + readed, stats_buffer, SD_BLOCK);
+			else if(!HistoryCopyBlock(i, _buffer_ + readed) && !card.card()->readBlock(i, _buffer_ + readed)) {   // блок истории успел уйти на карту
+				Error("read data", ID_STATS);
+				break;
+			}
 			nb = 1;
 		} else if(nb > 1 && !card.card()->readBlocks(i, _buffer_ + readed, nb)) {
 			sdMultiBlockRead = 0;                      // отказ CMD18: дальше поблочно (SD_ReadMode напишет в журнал)
@@ -827,8 +832,8 @@ void Statistics::SendFileDataByPeriod(uint8_t thread, SdFile *File, char *Prefix
 xReadBlock:
 		if(cur == CurrentBlock) {
 			memcpy(_buffer_, stats_buffer, SD_BLOCK);
-		} else if(cur == HistoryCurrentBlock) {
-			memcpy(_buffer_, history_buffer, SD_BLOCK);
+		} else if(HistoryCopyBlock(cur, _buffer_)) {
+			// текущий блок истории скопирован из ОЗУ
 		} else if(!card.card()->readBlock(cur, _buffer_)) {
 			Error("read f", ID_HISTORY);
 			return;
@@ -897,8 +902,8 @@ xGoDown:	if(cur == bst) { // low limit
 		spiBusDeselectAll();
 		if(bst == CurrentBlock) {
 			memcpy(_buffer_ + readed, stats_buffer, SD_BLOCK);
-		} else if(bst == HistoryCurrentBlock) {
-			memcpy(_buffer_ + readed, history_buffer, SD_BLOCK);
+		} else if(HistoryCopyBlock(bst, _buffer_ + readed)) {
+			// текущий блок истории скопирован из ОЗУ
 		} else if(!card.card()->readBlock(bst, _buffer_ + readed)) {
 			Error("read data", ID_HISTORY);
 			break;
@@ -1069,9 +1074,10 @@ bool Statistics::HistoryNextBlock()
 		Error("File Overflow", ID_HISTORY);
 		return false;
 	}
+	uint32_t irq = irqSave();					// номер блока, буфер и позиция меняются вместе: выгрузка из веба читает их из другой задачи
 	HistoryCurrentBlock++;
-	memset(history_buffer, 0, SD_BLOCK);
-	HistoryCurrentPos = 0;
+	HistBlock_Reset(history_buffer, SD_BLOCK, &HistoryCurrentPos);
+	irqRestore(irq);
 	return true;
 }
 
@@ -1081,16 +1087,26 @@ void Statistics::HistoryFlushPending()
 	if(GETBIT(HP.Option.flags, fHistory) && HistoryCurrentBlock != 0 && !HistoryBlockCreating && HistoryCurrentPos >= SD_BLOCK) HistoryNextBlock();
 }
 
+// Копия текущего блока истории для выгрузки. Решение «этот блок ещё в ОЗУ» и копирование - под одним запретом прерываний
+// (HistoryAppend и HistoryNextBlock меняют те же данные из задачи сервиса); false - блок уже ушёл на карту, читать оттуда.
+bool Statistics::HistoryCopyBlock(uint32_t blk, uint8_t *dst)
+{
+	uint32_t irq = irqSave();
+	bool r = HistBlock_CopyIfCurrent(history_buffer, SD_BLOCK, HistoryCurrentBlock, blk, dst);
+	irqRestore(irq);
+	return r;
+}
+
 // Дописать len байт в буфер истории; заполненный блок уходит на карту. false - блок записать не удалось
 // или файл кончился: продолжать запись сейчас нельзя, остаток этой записи потерян.
 bool Statistics::HistoryAppend(const char *data, uint16_t len)
 {
 	while(len) {
 		if(HistoryCurrentPos >= SD_BLOCK && !HistoryNextBlock()) return false;	// блок ждёт записи с прошлого раза
-		uint16_t n = SD_BLOCK - HistoryCurrentPos;
-		if(n > len) n = len;
-		memcpy(history_buffer + HistoryCurrentPos, data, n);
-		HistoryCurrentPos += n;
+		uint32_t irq = irqSave();				// копирование и сдвиг позиции неделимы для чтения выгрузки (Н-5)
+		uint16_t n = HistBlock_Append(history_buffer, SD_BLOCK, &HistoryCurrentPos, data, len);
+		irqRestore(irq);
+		if(n == 0) return false;				// блок полон и не освободился: не зацикливаться
 		data += n;
 		len -= n;
 		if(HistoryCurrentPos >= SD_BLOCK && !HistoryNextBlock()) return len == 0;	// остаток записи не поместился, сам блок дождётся

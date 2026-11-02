@@ -57,7 +57,7 @@ int8_t set_time(void)
 	if(!(HP.get_updateNTP() && set_time_NTP())) { // Обновить время по NTP
 		if(t) {
 			rtcSAM3X8.set_clock(t);                // Установить внутренние часы по i2c
-			journal.jprintf(" Time updated from I2C RTC: %s %s\n", NowDateToStr(), NowTimeToStr());
+			{ char d_[NOW_DATE_LEN], t_[NOW_TIME_LEN]; journal.jprintf(" Time updated from I2C RTC: %s %s\n", NowDateToStr(d_), NowTimeToStr(t_)); }
 		} else {
 			journal.jprintf("Error read I2C RTC\n");
 		}
@@ -155,12 +155,9 @@ boolean set_time_NTP(void)
 										if(tTCP.read() == '\r' && tTCP.read() == '\n' && tTCP.read() == '\r' && tTCP.read() == '\n') { // тело
 											memset(&NTP_buffer, 0, sizeof(NTP_buffer));
 											tTCP.read((uint8_t *)&NTP_buffer, sizeof(NTP_buffer));
-											char *p = strchr(NTP_buffer, ';');
-											if(p != NULL) {
-												*p = '\0';
-												secs = atoi(NTP_buffer);
-												if(secs) flag = 1;
-											} else flag = -7;
+											uint32_t hs = 0;
+											if(Http_ParseTime(NTP_buffer, sizeof(NTP_buffer), &hs) == NTP_PKT_OK) { secs = hs; flag = 1; }
+											else flag = -7;           // нет «;», не число или год вне 2024...2099
 											break;
 										}
 									}
@@ -174,6 +171,10 @@ boolean set_time_NTP(void)
 			if(flag > 0) break; else journal.jprintf(" Error %d\n", flag);
 		}
 	}
+	if(flag > 0 && !Ntp_JumpOk(rtcSAM3X8.unixtime(), secs + TIME_ZONE * 3600UL)) {   // как у NTP: скачок больше суток от случайного ответа календарь не трогает
+		journal.jprintf("$NTP: time jump %d s rejected (limit %d s), set the clock manually\n", (int)(secs + TIME_ZONE * 3600UL - rtcSAM3X8.unixtime()), (int) NTP_MAX_JUMP_S);
+		flag = -8;
+	}
 	if(flag > 0) {  // Обновление времени если оно получено
 		unsigned long lt = rtcSAM3X8.unixtime();
 		if(lt != secs) {
@@ -182,11 +183,11 @@ boolean set_time_NTP(void)
 		// обновились, можно и часы i2c обновить
 		setTime_RtcI2C(rtcSAM3X8.get_hours(), rtcSAM3X8.get_minutes(), rtcSAM3X8.get_seconds());
 		setDate_RtcI2C(rtcSAM3X8.get_days(), rtcSAM3X8.get_months(), rtcSAM3X8.get_years());
-		journal.jprintf("OK\n Set time from server: %s %s", NowDateToStr(), NowTimeToStr());
+		{ char d_[NOW_DATE_LEN], t_[NOW_TIME_LEN]; journal.jprintf("OK\n Set time from server: %s %s", NowDateToStr(d_), NowTimeToStr(t_)); }
 		journal.jprintf(", was: %02lu:%02lu:%02lu\n", lt % 86400L / 3600, lt % 3600 / 60, lt % 60);
 	}
 	SemaphoreGive(xWebThreadSemaphore);
-	// flag: 1 - получено, 0 - не соединились, -1 - нет ответа, -2...-7 - ответ неверный (разбор заголовка и тела)
+	// flag: 1 - получено, 0 - не соединились, -1 - нет ответа, -2...-8 - ответ неверный (разбор заголовка и тела; -8 - скачок часов больше суток)
 	ntp_done(flag > 0 ? NTP_RES_OK : flag < -1 ? NTP_RES_BADANSWER : NTP_RES_NOANSWER);
 	return flag > 0;
 }
@@ -317,48 +318,18 @@ char* TimeIntervalToStr(uint32_t idt, char *ret, uint8_t fSec)
 #endif
 }
 
-//  Получить текущее время (XX:XX:XX) в виде строки, не реентерабельна!
+//  Получить текущее время (XX:XX:XX) в buf (NOW_TIME_LEN байт)
 char* NowTimeToStr(char *buf)
 {
-	static char _tmp[9];  // Длина xx:xx:xx\0
-	if(buf == NULL) buf = _tmp;
 	uint32_t tm = RTC->RTC_TIMR;
-	uint32_t x = SAM_RTC_HOUR(tm);
-	buf[0] = '0' + x / 10;
-	buf[1] = '0' + x % 10;
-	buf[2] = ':';
-	x = SAM_RTC_MIN(tm);
-	buf[3] = '0' + x / 10;
-	buf[4] = '0' + x % 10;
-	buf[5] = ':';
-	x = SAM_RTC_SEC(tm);
-	buf[6] = '0' + x / 10;
-	buf[7] = '0' + x % 10;
-	buf[8] = '\0';
-	return buf;
+	return FormatTimeHMS(buf, SAM_RTC_HOUR(tm), SAM_RTC_MIN(tm), SAM_RTC_SEC(tm));
 }
 
-//  Получить текущую дату в виде строки xx.xx.xxxx
+//  Получить текущую дату (XX.XX.XXXX) в buf (NOW_DATE_LEN байт)
 char* NowDateToStr(char *buf)
 {
-	static char _tmp[12];  // Длина xx/xx/xxxx - 10+1 символов
-	if(buf == NULL) buf = _tmp;
 	uint32_t dt = RTC->RTC_CALR;
-	uint32_t x = SAM_RTC_DAYS(dt);
-	buf[0] = '0' + x / 10;
-	buf[1] = '0' + x % 10;
-	buf[2] = '.';
-	x = SAM_RTC_MONTH(dt);
-	buf[3] = '0' + x / 10;
-	buf[4] = '0' + x % 10;
-	buf[5] = '.';
-	x = SAM_RTC_YEARS(dt);
-	buf[6] = '0' + x / 1000;
-	buf[7] = '0' + x % 1000 / 100;
-	buf[8] = '0' + x % 100 / 10;
-	buf[9] = '0' + x % 10;
-	buf[10] = '\0';
-	return buf;
+	return FormatDateDMY(buf, SAM_RTC_DAYS(dt), SAM_RTC_MONTH(dt), SAM_RTC_YEARS(dt));
 }
 
 

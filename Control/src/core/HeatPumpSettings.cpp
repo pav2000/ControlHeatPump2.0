@@ -816,7 +816,7 @@ void HeatPump::get_datetime(char *var, char *ret)
 		NowTimeToStr(ret);
 		ret[5] = '\0';
 	} else if(strcmp(var, time_DATE) == 0) {
-		strcat(ret, NowDateToStr());
+		{ char d_[NOW_DATE_LEN]; strcat(ret, NowDateToStr(d_)); }
 	} else if(strcmp(var, time_NTP) == 0) {
 		strcat(ret, DateTime.serverNTP);
 	} else if(strcmp(var, time_UPDATE) == 0) {

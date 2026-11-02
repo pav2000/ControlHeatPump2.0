@@ -535,7 +535,6 @@ class HeatPump
    
  
     void Pumps(boolean b, uint16_t d);    // Включение/выключение насосов, задержка после включения msec
-    void Pump_HeatFloor(boolean On);	  // Включить/выключить насос ТП
     uint8_t flags;						  // Рабочие флаги ТН
 
     int16_t get_temp_condensing(void);	    // Расчитать температуру конденсации

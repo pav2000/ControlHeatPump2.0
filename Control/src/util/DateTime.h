@@ -70,9 +70,22 @@ NtpPacket Ntp_Parse(const uint8_t *p, int len, uint32_t *unix_s);
 #define NTP_MIN_UNIX     1704067200UL      // 2024-01-01 00:00:00 UTC
 #define NTP_MAX_UNIX     4102444800UL      // 2100-01-01 00:00:00 UTC
 bool Ntp_JumpOk(uint32_t cur, uint32_t now);
+// Разбор тела ответа сервера времени по HTTP (HTTP_TIME_REQUEST), формат «<секунды UTC>;». Прежде брался atoi: «12abc;» давало
+// 12 (1970 год), «abc;» - 0, а при ответе в 20 байт без «;» strchr уходил за буфер. Здесь: только цифры до «;», не больше
+// 10 цифр, значение в пределах NTP_MIN_UNIX...NTP_MAX_UNIX. Коды те же, что у Ntp_Parse: SHORT - нет «;» в len байтах,
+// NOTIME - пусто или не цифра, RANGE - число вне 2024...2099 годов.
+NtpPacket Http_ParseTime(const char *buf, int len, uint32_t *unix_s);
 
 // ---- Clock.cpp: читают часы ----
-char* NowTimeToStr(char *buf = NULL);                 // текущее время "xx:xx:xx"
-char* NowDateToStr(char *buf = NULL);                 // текущая дата "xx.xx.xxxx"
+// Буфер обязателен и свой у каждого вызова: прежде при buf == NULL функции писали в общую статическую строку, и две
+// задачи, вызвавшие их одновременно (set_Error из ReadSensor и письмо из Web0), портили друг другу время (Н-4).
+#define NOW_TIME_LEN  9                               // "xx:xx:xx" + 0
+#define NOW_DATE_LEN  11                              // "xx.xx.xxxx" + 0
+char* NowTimeToStr(char *buf);                        // текущее время "xx:xx:xx" в buf (NOW_TIME_LEN байт), возвращает buf
+char* NowDateToStr(char *buf);                        // текущая дата "xx.xx.xxxx" в buf (NOW_DATE_LEN байт), возвращает buf
+
+// Само форматирование без чтения часов (проверяется на ПК): число полей берётся по модулю 100 / 10000
+char* FormatTimeHMS(char *buf, uint8_t h, uint8_t m, uint8_t s);        // "hh:mm:ss"
+char* FormatDateDMY(char *buf, uint8_t d, uint8_t mo, uint16_t y);      // "dd.mm.yyyy"
 
 #endif

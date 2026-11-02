@@ -47,6 +47,10 @@
 #define SCHDLR_Profile_off   -1     // пустой календарь или пауза
 #define SCHDLR_KeepProfile  -128    // оставить профиль, который работает сейчас
 
+// Нужно ли сменить рабочий профиль по расписанию: расписание назвало профиль (не пауза и не выключено) и он не тот,
+// что работает. Одно решение для старта ТН и для основного цикла (Н-18); сама смена - HeatPump::switch_profile.
+bool Scheduler_NeedProfileSwitch(int8_t active, int8_t current);
+
 // Смещение расписания номер num в общем буфере. При выходе за буфер
 // возвращает size-1 - так же, как Scheduler::Timetable_ptr.
 uint16_t Scheduler_TimetablePtr(const uint8_t *timetable, uint16_t size, uint8_t num);

@@ -55,6 +55,23 @@ NtpPacket Ntp_Parse(const uint8_t *p, int len, uint32_t *unix_s)
 	return NTP_PKT_OK;
 }
 
+NtpPacket Http_ParseTime(const char *buf, int len, uint32_t *unix_s)
+{
+	uint64_t v = 0;
+	int n = 0;
+	while(n < len && buf[n] != ';') {
+		if(buf[n] < '0' || buf[n] > '9') return NTP_PKT_NOTIME;
+		if(n >= 10) return NTP_PKT_RANGE;                               // больше 10 цифр: 2286 год и дальше
+		v = v * 10 + (uint8_t)(buf[n] - '0');
+		n++;
+	}
+	if(n >= len) return NTP_PKT_SHORT;                                  // «;» не нашли
+	if(n == 0) return NTP_PKT_NOTIME;
+	if(v < NTP_MIN_UNIX || v >= NTP_MAX_UNIX) return NTP_PKT_RANGE;
+	*unix_s = (uint32_t) v;
+	return NTP_PKT_OK;
+}
+
 bool Ntp_JumpOk(uint32_t cur, uint32_t now)
 {
 	if(cur < NTP_MIN_UNIX) return true;                                 // часы не выставлены
@@ -265,4 +282,32 @@ char*  StatDate(uint32_t idt,bool forma,char *ret)
  else
     {_itoa(days + 1,ret);strcat(ret,"/");_itoa(month+1,ret);strcat(ret,"/");_itoa(year,ret); }
  return ret;   
+}
+
+// Две цифры числа 0..99 в buf[0..1]
+static void put2(char *buf, uint8_t v)
+{
+	buf[0] = '0' + v / 10 % 10;
+	buf[1] = '0' + v % 10;
+}
+
+char* FormatTimeHMS(char *buf, uint8_t h, uint8_t m, uint8_t s)
+{
+	put2(buf, h); buf[2] = ':';
+	put2(buf + 3, m); buf[5] = ':';
+	put2(buf + 6, s);
+	buf[8] = '\0';
+	return buf;
+}
+
+char* FormatDateDMY(char *buf, uint8_t d, uint8_t mo, uint16_t y)
+{
+	put2(buf, d); buf[2] = '.';
+	put2(buf + 3, mo); buf[5] = '.';
+	buf[6] = '0' + y / 1000 % 10;
+	buf[7] = '0' + y / 100 % 10;
+	buf[8] = '0' + y / 10 % 10;
+	buf[9] = '0' + y % 10;
+	buf[10] = '\0';
+	return buf;
 }

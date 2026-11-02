@@ -473,7 +473,8 @@ void checkSockStatus()
     if(SockJanitor_Step(&connectTime[i], &connectPort[i], candidate ? W5100.readSnDPORT(i) : connectPort[i], candidate, inUse, thisTime, HP.time_socketRes()*1000UL)) {
       {   // что именно застряло: состояние, непринятые байты, клиент. Остаточные случаи под нагрузкой надо разбирать по этой строке
         uint8_t dip[4]; W5100.readSnDIPR(i, dip);
-        journal.jprintf("%s : Socket frozen: %d (state %02X, rx %d, %d.%d.%d.%d:%d)\n", NowTimeToStr(), i, W5100.readSnSR(i), (int) W5100.getRXReceivedSize(i), dip[0], dip[1], dip[2], dip[3], (int) W5100.readSnDPORT(i));
+        char tb[NOW_TIME_LEN];
+        journal.jprintf("%s : Socket frozen: %d (state %02X, rx %d, %d.%d.%d.%d:%d)\n", NowTimeToStr(tb), i, W5100.readSnSR(i), (int) W5100.getRXReceivedSize(i), dip[0], dip[1], dip[2], dip[3], (int) W5100.readSnDPORT(i));
       }
       W5100.execCmdSn(i, Sock_CLOSE);
       W5100.writeSnIR(i, 0xFF);

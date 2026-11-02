@@ -79,9 +79,8 @@ extern PubSubClient w5200_MQTT;
 char *get_stateMQTT();
 
 // Отправители телеметрии. Определены в Telemetry.cpp, вызываются из Control.ino.
-// Все четыре существуют только при определённом MQTT - под этим же условием
+// Все три существуют только при определённом MQTT - под этим же условием
 // стоят и вызовы. Аргумент debug просит вывести отправляемое в журнал.
-boolean sendNarodMon(boolean debug);
 boolean sendNarodMon2022(boolean debug);
 boolean sendMQTT(boolean debug);
 boolean sendThingSpeak(boolean debug);

@@ -30,6 +30,7 @@
 #include "../core/Rtos.h"          // _delay, замки шин
 #include "../net/ParamRegistry.h"   // таблица параметров веб-API (внизу файла)
 #include "BusOneWire.h"            // OW_scanTable
+#include "SensorPick.h"            // выбор значения с удалённым датчиком
 // ---------------------------------------------------------------------------
 // ---- Цифровые датчики температуры ----
  // Инициализация на входе номер датчика
@@ -67,10 +68,26 @@ void sensorTemp::initTemp(int sensor)
  }
 
 
+// Потеря и возвращение привязанного удалённого датчика: по одной строке в журнал. ТН не останавливается (С-5): значение
+// выбирает Sensor_Pick, а вернувшийся датчик снова используется сам, потому что свежесть считается от последнего пакета.
+void sensorTemp::WatchIP()
+{
+#ifdef SENSOR_IP
+	bool linked = devIP && devIP->get_fUse() && devIP->get_link() > -1;
+	bool lost = GETBIT(flags, fIpLost);
+	uint8_t e = Sensor_IpEdge(&lost, linked, linked && devIP->get_got(), linked && devIP->get_update() <= UPDATE_IP);
+	if(e == SIE_NONE) return;
+	if(lost) SETBIT1(flags, fIpLost); else SETBIT0(flags, fIpLost);
+	if(e == SIE_LOST) journal.jprintf_time("$Warning: IP sensor of %s: no data for %d s, using %s %.2d\n", name, (int) UPDATE_IP, GETBIT(flags, fAddress) ? "wire" : "last IP value", get_Temp());
+	else journal.jprintf_time("IP sensor of %s: restored\n", name);
+#endif
+}
+
 // Чтение датчиков температуры, возвращает код ошибки, делает все преобразования
 int8_t sensorTemp::Read() 
 {  
 	if(!(GETBIT(flags, fPresent))) return OK;          // датчик запрещен в конфигурации ничего не делаем
+	WatchIP();                                         // потеря и возвращение удалённого датчика - в журнал; ТН при этом не останавливается
 	if(testMode!=NORMAL) lastTemp=cfg.testTemp;             // В режиме теста присвоить значение теста
 	else {                                              // Чтение датчиков
 #ifdef DEMO
@@ -160,14 +177,18 @@ int8_t sensorTemp::set_errTemp(int16_t t)
 int16_t sensorTemp::get_Temp()            
 {
  #ifdef SENSOR_IP                                       // используется удаленные датчики
- int16_t t;
  if (!(GETBIT(flags,fPresent))) return 0;               // проводной датчик запрещен в конфигурации ничего не делаем
  if( devIP && (devIP->get_fUse())&&(devIP->get_link()>-1))       // Удаленный датчик привязан к данному проводному датчику надо использовать
    {
-    if (devIP->get_update()>UPDATE_IP)  return Temp;    // Время просрочено, удаленный датчик не используем
-    t=devIP->get_Temp();                                // Получить значение температуры удаленного датчика
-    if ((devIP->get_fRule())) return (t+Temp)/2;          // Усреднение датчиков
-    else return t;                                      // Использование только удаленного датчика
+    SensorPickIn in;                                    // выбор значения - чистая функция (SensorPick.h): свежий IP, откат на провод,
+    in.linked = true;                                   // а без провода - последнее показание IP, а не 0 и не тестовое значение
+    in.got = devIP->get_got();
+    in.fresh = devIP->get_update() <= UPDATE_IP;
+    in.has_wire = GETBIT(flags, fAddress);
+    in.avg = devIP->get_fRule();
+    in.wire = Temp;
+    in.ip = devIP->get_Temp();
+    return Sensor_Pick(in, NULL);
    }
   else return Temp;                                     // датчик не привязан
  #else                                                  // При отсутствии удалённых датчиков сразу выводим проводной датчик
@@ -251,6 +272,7 @@ void sensorIP::initIP(uint8_t sensor)
     VCC=0;                       // Уровень напряжениея питания датчика (мВ)
     count=0;                     // Кольцевой счетчик пакетов с момента включения контрола
     stime=0;                     // Время получения последнего пакета
+    got=false;                   // пакетов ещё не было
     cfg.flags=0;                     // флаги
     cfg.link=-1;                     // датчик не привязан
 }
@@ -264,6 +286,7 @@ RSSI=c;                        // Уровень сигнала датчика (
 VCC=d;                         // Уровень напряжениея питания датчика (мВ)
 count=e;                       // Кольцевой счетчик пакетов с момента включения контрола
 stime=Uptime_s();    // Время получения последнего пакета
+got=true;
 ip=f;   
 return true;      
 }
@@ -315,7 +338,7 @@ static const ApiParam apiTempTab[] = {
 	TA("esum",    PF_RO, MK_INT,  T_ESUM),      // число ошибок чтения с момента перезагрузки
 	TA("present", PF_RO, MK_BOOL, T_PRESENT),
 	TA("note",    PF_RO, MK_TEXT, T_NOTE),
-	TA("addr",    0,     MK_STR,  T_ADDR),      // чтение: адрес OneWire или null; запись: номер из последнего сканирования (0 - отвязать)
+	TA("addr",    PF_OFF, MK_STR, T_ADDR),      // чтение: адрес OneWire или null; запись: номер из последнего сканирования (0 - отвязать); только при остановленном ТН (С-5)
 	TA("bus",     PF_RO, MK_INT,  T_BUS),       // номер шины или null, если датчик не привязан
 	TA("flag1",   0,     MK_BOOL, T_F1),        // игнорировать ошибки датчика
 	TA("flag2",   0,     MK_BOOL, T_F2),        // не логировать ошибки
@@ -388,7 +411,7 @@ static const ApiParam apiIpTab[] = {
 	{ "count", 0, 0, 0, 0, 1,    PT_CALL, PF_RO, MK_INT,  I_COUNT, 0 },
 	{ "use",   0, 0, 0, 0, 1,    PT_CALL, 0,     MK_BOOL, I_USE,   0 },       // использовать датчик
 	{ "rule",  0, 0, 0, 0, 1,    PT_CALL, 0,     MK_BOOL, I_RULE,  0 },       // усреднять с проводным (иначе заменять)
-	{ "link",  0, 0, 0, 0, 1,    PT_CALL, 0,     MK_STR,  I_LINK,  0 },       // имя температурного датчика, с которым связан; пусто - не связан
+	{ "link",  0, 0, 0, 0, 1,    PT_CALL, PF_OFF, MK_STR, I_LINK,  0 },       // имя температурного датчика, с которым связан; пусто - не связан; только при остановленном ТН (С-5)
 };
 static uint8_t api_ip_n(void) { return IPNUMBER; }
 static const char *api_ip_name(uint8_t i) { static const char *const n[] = { "1", "2", "3", "4", "5", "6", "7", "8" }; return n[i]; }   // const

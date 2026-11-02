@@ -632,7 +632,8 @@ void Nextion::Update()
 void Nextion::StatusLine()
 {
 	// Вычисление статуса
-	char *tm = NowTimeToStr();
+	char tm_[NOW_TIME_LEN];
+	char *tm = NowTimeToStr(tm_);
 	uint16_t newcrc = calc_crc16((uint8_t*)tm, 5);
 	newcrc = _crc16(newcrc, HP.get_errcode());
 	newcrc = _crc16(newcrc, HP.get_modeHouse());

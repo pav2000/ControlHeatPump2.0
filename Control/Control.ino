@@ -808,10 +808,9 @@ x_I2C_init_std_message:
 	} else journal.jprintf("not available\n");
 
 	int8_t _profile = HP.Schdlr.calc_active_profile();
-	if(_profile > SCHDLR_Profile_off && _profile != HP.Prof.get_idProfile()) {
-		HP.Prof.load(_profile);
-		HP.set_profile();
-		journal.jprintf("Profile changed to #%d\n", _profile);
+	if(Scheduler_NeedProfileSwitch(_profile, HP.Prof.get_idProfile())) {
+		if(HP.switch_profile(_profile) >= 0) journal.jprintf("Profile changed to #%d\n", _profile);
+		else journal.jprintf("Error load profile #%d\n", _profile);
 	}
 
 	if(HP.get_SaveON()==0)  HP.set_HP_OFF();    // Сбросить флаг включение ТН если стоит соответсвующий флаг в опциях
@@ -1335,7 +1334,7 @@ void vReadSensor(void *)
 				uint32_t t = TimeToUnixTime(getTime_RtcI2C());       // Прочитать время из часов i2c тут проблема
 				if(t) {
 					rtcSAM3X8.set_clock(t);                		 // Установить внутренние часы по i2c; интервалы по Uptime_s сдвига не требуют
-					journal.jprintf((const char*) "Sync from I2C RTC: %s %s\n", NowDateToStr(), NowTimeToStr());
+					{ char d_[NOW_DATE_LEN], t_[NOW_TIME_LEN]; journal.jprintf((const char*) "Sync from I2C RTC: %s %s\n", NowDateToStr(d_), NowTimeToStr(t_)); }
 				} else {
 					journal.jprintf("Error read I2C RTC\n");
 				}
@@ -1834,7 +1833,6 @@ void vServiceHP(void *)
 				uint8_t act = ClimatePumpPauseStep(&sp, &pump_in_pause_timer, HP.get_workPump(), HP.get_pausePump());
 				if(act != RELAY_KEEP) {
 					relayAct(HP.dRelay[PUMP_OUT], act);              // насос отопления (плановое, пауза ТН)
-					HP.Pump_HeatFloor(act == RELAY_ON_PLAN);         // насос ТП
 					HP.startPump = sp;
 				}
 			}

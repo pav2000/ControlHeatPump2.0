@@ -845,7 +845,7 @@ boolean Message::sendMail()
 	smtpWriteBody(tempBuf);
 	m_snprintf(tempBuf, LEN_TEMPBUF, "Конфигурация: %s (%s)", CONFIG_NAME, CONFIG_NOTE);
 	smtpWriteBody(tempBuf);
-	m_snprintf(tempBuf, LEN_TEMPBUF, "Создание уведомления: %s %s", NowDateToStr(), NowTimeToStr());
+	{ char d_[NOW_DATE_LEN], t_[NOW_TIME_LEN]; m_snprintf(tempBuf, LEN_TEMPBUF, "Создание уведомления: %s %s", NowDateToStr(d_), NowTimeToStr(t_)); }
 	smtpWriteBody(tempBuf);
 	smtpWriteBlock(cur().data);        // само уведомление, буфер не изменяется (его ждет еще sendSMS)
 

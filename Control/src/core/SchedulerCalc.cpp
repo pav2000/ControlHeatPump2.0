@@ -176,3 +176,8 @@ bool Scheduler_NeedRestart(int32_t new_mode, uint8_t cur_mode)
 	return new_mode != SCHDLR_MODE_OFF && cur_mode != SCHDLR_MODE_OFF && (cur_mode & (SCHDLR_MODE_HEAT | SCHDLR_MODE_COOL))
 			&& (cur_mode & (SCHDLR_MODE_HEAT | SCHDLR_MODE_COOL)) != (new_mode & (SCHDLR_MODE_HEAT | SCHDLR_MODE_COOL));
 }
+
+bool Scheduler_NeedProfileSwitch(int8_t active, int8_t current)
+{
+	return active > SCHDLR_Profile_off && active != current;
+}

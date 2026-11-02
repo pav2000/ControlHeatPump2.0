@@ -97,12 +97,13 @@ void set_Error(int8_t _err, char *nam)
 	// Занять поле ошибки одной атомарной операцией: задачи с разными приоритетами зовут set_Error одновременно,
 	// и проверка с записью по отдельности давали две записи в source_error/note_error и двойной process_error
 	if(Error_Claim(&HP.error, _err)) {
+		char tmbuf[NOW_TIME_LEN];                    // свой буфер: общей статической строки у времени больше нет (Н-4)
 		// Сборка строки "<время> <источник>: <описание>" делается в ErrorCodes:
 		// там же лежит расшифровка кода, и там она проверяется на хосте -
 		// вместе с обрезкой по границам буферов.
 		Error_Store(HP.source_error, sizeof(HP.source_error),
 		            HP.note_error,   sizeof(HP.note_error),
-		            NowTimeToStr(), nam, _err);
+		            NowTimeToStr(tmbuf), nam, _err);
 		journal.jprintf_time("$ERROR source: %s, code: %d\n", nam, _err);
 		if(xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) HP.save_DumpJournal(true); // вывод отладочной информации для начала  если запущена freeRTOS
 		HP.message.setMessage(pMESSAGE_ERROR, HP.note_error, _err); // уведомление об ошибке; повтор узнаётся по коду
@@ -498,19 +499,15 @@ boolean HeatPump::switchBoiler(boolean b)
 	journal.jprintf(" swBoiler(%d): %X, mW:%d\n", b, onBoiler, get_modWork());
 #ifdef R3WAY
 	dRelay[R3WAY].set_Relay(b);            // Установить в нужное положение 3-х ходового
-	Pump_HeatFloor(b);
 #else // Нет трехходового - схема с двумя насосами
 	// ставим сюда код переключения ГВС/отопление в зависимости от onBoiler=true - ГВС
 	if(b) { // переключение на ГВС
-		Pump_HeatFloor(false);		 // выключить насос ТП
 		dRelay[RPUMPO].set_OFF();    // файнкойлы выключить
 		
 	} else { // Переключение с ГВС на Отопление/охлаждение идет анализ по режиму работы дома
 		if((Status.modWork != pOFF) && (get_modeHouse() != pOFF) && (get_State() != pSTOPING_HP)) { // Если не пауза И отопление/охлаждение дома НЕ выключено И нет процесса выключения ТН то надо включаться
 			dRelay[RPUMPO].set_ON();     // файнкойлы
-			Pump_HeatFloor(true);
 		} else { // пауза ИЛИ работа дома не задействована - все выключить
-			Pump_HeatFloor(false);
 			dRelay[RPUMPO].set_OFF();     // файнкойлы
 		}
 	}
@@ -525,8 +522,6 @@ boolean HeatPump::switchBoiler(boolean b)
 // Проверка и если надо включение EVI если надо то выключение возвращает состояние реле
 // Если реле нет то ничего не делает возвращает false
 // Проверяет паузу 60 секунд после включения компрессора, и только после этого начинает управлять EVI
-
-void HeatPump::Pump_HeatFloor(boolean) { }
 
 // Включить или выключить насосы контуров и то что требуется для ГВС (трех-ходовой или насос) первый параметр их желаемое состояние
 // Второй параметр параметр задержка после включения/выключения мсек. отдельного насоса (борьба с помехами)
@@ -580,7 +575,6 @@ if(b && (get_modWork() & pBOILER)){
    	if(!b) {
    		SETBIT0(flags, fHP_BoilerTogetherHeat);
    	}
-  	Pump_HeatFloor(b); 				  				// насос ТП
 
 }
 // Сброс инвертора если он стоит в ошибке, проверяется наличие инвертора и проверка ошибки после сброса
@@ -702,10 +696,9 @@ xGoWait:
 		Wake_UpdateHP();
 		return;
 #endif			
-		} else if(profile != Prof.get_idProfile()) {
-			Prof.load(profile);
-			set_profile();
-			journal.jprintf("Profile changed to #%d\n", profile);
+		} else if(Scheduler_NeedProfileSwitch(profile, Prof.get_idProfile())) {
+			if(switch_profile(profile) >= 0) journal.jprintf("Profile changed to #%d\n", profile);
+			else journal.jprintf("Error load profile #%d\n", profile);
 		}
 	}
 	if(startWait) {
