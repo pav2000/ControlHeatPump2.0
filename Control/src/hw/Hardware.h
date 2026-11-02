@@ -32,6 +32,8 @@
 #include "../net/MQTT.h"
 #include "BusOneWire.h"
 #include "../core/Safety.h"                 // биты состояния реле fR_Status* 
+#include "../core/EEVHybrid.h"             // биты флагов ЭРВ (гибрид, старт по частоте), настройки гибрида
+#include <stddef.h>                         // offsetof для проверок формата EEPROM
 
 #include "../core/Device.h"   // общие флаги датчиков, часы, set_Error
 
@@ -235,18 +237,22 @@ private:
 #define fStartFlagPos    		7   // флаг Всегда начинать работу ЭРВ со стратовой позици
 #define fPID_PropOnMeasure		8   // ПИД пропорционально измерению (Proportional on Measurement), иначе пропорционально ошибке (Proportional on Error)
 #define fEEV_StartPosByTemp		9	// Стартовая позиция ЭРВ определяется по температуре подачи (пропорционально между EEV_START_POS_LOW_TEMP=StartPos и EEV_START_POS_HIGH_TEMP=PosAtHighTemp)
-#define fEEV_DirectAlgorithm	10	// Прямое управление ЭРВ без ПИД
+// Бит 10 - прежнее «прямое управление» - удалён и НЕ ПЕРЕИСПОЛЬЗУЕТСЯ (EEV_FLAGBIT_DIRECT_OLD): в старых файлах он может быть установлен
+#define fEEV_Hybrid				EEV_FLAGBIT_HYBRID		// Алгоритм «Гибрид» (иначе ПИД)
+#define fEEV_StartPosByFreq		EEV_FLAGBIT_STARTFREQ	// Стартовая позиция по стартовой частоте инвертора (приоритет над «по температуре подачи»)
 
 // Настройки ЭРВ, формат хранения (EEPROM). Тип вынесен из класса, чтобы таблица параметров веб-API видела смещения полей.
 struct type_settingsEEV {                      // Первая переменная => timeIn
 	uint16_t pid_time;        				// Период расчета ПИД в секундах
 	PID_STRUCT pid;                         // Настройки и переменные ПИД регулятора
-	int16_t  pid2_delta;					// Дельта для консервативных вычислений ПИДа
-	int16_t	 Correction;                     // Величина корректировки перегрева (систематическая ошибка расчета перегрева)
+	int16_t  pid_zone;						// Зона вокруг цели, где уменьшается пропорциональная составляющая ПИД, сотые градуса (eev.p2d)
+	int16_t	 Correction;                    // Величина корректировки перегрева (систематическая ошибка расчета перегрева)
 	int16_t	 manualStep;                     // Число шагов открытия ЭРВ для правила работы ЭРВ «Manual»
 	uint8_t  _reserved1;                    // было: Тип фреона
 	RULE_EEV  ruleEEV;                       // правило работы ЭРВ
-	PID_STRUCT pid2;						// Консервативный ПИД
+	int16_t  hyb_Kc100;						// Гибрид: усиление, шагов на 1 K, сотые доли (было: Kp консервативного ПИД)
+	uint16_t hyb_Ti;						// Гибрид: время интегрирования, с (было: Ki)
+	int16_t  hyb_ohMin100;					// Гибрид: нижний перегрев для защиты, сотые градуса, 0 - выкл. (было: Kd)
 	uint16_t OHCor_Period;					// Период расчета корректировки перегрева в циклах ЭРВ
 	int16_t  OHCor_TDIS_TCON_Thr;			// Порог, после превышения которого начинаем менять перегрев, в сотых градуса
 	int16_t	 OverheatMin;					// Минимальный перегрев (сотые градуса)
@@ -269,13 +275,17 @@ struct type_settingsEEV {                      // Первая переменн�
 	uint16_t flags;                         // флаги ЭРВ
 	uint16_t pid_max;						// ограничение ПИД в шагах ЭРВ
 	uint16_t PosAtHighTemp;					// Положение при EEV_START_POS_HIGH_TEMP
-	int16_t  tOverheatTCOMP;				// Целевой перегрев2 TCOMPIN-T[PEVA]
-	int16_t  tOverheatTCOMP_delta;			// Дельта целевого перегрева2 TCOMPIN-T[PEVA]
-	int8_t   trend_threshold;				// Порог детектирования тренда
-	uint16_t trend_mul_threshold;			// Порог для *2, сотые градуса
-	int16_t  tOverheat2_low;				// Нижняя граница перегрева 2 для быстрого закрытия ЭРВ
-	int16_t  tOverheat2_low_hyst;			// Гистерезис для tOverheat2_low
+	int16_t  hyb_kff100;					// Гибрид: подача по частоте, сотые доли, 0 - выкл. (было: целевой перегрев 2)
+	int16_t  hyb_ffMax;						// Гибрид: предел подачи за период, шагов (было: дельта целевого перегрева 2)
+	int8_t   _reserved2;					// было: порог тренда прямого управления; не использовать
+	uint16_t _reserved3;					// было: порог для *2; не использовать
+	int16_t  sphz100;						// Старт по частоте: шагов на герц стартовой частоты (отопление, охлаждение), сотые доли (было: нижняя граница перегрева 2)
+	int16_t  sphzb100;						// То же для ГВС (было: гистерезис нижней границы)
 };
+// Размер и смещения - формат EEPROM: поля гибрида лежат на местах прежних полей прямого управления, менять нельзя
+static_assert(offsetof(type_settingsEEV, hyb_Kc100) == 16 && offsetof(type_settingsEEV, hyb_Ti) == 18 && offsetof(type_settingsEEV, hyb_ohMin100) == 20, "формат EEPROM: усиление, Ti, защита гибрида на месте прежнего pid2");
+static_assert(offsetof(type_settingsEEV, hyb_kff100) == 58 && offsetof(type_settingsEEV, hyb_ffMax) == 60, "формат EEPROM: подача по частоте на месте прежнего перегрева 2");
+static_assert(offsetof(type_settingsEEV, sphz100) == 66 && offsetof(type_settingsEEV, sphzb100) == 68, "формат EEPROM: коэффициенты старта на месте прежних границ перегрева 2");
 
 class devEEV
 {
@@ -355,6 +365,9 @@ private:
 	int8_t stepUp();                                       // 1 Шаг в плюс возвращает код ошибки
 
 	PID_WORK_STRUCT pidw;  								// переменные пид регулятора
+	EevHybridState hybState;                             // переменные гибрида (накопитель дробных шагов, прошлые значения)
+	void hybParams(EevHybridParams *p);                  // параметры гибрида из настроек
+	void hybDefaults();                                  // умолчания гибрида и старта по частоте (по ходу клапана)
 	int16_t Overheat;                                    // Перегрев текущий (сотые градуса)
 	int16_t OHCor_tdelta;								 // Расчитанная целевая дельта Нагнетание-Конденсации
 	int16_t OHCor_tdelta_prev;							 // Расчитанная целевая дельта Нагнетание-Конденсации

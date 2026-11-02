@@ -760,11 +760,11 @@ const Analog_setup AnalogSetup[ANUMBER] = {
      
 	// Значения по умолчанию (можно менять из морды)
 	#define DEFAULT_RULE_EEV       TEVAOUT_PEVA   // Формула по умолчанию - TEVAOUT_PEVA
-	#define DEFAULT_EEV_TIME	   50			  // Постоянная интегрирования времени в секундах ЭРВ СЕКУНДЫ
+	#define DEFAULT_EEV_TIME	   30			  // Постоянная интегрирования времени в секундах ЭРВ СЕКУНДЫ
 	#define DEFAULT_OVERHEAT       310			  // Перегрев по умолчанию (сотые градуса)
-	#define DEFAULT_EEV_Kp	       2500			  // ПИД Коэф пропорц.  В ТЫСЯЧНЫХ
-	#define DEFAULT_EEV_Ki	       800			  // ПИД Коэф интегр.   В ТЫСЯЧНЫХ
-	#define DEFAULT_EEV_Kd	       900			  // ПИД Коэф дифф.     В ТЫСЯЧНЫХ
+	#define DEFAULT_EEV_Kp	       100			  // ПИД Коэф пропорц.  в сотых долях (100 = 1,0); initEEV переводит в тысячные
+	#define DEFAULT_EEV_Ki	       40			  // ПИД Коэф интегр.   в сотых долях (40 = 0,4)
+	#define DEFAULT_EEV_Kd	       0			  // ПИД Коэф дифф.     в сотых долях (0 - выключена, на ЭРВ не влияет)
     #define DEFAULT_ERR_KP         0              // Ошибка (в сотых градуса) при которой происходит уменьшение пропорциональной составляющей ПИД ЭРВ
     #define DEFAULT_SPEED_EEV      80             // Скорость шагового двигателя ЭРВ (импульсы в сек.)
     #define DEFAULT_PRE_START_POS  100            // ПУСКОВАЯ позиция ЭРВ (ТО что при старте компрессора ПРИ РАСКРУТКЕ)

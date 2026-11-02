@@ -54,21 +54,11 @@ struct PID_STRUCT {   		// Настройки ПИД регулятора
 } __attribute__((packed));
 
 
-#define trOH_default	2
-#define trOH_TCOMP		3
-
 struct PID_WORK_STRUCT {	// Переменные ПИД регулятора
-	union {
-		int32_t sum;		// сумма
-		int16_t pre_err2[2];// i=0
-		int8_t  trend[4];	// i=trOH_*
-	};
+	int32_t sum;			// сумма
 	int16_t pre_err;		// предыдущая ошибка для дифференцирования
 	int32_t max;
-	union {
-		int16_t Kp_dmin;	// Разница (в сотых градуса) при которой происходит уменьшение пропорциональной составляющей ПИД ЭРВ
-		uint8_t hyst[2];	// i=0..1
-	};
+	int16_t Kp_dmin;		// Разница (в сотых градуса) при которой происходит уменьшение пропорциональной составляющей ПИД ЭРВ
 };
 
 #endif

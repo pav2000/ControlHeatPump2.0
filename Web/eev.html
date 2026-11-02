@@ -17,52 +17,127 @@
 .mode{display:inline-flex;background:var(--seg);border-radius:12px;padding:3px}
 .mode a{padding:7px 16px;border-radius:9px;font-weight:700;font-size:13px;color:var(--mute);cursor:pointer}
 .mode a.on{background:var(--card);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.12)}
-.tiles.t2{grid-template-columns:1fr 1fr}
+.tiles.t3 .tile{padding:6px 10px}.tiles.t3 .tile b{font-size:17px}.tiles.t3 .tile i{font-size:10px}
+.tiles.t3{gap:6px;margin-bottom:4px}
+.tight{padding:6px 0}.tight .l small{display:none}
+.two{display:grid;grid-template-columns:1fr 1fr;column-gap:18px}
+.sens{margin-top:2px;font-size:12.5px}
+.sens summary{cursor:pointer;color:var(--acc);font-weight:700}
+.sens td{padding:5px 6px;font-size:12px;vertical-align:top}.sens td:first-child{font-weight:800;white-space:nowrap}
+.prow{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+.alg{display:none}.alg.on{display:contents}
+.pbox.cp{padding:8px 10px;flex:1 1 150px;min-width:0}
+.pbox.cp.wd{flex:1 1 300px}
+.pbox.cp b{font-size:12px;margin-bottom:5px;line-height:1.25;min-height:2.5em}
+.pbox.cp .inp{padding:6px 8px}
+.pbox.cp small{margin-top:4px;font-size:11px}
+.pbox.cp.wd{display:grid;grid-template-columns:1fr 140px;grid-template-areas:"t t" "d i" "d r";column-gap:16px;align-items:start}
+.pbox.cp.wd b{grid-area:t;min-height:0}
+.pbox.cp.wd .inp{grid-area:i}
+.pbox.cp.wd small{grid-area:r}
+.pbox.cp.wd .dsc{grid-area:d;color:var(--mute);font-size:12px;line-height:1.45;align-self:start}
+.pbox.cp.wd .dsc b{color:var(--ink);display:inline;font-size:12px;margin:0}
+@media(max-width:760px){.pbox.cp.wd{grid-template-columns:1fr;grid-template-areas:"t" "i" "r" "d"}.pbox.cp.wd .dsc{margin-top:6px}}
+.recs{display:none;align-items:center;gap:10px;flex-wrap:wrap;margin-top:0;padding:7px 12px;background:var(--bg);border-radius:14px;font-size:12.5px}
+.recs.on{display:flex}
+.recs span.m{color:var(--mute)}
+.adesc{color:var(--mute);font-size:12px;font-weight:600;margin-left:14px;text-transform:none;letter-spacing:0}
+.algb{display:none}.algb.on{display:inline}
 </style>
 <script>
 // ЭРВ (Работа): график перегрева (chartLoad OH), цели (OH2), положения (EEV) и разницы нагнетание - конденсация (TT);
-// ряды графиков пока по прежнему протоколу (chart.js), остальное - /api; текущие значения опрашиваются раз в 2 с; параметры ПИД правятся пакетом. Положение вручную - действием, с подтверждением.
+// ряды графиков пока по прежнему протоколу (chart.js), остальное - /api; текущие значения опрашиваются раз в 2 с; параметры регулятора правятся пакетом.
+// Положение вручную - действием, с подтверждением. Алгоритмов два: ПИД и Гибрид (ключ eev.hyb, скрытый переключатель k-eev-hyb): блок параметров
+// выбранного алгоритма показан во второй строке карточки «Регулирование», общие параметры (период, цель, ограничение за итерацию) - в первой.
 // Это график ПЕРЕГРЕВА по меткам памяти контроллера (шаг - TIME_CHART), поэтому время считается от последней точки.
 urlupdate = 2000;
 
-var unit = 'шаги', dir = false, step = 30, range = 180, chart = null, data = {}, on = {oh: 1, trg: 1, pos: 1, tt: 0}, auto = null, cur = {};
+// range 0 - весь буфер (по умолчанию)
+var unit = 'шаги', hyb = false, step = 30, range = 0, chart = null, data = {}, on = {oh: 1, trg: 1, pos: 1, tt: 0}, auto = null, cur = {}, maxSteps = 480;
 var SER = {oh: ['Перегрев', '#f2762e', 'K'], trg: ['Цель', '#8a6fd1', 'K'], pos: ['Положение', '#2f7fd1', ''], tt: ['Нагнетание − конденсация', '#d64545', 'K']};
 var CMD = {oh: 'OH', trg: 'OH2', pos: 'EEV', tt: 'TT'};
 
-function pbox(key, t, o) {
-	var id = stKid(key);
-	return '<div class="pbox" id="b-' + id + '"><b>' + t + (o.n ? '<span class="hint" tabindex="0" data-tip="' + stEsc(o.n) + '">i</span>' : '') + '</b><label class="inp"><input type="number" id="' + id + '" data-k="' + key + '"' + stNumAttrs(o) + '>' + (o.u ? '<u>' + o.u + '</u>' : '') + '</label>' + (o.h ? '<small>' + o.h + '</small>' : '') + '</div>';
+// Параметры регулятора: [ключ, подпись, {границы и шаг как в прошивке (meta сужает поле, если страница шире), n - подсказка, x - добавка под полем}]
+var P_COMMON = [
+	['eev.time', 'Период расчёта, с', {min: 1, max: 1000, step: 1, n: 'Период расчёта регулятора: раз в столько секунд вентиль получает новое положение.',
+		d: 'Как часто вентиль получает новое положение. <b>Рекомендуется 30 с.</b> Чаще (15–20 с) вентиль суетится и сильнее раскачивается, реже (45–60 с) медленнее приходит в норму после пуска.'}],
+	['eev.trg', 'Целевой перегрев, K', {min: 0.01, max: 50, step: 0.01, n: 'Перегрев, к которому стремится регулятор.',
+		d: 'К этому перегреву стремится регулятор. Чем он меньше, тем эффективнее работа, но ближе риск залива компрессора. <b>Обычно 3…5 K;</b> при настройке начинайте с 7…8 K и снижайте, когда перегрев устойчив.'}],
+	['eev.pmax', 'Ограничение за итерацию, шаг', {min: 0, max: 200, step: 1, x: '0 — без ограничения', n: 'Наибольший сдвиг вентиля за один период расчёта. Общий для ПИД и гибрида; 0 — без ограничения (гибрид в этом случае берёт 45).',
+		d: 'Защита от резких движений: вентиль не сдвинется за один период больше, чем на столько шагов. <b>Обычно 10…45 шагов.</b> 0 — без ограничения (гибрид тогда берёт 45).'}]];
+var P_PID = [
+	['eev.kp', 'Kp — пропорциональная', {min: 0, max: 32, step: 0.001, n: 'Коэффициент усиления. Чем больше, тем быстрее и резче реагирует вентиль, чем меньше — тем медленнее.'}],
+	['eev.ki', 'Ki — интегральная', {min: 0, max: 32, step: 0.001, n: 'Интегрирующая составляющая устраняет статическую ошибку со временем. Накопитель ограничен одним шагом.'}],
+	['eev.kd', 'Kd — дифференциальная', {min: 0, max: 32, step: 0.001, x: 'рекоменд. 0', n: 'Дифференцирующая составляющая противодействует прогнозируемым отклонениям. На работу ЭРВ практически не влияет, рекомендуется 0.'}],
+	['eev.p2d', 'Δ — зона вокруг цели, K', {min: 0, max: 10, step: 0.01, x: '0 — выкл.', n: 'Зона около целевого перегрева, где уменьшается пропорциональная составляющая; 0 — выключено.'}]];
+var P_HYB = [
+	['eev.kc', 'Kc — усиление, шаг/K', {min: 0.1, max: 10, step: 0.01, x: 'рекоменд. 2…4', n: 'Шагов вентиля на 1 K изменения перегрева за период. Kc 6 при Ti 40 — неустойчиво.'}],
+	['eev.ti', 'Ti — время интегрирования, с', {min: 10, max: 600, step: 1, x: 'рекоменд. 60…90', n: 'Чем меньше, тем сильнее интегральная добавка; меньше 60 — риск колебаний.'}],
+	['eev.kff', 'kff — подача по частоте', {min: 0, max: 2, step: 0.01, x: 'рекоменд. 0,6…1 · 0 — выкл.', n: 'Доля прямого смещения вентиля вслед за изменением частоты компрессора. Работает, только если инвертор отдаёт частоту.'}],
+	['eev.ffmax', 'Предел подачи по частоте, шаг', {min: 1, max: 200, step: 1, n: 'Наибольшая прямая подача по частоте за один период расчёта.'}],
+	['eev.ohmin', 'Защита: нижний перегрев, K', {min: 0, max: 10, step: 0.01, x: '0 — выкл.', n: 'Ниже этого перегрева вентиль принудительно прикрывается (риск залива испарителя); защита включается через 120 с после пуска компрессора.'}]];
+
+function cbox(p) {
+	var id = stKid(p[0]), o = p[2];
+	return '<div class="pbox cp' + (o.d ? ' wd' : '') + '" id="b-' + id + '"><b>' + p[1] + '<span class="hint" tabindex="0" data-tip="' + stEsc(o.n) + '">i</span></b><label class="inp"><input type="number" id="' + id + '" data-k="' + p[0] + '"' + stNumAttrs(o) + '></label>' +
+		(o.d ? '<div class="dsc">' + o.d + '</div>' : '') + '<small id="r-' + id + '"></small></div>';
+}
+// Диапазон под полем - из meta прошивки (границы страницы и прошивки совпадают, иначе stLimits сузит поле), добавка - рекомендации
+function ranges(list) {
+	list.forEach(function(p) {
+		var m = stKMeta(p[0]), s = $('r-' + stKid(p[0])), o = p[2];
+		if(!s) return;
+		var lo = m && m.min !== undefined ? m.min : o.min, hi = m && m.max !== undefined ? m.max : o.max;
+		s.textContent = stNumTxt(lo) + '…' + stNumTxt(hi) + (o.x && !o.d ? ' · ' + o.x : '');		// у полей с описанием добавка уже в тексте рядом
+	});
 }
 function params() {
-	var h = '';
-	h += pbox('eev.time', 'Период расчёта', {min: 1, max: 1000, step: 1, u: 'с', h: '1…1000 с'});
-	h += '<span class="dirx">' + pbox('eev.trg', 'Целевой перегрев', {min: 0.01, max: 50, step: 0.01, u: 'K', n: 'Перегрев, к которому будет стремиться ПИД регулирование.', h: 'К этому значению стремится ПИД'}) + '</span>';
-	h += pbox('eev.p2d', 'Δ', {step: 0.01, u: 'K', n: 'Зона около целевого перегрева, где будет уменьшаться пропорциональная составляющая ПИДа.', h: 'зона вокруг цели, где уменьшается пропорциональная составляющая'});
-	h += pbox('eev.kp', 'Пропорциональная', {min: 0, max: 32, step: 0.001, n: 'Коэффициент усиления. Чем больше значение параметра, тем быстрее и оперативнее изменяется положение вентиля. Чем меньше значение параметра, тем медленнее реагирует вентиль.', h: '0…32. Больше — быстрее и резче реагирует вентиль'});
-	h += '<span class="pidx">' + pbox('eev.ki', 'Интегральная', {min: 0, max: 32, step: 0.001, n: 'Интегрирующая составляющая пропорциональна интегралу по времени от отклонения регулируемой величины. Её используют для устранения статической ошибки. Она позволяет регулятору со временем учесть статическую ошибку.', h: '0…32. Устраняет статическую ошибку со временем'}) + '</span>';
-	h += '<span class="pidx">' + pbox('eev.kd', 'Дифференциальная', {min: 0, max: 32, step: 0.001, n: 'Дифференцирующая составляющая пропорциональна темпу изменения отклонения регулируемой величины и предназначена для противодействия отклонениям от целевого значения, которые прогнозируются в будущем. Отклонения могут быть вызваны внешними возмущениями или запаздыванием воздействия регулятора на систему.', h: '0…32. Противодействует прогнозируемым отклонениям'}) + '</span>';
-	h += '<span class="dir2">' + pbox('eev.trg2', 'Целевой перегрев 2', {step: 0.01, u: 'K', h: 'в режиме прямого управления'}) + '</span>';
-	h += '<span class="dir2">' + pbox('eev.trg2d', 'Дельта целевого перегрева 2', {step: 0.01, u: 'K', h: 'в режиме прямого управления'}) + '</span>';
-	return h;
+	$('prow1').innerHTML = P_COMMON.map(cbox).join('');
+	$('prow2').innerHTML = '<div class="alg on" data-a="pid">' + P_PID.map(cbox).join('') + '</div><div class="alg" data-a="hyb">' + P_HYB.map(cbox).join('') + '</div>';
 }
-// видимость плиток зависит от режима «ПИД / прямое управление»
-function applyMode() {
-	var d = $('k-eev-dir'), isDir = d && d.checked;
-	dir = !!isDir;
-	[].forEach.call(document.querySelectorAll('.dir2'), function(e) { e.style.display = dir ? 'contents' : 'none'; });
-	[].forEach.call(document.querySelectorAll('.pidx'), function(e) { e.style.display = dir ? 'none' : 'contents'; });
+
+// ---- алгоритм: ПИД / Гибрид ----
+function applyAlg() {
+	var h = $('k-eev-hyb'), isHyb = !!(h && h.checked);
+	hyb = isHyb;
 	var a = document.querySelectorAll('#mode a');
-	for(var i = 0; i < a.length; i++) a[i].classList.toggle('on', (i == 1) == dir);
-	SER.trg[0] = dir ? 'Перегрев 2' : 'Цель';
+	for(var i = 0; i < a.length; i++) a[i].classList.toggle('on', (i == 1) == isHyb);
+	[].forEach.call(document.querySelectorAll('.alg,.recs,.algb,.adesc'), function(e) {
+		var on = e.dataset.a == (isHyb ? 'hyb' : 'pid');
+		e.classList.toggle('on', on);
+		if(e.classList.contains('adesc')) e.style.display = on ? 'inline' : 'none';
+	});
 	draw();
 }
-function setMode(isDir) {
-	var d = $('k-eev-dir');
-	if(!d || d.checked == isDir) return;
-	d.checked = isDir;
-	d.dispatchEvent(new Event('change', {bubbles: true}));
+function setMode(isHyb) {
+	var h = $('k-eev-hyb');
+	if(!h || h.checked == isHyb) return;
+	h.checked = isHyb;
+	h.dispatchEvent(new Event('change', {bubbles: true}));
 }
-window.stChanged = function(el) { if(!el || el.id == 'k-eev-dir') applyMode(); };
+window.stChanged = function(el) { if(!el || el.id == 'k-eev-hyb') applyAlg(); };
+
+// Рекомендуемые значения: усиление и предел подачи пересчитываются на ход клапана (значения даны для 480 шагов). В поля попадают как правка,
+// на контроллер уходят по «Применить».
+function recVals(isHyb) {
+	var f = Math.max(0.1, maxSteps / 480);
+	return isHyb ? {'eev.kc': Math.min(10, +(3 * f).toFixed(2)), 'eev.ti': 75, 'eev.kff': 1, 'eev.ffmax': Math.min(200, Math.round(40 * f)), 'eev.ohmin': 1}
+		: {'eev.kp': 1, 'eev.ki': 0.4, 'eev.kd': 0};
+}
+function recText() {
+	var p = recVals(false), h = recVals(true);
+	put('rec-pid', '<b>Рекомендуемые:</b> Kp ' + stNumTxt(p['eev.kp']) + ' · Ki ' + stNumTxt(p['eev.ki']) + ' · Kd ' + stNumTxt(p['eev.kd']));
+	put('rec-hyb', '<b>Рекомендуемые:</b> Kc ' + stNumTxt(h['eev.kc']) + ' · Ti ' + h['eev.ti'] + ' · kff ' + stNumTxt(h['eev.kff']) + ' · предел ' + h['eev.ffmax'] + ' · защита ' + stNumTxt(h['eev.ohmin']));
+}
+function recApply(isHyb) {
+	var v = recVals(isHyb);
+	for(var k in v) {
+		var el = $(stKid(k));
+		if(!el) continue;
+		el.value = stShow(v[k], el);
+		el.dispatchEvent(new Event('input', {bubbles: true}));
+	}
+}
 
 function eevPoll(d) {
 	for(var k in d) {
@@ -147,19 +222,22 @@ function manual() {
 
 window.onload = function() {
 	stPanel();
-	$('params').innerHTML = params();
-	stFields('rule', [{key: 'eev.rule', k: 'sel', t: 'Формула перегрева', n: [7, 'В зависимости от выбранной формулы нужны определённые датчики, иначе возникает ошибка ERR_TYPE_OVERHEAT (−38): подробности — на вкладке «Настройки».']}]);
-	var d = document.createElement('input'); d.type = 'checkbox'; d.hidden = true; d.id = 'k-eev-dir'; d.setAttribute('data-k', 'eev.dir'); document.body.appendChild(d);
+	params();
+	var ruleTip = 'Перегрев = температура на выходе испарителя минус температура кипения по давлению. Для каждой формулы нужны свои датчики, иначе ошибка ERR_TYPE_OVERHEAT (−38): список ниже.';
+	stFields('rule', [{key: 'eev.rule', k: 'sel', t: 'Формула перегрева', cls: 'tight', n: [7, ruleTip]}]);
+	stFields('fc', [{key: 'eev.freon', k: 'ro', t: 'Фреон', cls: 'tight'}, {key: 'eev.const', t: 'Поправка', cls: 'tight', u: '°C', min: -5, max: 5, step: 0.1, dec: 2}]);
+	var d = document.createElement('input'); d.type = 'checkbox'; d.hidden = true; d.id = 'k-eev-hyb'; d.setAttribute('data-k', 'eev.hyb'); document.body.appendChild(d);
 	shSubNote('Электронный расширительный вентиль · <span id="eev-max">–</span> шагов макс. · шаговый двигатель <span id="eev-st"></span>');
 	api.init(function(v) {
 		var pct = v && v.caps && v.caps.eev_units == 'pct';
 		unit = pct ? '%' : 'шаги'; put('t-pu', unit); put('u-man', unit);
 		$('k-eev-manual').step = pct ? '0.01' : '1';
-		stLoadK(function() { applyMode(); });
+		stLoadK(function() { applyAlg(); ranges(P_COMMON.concat(P_PID, P_HYB)); recText(); });
 	});
-	api.get({k: ['eev.max', 'ohp.time_chart']}, function(D) {
-		if('eev.max' in D) put('eev-max', D['eev.max']);
+	api.get({k: ['eev.max', 'ohp.time_chart', 'eev.remark']}, function(D) {
+		if('eev.max' in D) { put('eev-max', D['eev.max']); maxSteps = parseInt(D['eev.max']) || 480; recText(); }
 		if('ohp.time_chart' in D) step = parseInt(D['ohp.time_chart']) || 30;
+		if('eev.remark' in D) { var h = document.querySelector('#f-k-eev-rule .hint'); if(h) h.setAttribute('data-tip', ruleTip + ' ' + D['eev.remark']); }
 	});
 	legend();
 	setTimeout(refresh, 1500);
@@ -173,25 +251,42 @@ window.onload = function() {
 <div class="content">
 <div class="grid">
 	<section class="card c8">
-		<h3>Перегрев и положение ЭРВ <span class="r chips" style="margin-left:auto"><span class="chip" onclick="setRange(60, this)">1 ч</span><span class="chip on" onclick="setRange(180, this)">3 ч</span><span class="chip" onclick="setRange(0, this)">весь буфер</span><span class="chip" onclick="refresh()">Обновить</span>
+		<h3>Перегрев и положение ЭРВ <span class="r chips" style="margin-left:auto"><span class="chip" onclick="setRange(60, this)">1 ч</span><span class="chip" onclick="setRange(180, this)">3 ч</span><span class="chip on" onclick="setRange(0, this)">весь буфер</span><span class="chip" onclick="refresh()">Обновить</span>
 			<label class="row" style="gap:8px;color:var(--mute);font-size:12px;font-weight:600">Авто<input type="checkbox" class="sw sm" onchange="autoToggle(this.checked)"></label></span></h3>
 		<div class="legend" id="legend"></div>
 		<div id="ch" style="min-height:260px"></div>
 	</section>
 	<section class="card c4">
-		<h3>Сейчас</h3>
-		<div class="tiles t2">
-			<div class="tile"><i>Положение</i><b id="t-pos">–</b><u id="t-pu">шаг</u></div><div class="tile"><i>Перегрев</i><b id="t-oh">–</b><u>K</u></div>
-			<div class="tile"><i>T кипения</i><b id="t-ev">–</b><u>°</u></div><div class="tile"><i>Нагн. − конд.</i><b id="t-tt">–</b><u>K</u></div>
-			<div class="tile"><i>Разница: цель</i><b id="t-dl">–</b><u>K</u></div><div class="tile"><i>Код ошибки</i><b id="t-er">–</b></div>
+		<h3>Определение перегрева</h3>
+		<div class="tiles t3">
+			<div class="tile"><i>Положение</i><b id="t-pos">–</b><u id="t-pu">шаг</u></div><div class="tile"><i>Перегрев</i><b id="t-oh">–</b><u>K</u></div><div class="tile"><i>T кипения</i><b id="t-ev">–</b><u>°</u></div>
+			<div class="tile"><i>Нагн. − конд.</i><b id="t-tt">–</b><u>K</u></div><div class="tile"><i>Разница: цель</i><b id="t-dl">–</b><u>K</u></div><div class="tile"><i>Код ошибки</i><b id="t-er">–</b></div>
 		</div>
-		<div id="rule" style="margin-top:6px"></div>
-		<div class="field"><div class="l">Положение вручную<small><span id="u-man">шаги</span> · при формуле не MANUAL предложит переключить</small></div><label class="inp"><input type="number" id="k-eev-manual" data-k="eev.manual" data-act step="1"></label><button class="btn2" onclick="manual()" style="padding:7px 12px">Задать</button></div>
+		<div id="rule"></div>
+		<div class="two" id="fc"></div>
+		<div class="field tight"><div class="l">Положение вручную<span class="hint" tabindex="0" data-tip="Прошивка двигает вентиль, только если формула перегрева — MANUAL; при другой формуле предложит переключить её.">?</span></div><label class="inp"><input type="number" id="k-eev-manual" data-k="eev.manual" data-act step="1"><u id="u-man">шаги</u></label><button class="btn2" onclick="manual()" style="padding:7px 12px">Задать</button></div>
+		<details class="sens"><summary>Какие датчики нужны для формулы</summary>
+			<table class="t"><tbody>
+				<tr><td>TEVAOUT_TEVAIN</td><td>TEVAOUT, TEVAIN + (TCONIN или TCOMPIN)</td></tr>
+				<tr><td>TCOMPIN_TEVAIN</td><td>TCOMPIN, TEVAIN</td></tr>
+				<tr><td>TEVAOUT_PEVA</td><td>TEVAOUT, PEVA + (TCONIN или TCOMPIN)</td></tr>
+				<tr><td>TCOMPIN_PEVA</td><td>TCOMPIN, PEVA</td></tr>
+				<tr><td>TABLE</td><td>TEVAIN и (TEVAOUT, PEVA + (TCONIN или TCOMPIN)) или (TCOMPIN, PEVA) или (TEVAOUT, TEVAIN + (TCONIN или TCOMPIN)) или (TEVAIN, TCOMPIN)</td></tr>
+				<tr><td>MANUAL</td><td>(TEVAOUT, PEVA + (TCONIN или TCOMPIN)) или (TCOMPIN, PEVA) или (TEVAOUT, TEVAIN + (TCONIN или TCOMPIN)) или (TEVAIN, TCOMPIN), иначе перегрев устанавливается в 0</td></tr>
+			</tbody></table>
+			<div class="fnote">Без нужных датчиков — ошибка ERR_TYPE_OVERHEAT (−38).</div>
+		</details>
 	</section>
 	<section class="card c12">
-		<h3>Регулирование <span class="r"><span class="mode" id="mode"><a class="on" onclick="setMode(false)">ПИД</a><a onclick="setMode(true)">Прямое управление</a></span></span></h3>
-		<div class="pgrid" id="params"></div>
-		<div class="fnote">В режиме «Прямое управление» вместо составляющих ПИД показываются «Целевой перегрев 2» и его дельта. Остальные параметры — на вкладке «Настройки».</div>
+		<h3>Регулирование
+			<span class="adesc" data-a="pid" style="display:inline">классический регулятор по перегреву; не знает о частоте компрессора</span>
+			<span class="adesc" data-a="hyb" style="display:none">ПИ с накоплением дробных шагов, подачей по частоте и защитой от залива</span>
+			<span class="r"><span class="mode" id="mode"><a class="on" onclick="setMode(false)">ПИД</a><a onclick="setMode(true)">Гибрид</a></span></span></h3>
+		<div class="prow" id="prow1"></div>
+		<div class="prow" id="prow2"></div>
+		<div class="recs on" data-a="pid"><span id="rec-pid"></span><button class="btn2" onclick="recApply(false)" style="padding:5px 11px">Подставить</button><span class="m">значения попадут в поля, на ТН уйдут по «Применить»</span></div>
+		<div class="recs" data-a="hyb"><span id="rec-hyb"></span><button class="btn2" onclick="recApply(true)" style="padding:5px 11px">Подставить</button><span class="m">значения попадут в поля, на ТН уйдут по «Применить»</span></div>
+		<div class="fnote" style="margin-top:6px">Переключение алгоритма на ходу сбрасывает накопители регулятора, вентиль остаётся на месте. <span class="algb" data-a="hyb" style="color:#8a4b00">Подача по частоте работает, только если инвертор отдаёт частоту.</span> Остальные параметры ЭРВ — на вкладке «Настройки».</div>
 	</section>
 </div>
 </div>

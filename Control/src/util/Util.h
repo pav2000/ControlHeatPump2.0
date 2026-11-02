@@ -39,7 +39,6 @@
 #include <stdlib.h>          // abs() для макросов ниже
 
 #define sign(a) (a > 0 ? 1 : a < 0 ? -1 : 0)
-#define signm(a,t) ((a > 0 ? 1 : a < 0 ? -1 : 0) * (abs(a) > t ? 2 : 1))
 
 // ---- Util.cpp: числа и строки ----
 char* _itoa(int value, char *string);                 // дописывает в конец строки

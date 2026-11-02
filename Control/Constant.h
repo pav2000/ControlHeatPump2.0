@@ -50,7 +50,7 @@
 #endif
 
 // ---- ОПЦИИ КОМПИЛЯЦИИ ПРОЕКТА ----
-#define VERSION			"2.34"	// Версия прошивки: этапы 0-2 плана 02.11: Modbus-fix, ручное управление выходами и привязкой датчиков только при остановленном ТН, мелочи разбора 27.10 (Н-4/5/16/18/21, С-5)
+#define VERSION			"2.35"	// Версия прошивки: этапы 0-2 плана 02.11: Modbus-fix, ручное управление выходами и привязкой датчиков только при остановленном ТН, мелочи разбора 27.10 (Н-4/5/16/18/21, С-5)
 // Версия формата, которой прошивка ПИШЕТ настройки в I2C память.
 // Должна совпадать с версией каркаса, которым пишутся настройки (150): иначе Option.ver по
 // умолчанию неверен, первое сохранение на чистом контроллере печатает
@@ -433,9 +433,6 @@ const uint16_t  defaultPort=80;
 #ifndef EEV_SET_ZERO_OVERRIDE
 #define EEV_SET_ZERO_OVERRIDE	40			// Добавка к полному закрытию при установке нуля, шаги
 #endif
-#ifndef EEV_OVERHEAT2_CRITICAL
-#define EEV_OVERHEAT2_CRITICAL 30           // Критическое значение перегрева 2, сотые градуса
-#endif
 
 // ---- EVI ----
 #define EVI_TEMP_CON      4000           // Температура конденсатора для включения EVI
@@ -619,14 +616,10 @@ STRCONST(eev_MIN, "MIN");                // Минимум ЭРВ
 STRCONST(eev_MAX, "MAX");                // Максимум ЭРВ
 STRCONST(eev_TIME, "TIME");              // ПИД время в секундах ЭРВ СЕКУНДЫ
 STRCONST(eev_TARGET, "TRG");           // Перегрев ЦЕЛЬ (сотые градуса)
-STRCONST(eev_tOverheatTCOMP, "TRG2");    // Перегрев2 цель (сотые градуса)
-STRCONST(eev_tOverheat2_low, "T2L");
-STRCONST(eev_tOverheat2_low_hyst, "T2H");
-STRCONST(eev_tOverheatTCOMP_delta, "TRG2D"); // Перегрев2 дельта цель (сотые градуса)
 STRCONST(eev_KP, "KP");                  // ПИД Коэф пропорц.   В ТЫСЯЧНЫХ!!!
 STRCONST(eev_KI, "KI");                  // ПИД Коэф интегр.  для настройки Ki=0   В ТЫСЯЧНЫХ!!!
 STRCONST(eev_KD, "KD");                  // ПИД Коэф дифф.    В ТЫСЯЧНЫХ!!!
-STRCONST(eev_PID2_delta, "P2D");        // Дельта для консервативных вычислений ПИДа (Для формулы 1  это ошибка при которой начинает уменьшаться пропорциональная)
+STRCONST(eev_PID2_delta, "P2D");        // Зона вокруг цели, где уменьшается пропорциональная составляющая ПИД (сотые градуса)
 STRCONST(eev_PID_MAX, "PMAX");           // ограничение ПИД в шагах ЭРВ
 STRCONST(eev_CONST, "CONST");            // Корректировка перегрева (постоянная ошибка)
 STRCONST(eev_MANUAL, "MANUAL");          // Число шагов открытия ЭРВ для правила работы ЭРВ «Manual»
@@ -662,9 +655,15 @@ STRCONST(eev_START, "START");            // флаг Всегда начинат
 STRCONST(eev_PID_P_ON_M, "POM");         // флаг ПИД пропорционально измерению
 STRCONST(eev_fEEVStartPosByTemp, "SPT"); // флаг fEEVStartPosByTemp
 STRCONST(eev_PosAtHighTemp, "PHT"); // PosAtHighTemp
-STRCONST(eev_fEEV_DirectAlgorithm, "DIR"); // флаг fEEV_DirectAlgorithm
-STRCONST(eev_trend_threshold, "TTH");
-STRCONST(eev_trend_mul_threshold, "TMT");
+STRCONST(eev_HYB, "HYB");               // флаг алгоритма «Гибрид» (иначе ПИД)
+STRCONST(eev_KC, "KC");                 // Гибрид: усиление, шагов на 1 K (сотые доли)
+STRCONST(eev_TI, "TI");                 // Гибрид: время интегрирования, с
+STRCONST(eev_KFF, "KFF");               // Гибрид: подача по частоте, доля (сотые)
+STRCONST(eev_FFMAX, "FFMAX");           // Гибрид: предел подачи за период, шагов
+STRCONST(eev_OHMIN, "OHMIN");           // Гибрид: нижний перегрев защиты от залива (сотые градуса)
+STRCONST(eev_SPF, "SPF");               // флаг стартовой позиции по стартовой частоте инвертора
+STRCONST(eev_SPHZ, "SPHZ");             // старт по частоте: шагов на герц, отопление и охлаждение (сотые доли)
+STRCONST(eev_SPHZB, "SPHZB");           // старт по частоте: шагов на герц, ГВС (сотые доли)
 
 // Описание имен параметров MQTT для функций get_paramMQTT set_paramMQTT
 STRCONST(mqtt_USE_TS, "USE_TS");              // флаг использования ThingSpeak - формат передачи для клиента

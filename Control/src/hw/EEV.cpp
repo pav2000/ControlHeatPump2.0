@@ -82,14 +82,11 @@ void devEEV::initEEV()
 	_data.minSteps = EEV_CLOSE_STEP;                    // Минимальное число шагов открытия ЭРВ
 	_data.maxSteps = EEV_STEPS;                         // Максимальное число шагов ЭРВ (диапазон)
 	_data.pid_max = 45;
-	_data.trend_threshold = 4;
-	_data.tOverheatTCOMP = 850;
-	_data.tOverheatTCOMP_delta = 300;
 	_data.PosAtHighTemp = 0;
-	_data.pid2_delta = 70;
-	_data.trend_mul_threshold = 65;
-	_data.tOverheat2_low = 200;
-	_data.tOverheat2_low_hyst = 10;
+	_data.pid_zone = 70;
+	_data._reserved2 = 0;
+	_data._reserved3 = 0;
+	hybDefaults();                                      // Гибрид и старт по частоте: умолчания (выключены, флаги ниже)
 
 	// ЭРВ Времена и задержки
 	_data.delayOnPid = DEFAULT_DELAY_ON_PID; // Задержка включения EEV после включения компрессора (сек).  Точнее после выхода на рабочую позицию Общее время =delayOnPid+DelayStartPos
@@ -168,6 +165,12 @@ void devEEV::InitStepper(void)
 void devEEV::after_load(void)
 {
 	legacy_eev_flags(HP.Option.ver, &_data.flags, &_data.OHCor_TDIS_TCON_MAX);
+	_data.flags = eevhyb_migrate_flags(HP.Option.ver, _data.flags);        // версия ниже 151: бит 10 (прежнее прямое управление) и биты 11-12 сброшены
+	if(eevhyb_cfg_needs_defaults(HP.Option.ver)) {                         // в старых файлах на месте полей гибрида лежали поля прямого управления
+		hybDefaults();
+		_data._reserved2 = 0;
+		_data._reserved3 = 0;
+	}
 #ifdef EEV_DEF
 	SETBIT1(_data.flags,fPresent);                      // наличие ЭРВ в текушей конфигурации
 #else
@@ -226,8 +229,27 @@ int8_t devEEV::set_EEV(int16_t x)
 }
 
 // Стартовая позиция ЭРВ
+// Значения гибрида и старта по частоте по умолчанию (по ходу клапана maxSteps)
+void devEEV::hybDefaults()
+{
+	EevHybCfg c;
+	eevhyb_default_cfg(&c, _data.maxSteps);
+	_data.hyb_Kc100 = c.Kc100;
+	_data.hyb_Ti = c.Ti;
+	_data.hyb_ohMin100 = c.ohMin100;
+	_data.hyb_kff100 = c.kff100;
+	_data.hyb_ffMax = c.ffMax;
+	_data.sphz100 = c.sphz100;
+	_data.sphzb100 = c.sphzb100;
+}
+
+// Приоритет: по стартовой частоте -> по температуре подачи -> фиксированная StartPos
 uint16_t devEEV::get_StartPos()
 {
+	if(GETBIT(_data.flags, fEEV_StartPosByFreq)) {
+		const bool boiler = (HP.get_modWork() & pBOILER) != 0;         // ГВС: свой коэффициент и стартовая частота ГВС
+		return eevhyb_start_pos(boiler ? _data.sphzb100 : _data.sphz100, boiler ? HP.dFC.get_startFreqBoiler() : HP.dFC.get_startFreq(), _data.minSteps, _data.maxSteps);
+	}
 	if(GETBIT(_data.flags, fEEV_StartPosByTemp)) {
 		int16_t t = HP.sTemp[HP.is_heating() ? TCONOUTG : TEVAOUTG].get_Temp();
 		if(t <= EEV_START_POS_LOW_TEMP) return _data.StartPos;
@@ -345,17 +367,26 @@ void devEEV::resetPID()
 	pidw.sum = 0;
 	pidw.pre_err = 0;
 	pidw.max = EEV_MAX_INT_PID * 1000*100; // максимальное воздействие интегральной составляющей на ПИД
-	if(GETBIT(_data.flags, fEEV_DirectAlgorithm)) {
-		pidw.max = 0;
-		pidw.sum = 0;
-		pidw.pre_err = _data.tOverheat - Overheat;
-		pidw.pre_err2[0] = _data.tOverheatTCOMP - OverheatTCOMP;
-		pidw.hyst[0] = 0;
-		pidw.hyst[1] = 0;
-	}
+	EevHybridParams hp;
+	hybParams(&hp);
+	eevhyb_reset(&hybState, &hp, Overheat, HP.dFC.get_present() ? HP.dFC.get_frequency() : 0);   // состояние гибрида: накопитель в ноль, прошлые значения - текущие
 }
 
-#define sign_dif(a,b) (a > 0 ? 1 : a < 0 ? -1 : -sign(b))
+// Параметры гибрида из настроек (EEPROM) для модуля EEVHybrid
+void devEEV::hybParams(EevHybridParams *p)
+{
+	p->Kc100 = _data.hyb_Kc100;
+	p->Ti = _data.hyb_Ti;
+	p->ohMin100 = _data.hyb_ohMin100;
+	p->kff100 = _data.hyb_kff100;
+	p->ffMax = _data.hyb_ffMax;
+	p->target100 = _data.tOverheat;
+	p->period = _data.pid_time;
+	p->stepMax = _data.pid_max;                  // 0 - «без ограничения»: гибрид берёт предел по умолчанию
+	p->minSteps = _data.minSteps;
+	p->maxSteps = _data.maxSteps;
+	p->protDelay = EEVHYB_PROT_DELAY;
+}
 
 // Обновление ЭРВ - одна итерация алгоритма отслеживания
 // на входе две температуры, используется для алгоритма table
@@ -376,120 +407,15 @@ int8_t devEEV::Update(void) //boolean fHeating)
 #ifdef TCOMPIN
 	case TCOMPIN_PEVA:
 #endif
-		if(GETBIT(_data.flags, fEEV_DirectAlgorithm)) {
-#if defined(TCOMPIN)
-			int16_t diff = _data.tOverheat - Overheat;
-			pidw.trend[trOH_default] += signm(pidw.pre_err - diff, _data.trend_mul_threshold); //sign_dif(pidw.pre_err - diff, pidw.trend[trOH_default]); // +1 - растет, -1 - падает
-			pidw.pre_err = diff;
-			if(pidw.trend[trOH_default] > _data.trend_threshold * 2) {
-				pidw.trend[trOH_default] = _data.trend_threshold * 2;
-			} else if(pidw.trend[trOH_default] < -_data.trend_threshold * 2) {
-				pidw.trend[trOH_default] = -_data.trend_threshold * 2;
-			}
-			diff = _data.tOverheatTCOMP - OverheatTCOMP;
-			int8_t fast = signm(pidw.pre_err2[0] - diff, _data.trend_mul_threshold); // 0, +-1, +-2
-			pidw.trend[trOH_TCOMP] += fast;
-			if(pidw.trend[trOH_TCOMP] > _data.trend_threshold * 2) {
-				pidw.trend[trOH_TCOMP] = _data.trend_threshold * 2;
-				if(fast) fast--; // = 0, 1
-			} else if(pidw.trend[trOH_TCOMP] < -_data.trend_threshold * 2) {
-				pidw.trend[trOH_TCOMP] = -_data.trend_threshold * 2;
-				if(fast) fast++; // = -1, 0
-			} else fast = 0;
-			if(DBG_ON(DBG_EEV)) {
-				journal.jprintf("EEV: %d/%d,", Overheat, pidw.trend[trOH_default]);
-				journal.jprintf("%d/%d", OverheatTCOMP, pidw.trend[trOH_TCOMP]);
-				if(fast) journal.jprintf(",fast:%d", fast);
-			}
-			if(pidw.max) {
-				if(DBG_ON(DBG_EEV)) journal.jprintf(",skip:%d\n", (int)(pidw.max));
-				pidw.max--;
-			} else {	// Основной перегрев
-				if(pidw.pre_err < -_data.pid2_delta) { // Перегрев больше, проверка порога - открыть ЭРВ
-					if(pidw.trend[trOH_default] >= _data.trend_threshold) {
-						if(DBG_ON(DBG_EEV)) journal.jprintf(";#1");
-						newEEV = pidw.pre_err * _data.pid.Kp / (100*1000);
-						pidw.max = 1;
-						pidw.trend[trOH_default] = 0;
-						pidw.trend[trOH_TCOMP] = 0;
-					} else {
-						if(pidw.trend[trOH_default] > 0) {
-							if(DBG_ON(DBG_EEV)) journal.jprintf(";#2");
-							newEEV = 1;
-							pidw.max = 1;
-						}
-						goto xSecond;
-					}
-				} else if(pidw.pre_err > _data.pid2_delta) { // Перегрев меньше, проверка порога - закрыть ЭРВ
-					if(pidw.trend[trOH_default] <= -_data.trend_threshold) {
-						if(DBG_ON(DBG_EEV)) journal.jprintf(";#3");
-						newEEV = pidw.pre_err * _data.pid.Kp / (100*1000);
-						pidw.max = 1;
-						pidw.trend[trOH_default] = 0;
-						pidw.trend[trOH_TCOMP] = 0;
-					} else if(pidw.trend[trOH_default] > 0) {
-						if(DBG_ON(DBG_EEV)) journal.jprintf(";#4");
-						newEEV = -1;
-						pidw.max = 1;
-					} else goto xSecond;
-				} else {	// Перегрев 2
-xSecond:			if(diff < -_data.tOverheatTCOMP_delta) { // Перегрев больше, проверка порога - открыть ЭРВ
-						if(pidw.trend[trOH_TCOMP] >= _data.trend_threshold) {
-							if(DBG_ON(DBG_EEV)) journal.jprintf(";#5");
-							newEEV = 1;
-							pidw.trend[trOH_TCOMP] = 0;
-						}
-					} else if(diff > _data.tOverheatTCOMP_delta) {
-						if(OverheatTCOMP < _data.tOverheat2_low) {
-							if(OverheatTCOMP < EEV_OVERHEAT2_CRITICAL && pidw.trend[trOH_TCOMP] <= 0) {
-								if(DBG_ON(DBG_EEV)) journal.jprintf(";#6");
-								newEEV = diff - pidw.pre_err2[0];
-								if(newEEV >= 0) { //newEEV > _data.tOverheat2_low_hyst) {
-									if(DBG_ON(DBG_EEV)) journal.jprintf(";#7");
-									newEEV = diff * _data.pid.Kp / (100*1000);
-									pidw.max = 1;
-									pidw.trend[trOH_default] = 0;
-								    pidw.trend[trOH_TCOMP] = 0;
-								} else {
-									if(DBG_ON(DBG_EEV)) journal.jprintf(";#9");
-									newEEV = -2;
-								}
-							} else if(pidw.trend[trOH_TCOMP] < 0) {
-						    	if(pidw.trend[trOH_TCOMP] < -_data.trend_threshold) newEEV = 2;
-						    	else if(diff - pidw.pre_err2[0] > _data.tOverheat2_low_hyst) newEEV = 4;
-						    	else goto xSecond_sub_1;
-								if(DBG_ON(DBG_EEV)) journal.jprintf(";N%d", newEEV);
-								newEEV = diff * _data.pid.Kp / (100*1000) / newEEV - 1;
-								pidw.max = 1;
-								pidw.trend[trOH_default] = 0;
-							    pidw.trend[trOH_TCOMP] = 0;
-							} else if(diff - pidw.pre_err2[0] > -_data.tOverheat2_low_hyst) {
-								if(DBG_ON(DBG_EEV)) journal.jprintf(";#A");
-								newEEV = -1;
-							}
-						} else if(pidw.trend[trOH_TCOMP] <= -_data.trend_threshold) {
-xSecond_sub_1:				if(pidw.hyst[0] > 0) {
-								if(DBG_ON(DBG_EEV)) journal.jprintf(";#B");
-								newEEV = -1;
-								pidw.trend[trOH_TCOMP] = 0;
-							}
-						}
-					} else if(fast) {
-						if(DBG_ON(DBG_EEV)) journal.jprintf(";#F");
-						newEEV = fast;
-					}
-				}
-				if(DBG_ON(DBG_EEV)) journal.jprintf("=%d\n", newEEV);
-			}
-			pidw.pre_err2[0] = diff;
-			if(newEEV > _data.pid_max) newEEV = _data.pid_max;
-			else if(newEEV < -_data.pid_max) newEEV = -_data.pid_max;
-			if(newEEV) pidw.hyst[0] = 0; else if(++pidw.hyst[0] == 0) pidw.hyst[0]--;
-			newEEV += EEV;
-#endif
-		} else {
+		if(GETBIT(_data.flags, fEEV_Hybrid)) {    // Гибрид: расчёт в EEVHybrid.cpp (скоростной ПИ + подача по частоте + защита)
+			EevHybridParams hp;
+			hybParams(&hp);
+			const int16_t fq = HP.dFC.get_present() ? HP.dFC.get_frequency() : 0;
+			newEEV = eevhyb_step(&hybState, &hp, Overheat, fq, EEV, Uptime_s() - HP.get_startCompressor());
+			if(DBG_ON(DBG_EEV)) journal.jprintf("EEV hyb: oh %d, f %d, x %d -> %d, acc %d\n", Overheat, fq, EEV, newEEV, (int) hybState.acc1000);   // перегрев и частота - сотые, acc - тысячные шага
+		} else {                                   // ПИД
 			newEEV = _data.tOverheat - Overheat;   // Расчет ошибки для пида
-            pidw.Kp_dmin=_data.pid2_delta; // передать параметр - уменьшение пропорциональной при определенной ошибке
+			pidw.Kp_dmin=_data.pid_zone;           // передать параметр - уменьшение пропорциональной при определенной ошибке
 			newEEV = updatePID(newEEV, _data.pid, pidw)/100; // Рассчитать итерацию: Перевод в шаги (выход ПИДА в сотых) + округление вниз
 			if ((abs(newEEV)>_data.pid_max)&&(_data.pid_max>0)) {if (newEEV>0) newEEV=EEV+_data.pid_max; else newEEV=EEV-_data.pid_max;} else newEEV+=EEV;   // Ограничение пида +  добавление предыдущего значения
 			// Проверка управляющего воздействия, возможно отказ ЭРВ
@@ -618,14 +544,14 @@ void devEEV::get_ruleEEVtext(char *strReturn)
 // ---------------------------------------------------------------------------
 // Реестр параметров веб-API: ЭРВ (eev.*). Ключ - прежняя строка eev_*: eev.trg, eev.kp ...
 // Простые поля описаны смещениями в type_settingsEEV, остальное (положение, шаги с динамическими границами,
-// коэффициенты ПИД с обратным знаком, текст) - через get/set. Прежние ключи ПИД2 (KP2, KI2, KD2, ERR_KP) не
-// переносятся: консервативного ПИДа в алгоритме нет, поля структуры остались только ради формата EEPROM.
+// коэффициенты ПИД с обратным знаком, текст) - через get/set. Алгоритмы два: ПИД и «Гибрид» (флаг eev.hyb, расчёт в
+// EEVHybrid.cpp). Прежнее «прямое управление» и ключи ПИД2 удалены; их поля в EEPROM заняты гибридом и стартом по частоте.
 // ---------------------------------------------------------------------------
 static_assert(sizeof(RULE_EEV) == 1, "правило ЭРВ хранится одним байтом");
 #define EO(f) offsetof(type_settingsEEV, f)
 #define ES(nm, fl, kind, sc, hk, lo, hi) { nm, 0, (float)(lo), (float)(hi), 0, sc, PT_CALL, fl, kind, hk, 0 }
 enum { E_POS = 1, E_POSP, E_POSPP, E_OH, E_ERR, E_MIN, E_MAX, E_TIME, E_KP, E_KI, E_KD, E_FREON, E_NAME, E_NOTE, E_REMARK, E_PINS,
-       E_CTDELTA, E_MANUAL, E_PSP, E_SP, E_PHT, E_SPEED, E_RULE, E_POM, E_DIR };
+       E_CTDELTA, E_MANUAL, E_PSP, E_SP, E_PHT, E_SPEED, E_RULE, E_POM, E_HYB };
 static const char *const apiLabRuleEEV[] = { "TEVAOUT-T[PEVA]",
 #ifdef TCOMPIN
 	"TCOMPIN-T[PEVA]",
@@ -649,15 +575,20 @@ static const ApiParam apiEevTab[] = {
 	ES(eev_MAX,    0,     MK_INT, 1,   E_MAX,   0, 8192),             // не меньше минимума; смена перенастраивает драйвер
 	ES(eev_TIME,   0,     MK_INT, 1,   E_TIME,  1, 1000),             // с; смена пересчитывает коэффициенты ПИД
 	PN_I16(eev_TARGET,       0.01f, 50, 100, EO(tOverheat), 0),
-	PN_I16(eev_tOverheatTCOMP, 0, 327.67f, 100, EO(tOverheatTCOMP), 0),
-	PN_I16(eev_tOverheat2_low, 0, 327.67f, 100, EO(tOverheat2_low), 0),
-	PN_I16(eev_tOverheat2_low_hyst, 0, 327.67f, 100, EO(tOverheat2_low_hyst), 0),
-	PN_I16(eev_tOverheatTCOMP_delta, 0, 327.67f, 100, EO(tOverheatTCOMP_delta), 0),
 	ES(eev_KP,     0,     MK_NUM, 1000, E_KP,   0, 32),   // в структуре хранятся отрицательными тысячными
 	ES(eev_KI,     0,     MK_NUM, 1000, E_KI,   0, 32),
 	ES(eev_KD,     0,     MK_NUM, 1000, E_KD,   0, 32),
-	PN_I16(eev_PID2_delta,   -327.68f, 327.67f, 100, EO(pid2_delta), 0),
-	PN_U16(eev_PID_MAX,      1, 200, 1, EO(pid_max), 0),
+	PN_I16(eev_PID2_delta,   0, 10, 100, EO(pid_zone), 0),                // зона ПИД, K; 0 - выкл.
+	PN_U16(eev_PID_MAX,      0, 200, 1, EO(pid_max), 0),                  // шагов за период; 0 - без ограничения (гибрид берёт 45)
+	PN_BIT(eev_HYB,          EO(flags), fEEV_Hybrid,        PT_B16, 0, E_HYB, 0, 0),   // алгоритм: 0 - ПИД, 1 - Гибрид; смена сбрасывает регулятор
+	PN_I16(eev_KC,           0.1f, 10, 100, EO(hyb_Kc100), 0),            // гибрид: усиление, шагов на 1 K
+	PN_U16(eev_TI,           10, 600, 1, EO(hyb_Ti), 0),                  // гибрид: время интегрирования, с
+	PN_I16(eev_KFF,          0, 2, 100, EO(hyb_kff100), 0),               // гибрид: подача по частоте, 0 - выкл.
+	PN_I16(eev_FFMAX,        1, 200, 1, EO(hyb_ffMax), 0),                // гибрид: предел подачи за период, шагов
+	PN_I16(eev_OHMIN,        0, 10, 100, EO(hyb_ohMin100), 0),            // гибрид: нижний перегрев защиты, K; 0 - выкл.
+	PN_BIT(eev_SPF,          EO(flags), fEEV_StartPosByFreq, PT_B16, 0, 0, 0, 0),  // стартовая позиция по частоте
+	PN_I16(eev_SPHZ,         0, 30, 100, EO(sphz100), 0),                 // шагов на герц стартовой частоты, отопление и охлаждение
+	PN_I16(eev_SPHZB,        0, 30, 100, EO(sphzb100), 0),                // то же для ГВС
 	PN_I16(eev_CONST,        -5, 5, 100, EO(Correction), 0),
 	EPOS(eev_MANUAL, E_MANUAL),
 	{ eev_FREON, 0, 0, 0, 0, 1, PT_CALL, PF_RO, MK_TEXT, E_FREON, 0 },
@@ -692,9 +623,6 @@ static const ApiParam apiEevTab[] = {
 	PN_BIT(eev_SEEK_ZERO,    EO(flags), fOneSeekZero,    PT_B16, 0, 0, 0, 0),
 	PN_BIT(eev_PID_P_ON_M,   EO(flags), fPID_PropOnMeasure, PT_B16, 0, E_POM, 0, 0),
 	PN_BIT(eev_fEEVStartPosByTemp, EO(flags), fEEV_StartPosByTemp, PT_B16, 0, 0, 0, 0),
-	PN_BIT(eev_fEEV_DirectAlgorithm, EO(flags), fEEV_DirectAlgorithm, PT_B16, 0, E_DIR, 0, 0),
-	PN_I8 (eev_trend_threshold, -128, 127, 1, EO(trend_threshold), 0),
-	PN_U16(eev_trend_mul_threshold, 0, 655.35f, 100, EO(trend_mul_threshold), 0),
 };
 static void *api_base_eev(uint8_t) { return HP.dEEV.get_save_addr(); }
 static type_settingsEEV *api_eev(void) { return (type_settingsEEV *) HP.dEEV.get_save_addr(); }
@@ -762,7 +690,6 @@ static int api_set_eev(uint8_t hook, uint8_t, const char *val)
 		uint16_t t = x;
 		if(d->pid_time != t) {
 			UpdatePIDbyTime(t, d->pid_time, d->pid);
-			UpdatePIDbyTime(t, d->pid_time, d->pid2);
 			d->pid_time = t;
 		}
 		return AE_OK; }
@@ -788,7 +715,8 @@ static void api_after_eev(uint8_t hook)
 {
 	switch(hook) {
 	case E_SPEED: HP.dEEV.stepperEEV.setSpeed(api_eev()->speedEEV); break;
-	case E_RULE: case E_POM: case E_DIR: HP.dEEV.resetPID(); break;
+	case E_RULE: case E_POM: HP.dEEV.resetPID(); break;
+	case E_HYB: HP.dEEV.resetPID(); journal.jprintf("EEV algorithm: %s\n", GETBIT(api_eev()->flags, fEEV_Hybrid) ? "Hybrid" : "PID"); break;
 	}
 }
 static const ApiOps apiOpsEev = { api_base_eev, api_get_eev, api_set_eev, api_after_eev, 0 };

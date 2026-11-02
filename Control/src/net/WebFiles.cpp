@@ -610,14 +610,23 @@ void get_txtSettings(uint8_t thread)
 			 	{ "Полное открыте (шаги):", eev_MAX });
 			 strcat(Socket[thread].outBuf,"Формула перегрева: ");
  			 HP.dEEV.get_ruleEEVtext(Socket[thread].outBuf); STR_END;
-             strcat(Socket[thread].outBuf,"Алгоритм ПИД ЭРВ: ");
-             strcat(Socket[thread].outBuf,"PID_FORMULA1");STR_END;
+             strcat(Socket[thread].outBuf,"Алгоритм ЭРВ: ");
+             strcat(Socket[thread].outBuf, GETBIT(HP.dEEV.get_flags(), fEEV_Hybrid) ? "Гибрид" : "ПИД"); STR_END;
              TXT_KEYS("eev",
              	{ "Целевой перегрев (C°): ", eev_TARGET },
              	{ "ПИД, период (сек): ", eev_TIME },
              	{ "Пропорциональная составляющая: ", eev_KP },
              	{ "Интегральная составляющая: ", eev_KI },
              	{ "Дифференциальная составляющая: ", eev_KD },
+             	{ "Ограничение сдвига за период, 0 - нет (шаги): ", eev_PID_MAX },
+             	{ "Гибрид, усиление (шагов на 1 K): ", eev_KC },
+             	{ "Гибрид, время интегрирования (сек): ", eev_TI },
+             	{ "Гибрид, подача по частоте: ", eev_KFF },
+             	{ "Гибрид, предел подачи за период (шаги): ", eev_FFMAX },
+             	{ "Гибрид, защита от низкого перегрева (C°): ", eev_OHMIN },
+             	{ "Стартовая позиция по стартовой частоте: ", eev_SPF },
+             	{ "Старт по частоте, отопление и охлаждение (шагов на Гц): ", eev_SPHZ },
+             	{ "Старт по частоте, ГВС (шагов на Гц): ", eev_SPHZB },
              	{ "Ручное управление, открытие ЭРВ (шаги): ", eev_MANUAL },
              	{ "Поправка (C°): ", eev_CONST });
              strcat(Socket[thread].outBuf,"Используемый фреон: ");

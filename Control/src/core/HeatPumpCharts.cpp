@@ -99,7 +99,7 @@ void  HeatPump::updateChart()
 #else
 		else if(ChartsConstSetup[i].object == STATS_OBJ_EEV) Charts[j].add_Point(dEEV.get_EEV());
 #endif
-		else if(ChartsConstSetup[i].object == STATS_OBJ_Overheat2) Charts[j].add_Point(GETBIT(dEEV.get_flags(), fEEV_DirectAlgorithm) ? dEEV.OverheatTCOMP : dEEV.get_tOverheat());
+		else if(ChartsConstSetup[i].object == STATS_OBJ_Overheat2) Charts[j].add_Point(dEEV.get_tOverheat());
 #endif
 		else if(ChartsConstSetup[i].object == STATS_OBJ_Compressor) Charts[j].add_Point(dFC.get_frequency());
 		else if(ChartsConstSetup[i].object == STATS_OBJ_Power_FC) Charts[j].add_Point(dFC.get_power() / 10);
