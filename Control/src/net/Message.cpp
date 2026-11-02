@@ -1246,13 +1246,13 @@ void get_mailState(char *buf, uint16_t buf_size)
 	HP.message.smtpWriteBody("");
 	HP.message.smtpWriteBody("  8. Электросчетчик");
 #ifdef USE_ELECTROMETER_SDM
-	strcpy(buf,"Текущее входное напряжение [В]: ");                          HP.dSDM.get_paramSDM((char*)sdm_VOLTAGE,buf);    HP.message.smtpWriteBody(buf);
-	strcpy(buf,"Текущий потребляемый ток ТН [А]: ");                         HP.dSDM.get_paramSDM((char*)sdm_CURRENT,buf);    HP.message.smtpWriteBody(buf);
-	strcpy(buf,"Текущая потребляемая активная мощность ТН [Вт]: ");          HP.dSDM.get_paramSDM((char*)sdm_ACPOWER,buf);    HP.message.smtpWriteBody(buf);
-	strcpy(buf,"Коэффициент мощности: ");                                    HP.dSDM.get_paramSDM((char*)sdm_POW_FACTOR,buf); HP.message.smtpWriteBody(buf);
-	strcpy(buf,"Угол фазы (градусы): ");                                     HP.dSDM.get_paramSDM((char*)sdm_PHASE,buf);      HP.message.smtpWriteBody(buf);
-	strcpy(buf,"Суммарная активная энергия [кВт*ч]: ");                      HP.dSDM.get_paramSDM((char*)sdm_ACENERGY,buf);   HP.message.smtpWriteBody(buf);
-	strcpy(buf,"Cостояние связи со счетчиком: ");                            HP.dSDM.get_paramSDM((char*)sdm_LINK,buf);       HP.message.smtpWriteBody(buf);
+	strcpy(buf,"Текущее входное напряжение [В]: ");                          api_text_cat(buf, buf_size, "sdm", sdm_VOLTAGE);    HP.message.smtpWriteBody(buf);
+	strcpy(buf,"Текущий потребляемый ток ТН [А]: ");                         api_text_cat(buf, buf_size, "sdm", sdm_CURRENT);    HP.message.smtpWriteBody(buf);
+	strcpy(buf,"Текущая потребляемая активная мощность ТН [Вт]: ");          api_text_cat(buf, buf_size, "sdm", sdm_ACPOWER);    HP.message.smtpWriteBody(buf);
+	strcpy(buf,"Коэффициент мощности: ");                                    api_text_cat(buf, buf_size, "sdm", sdm_POW_FACTOR); HP.message.smtpWriteBody(buf);
+	strcpy(buf,"Угол фазы (градусы): ");                                     api_text_cat(buf, buf_size, "sdm", sdm_PHASE);      HP.message.smtpWriteBody(buf);
+	strcpy(buf,"Суммарная активная энергия [кВт*ч]: ");                      api_text_cat(buf, buf_size, "sdm", sdm_ACENERGY);   HP.message.smtpWriteBody(buf);
+	strcpy(buf,"Cостояние связи со счетчиком: ");                            api_text_cat(buf, buf_size, "sdm", sdm_LINK);       HP.message.smtpWriteBody(buf);
 #else
 	HP.message.smtpWriteBody("SDM absent");
 #endif

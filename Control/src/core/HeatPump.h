@@ -296,6 +296,7 @@ class HeatPump
     uint8_t is_pause();					// Возвращает 1, если ТН в паузе
 	inline boolean is_compressor_on() { return dRelay[RCOMP].get_Relay() || dFC.isfOnOff(); }    // Проверка работает ли компрессор
 	bool    compressor_emergency_off();                                                           // аварийный останов компрессора (set_Error): true - останов отдан
+	SAFETY_WHY safety_check(SAFETY_OUT out, bool on, const char *name, const char *src);              // межблокировки выходов (Safety.h), отказ - в журнал
 
     // Строковые функции
     char *StateToStr();                 // Получить состояние ТН в виде строки
@@ -400,7 +401,6 @@ class HeatPump
 	inline  char* get_passUser() { return Network.passUser; }
 
   // Параметры ТН
-   char*   get_optionHP(char *var, char *ret);              // Получить опции ТН
    uint16_t get_delayRepeadStart(){return Option.delayRepeadStart;} // Получить время между повторными попытками старта
    void set_mode(MODE_HP b) {Prof.SaveON.mode=HouseModeAllowed(b, HouseOnlyHeat);}           // Установить режим работы отопления
    void set_nextMode();                                     // Переключение на следующий режим работы отопления (последовательный перебор режимов)

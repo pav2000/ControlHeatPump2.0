@@ -63,7 +63,6 @@ class Profile                         // Класс профиль
     int8_t update_list(int8_t num);                         // обновить список имен профилей
 
     // ---- работа со слотами из таблицы профилей (всё в ОЗУ, в EEPROM пишет общая кнопка) ----
-    char    *get_table(char *c);                            // ДОБАВЛЯЕТ таблицу всех слотов: поля через ';', слоты через '|'
     boolean  set_slot_meta(int8_t num, const char *field, char *val, bool decode = true); // имя/описание/"в списке" любого занятого слота; decode=false - текст уже раскодирован (веб-API)
     void     api_table(ApiOut *o);                          // таблица слотов для веб-API: JSON-массив объектов
     void     api_slot_get(uint8_t num, uint8_t what, ApiOut *o); // what: 1 имя, 2 описание, 3 признак «в списке» (текущий профиль - живые данные)
@@ -87,14 +86,11 @@ class Profile                         // Класс профиль
     uint16_t region_len(void);                              // длина области профилей на носителе, байт
     inline boolean cache_used(int8_t num) { return cache_magic[num] == 0xaa; } // слот записан?
     int32_t erase(int8_t num);                              // стереть профайл num из еепром  (ставится признак пусто)
-    char*   get_paramProfile(char *var,char *ver);          // профиль Получить параметр второй параметр - наличие инвертора
+    void    info_txt(char *ret);                            // текущий профиль строками для settings.txt (номер, имя, описание, дата, CRC)
     int16_t get_lenProfile(){return dataProfile.len;}       // получить длину профиля при записи
     int8_t  get_idProfile(){return dataProfile.id;}         // получить номер текущего профиля
       
     // Установка параметров
-    char*   get_paramCoolHP(char *var, char *ret, boolean fc);// Охлаждение Получить параметр второй параметр - наличие инвертора
-    char*   get_paramHeatHP(char *var, char *ret,boolean fc);// отопление  Получить параметр  второй параметр - наличие инвертора
-    char*   get_boiler(char *var, char *ret);               // Получить параметр из строки по имени var, результат ДОБАВЛЯЕТСЯ в строку ret
     int32_t load_from_EEPROM_SaveON_mode(int8_t id);	    // Прочитать из EEPROM режим работы ТН (SaveON)
  
     char list[I2C_PROFIL_NUM*(LEN_PROFILE_NAME+6)+1];         // текущий список: на профиль "N. " + имя + ":1;" = имя+6 байт (раньше +2, и пять длинных имён выходили за массив)

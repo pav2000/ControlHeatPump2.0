@@ -329,6 +329,13 @@ enum CLIMATE_RELAY_ACT {
 // RELAY_OFF_PLAN - для насоса отопления и насоса ТП вместе.
 uint8_t ClimatePumpPauseStep(uint8_t *start_pump, uint16_t *timer, uint16_t work, uint16_t pause);
 
+// ТЭН отопления (RHEAT), резерв или бивалент: включить, когда температура t (дом или улица) ниже target на hyst и ТН
+// хочет греть (want), выключить выше target или когда греть не нужно. ТЭН стоит в контуре отопления и без
+// циркуляции не включается, а при остановке насоса выключается (flow - насос выходного контура включён, 6.2):
+// прежде он включался в пуске раньше насосов, а после паузы ТН - при насосе, выключенном паузой насосов.
+// Возврат: RELAY_KEEP, RELAY_ON или RELAY_OFF.
+uint8_t ClimateAddHeatStep(bool on, int16_t t, int16_t target, int16_t hyst, bool want, bool flow);
+
 // Циркуляция ГВС (реле RPUMPB) при работающем ТН.
 struct CirculIn {
 	bool     allowed;            // бойлер включён и расписание бойлера разрешает (scheduleBoiler && get_BoilerON)

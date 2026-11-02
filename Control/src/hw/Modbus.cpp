@@ -31,6 +31,7 @@
  */
 #include "Hardware.h"     // devModbus, devSDM, объекты шины
 #include "../core/HeatPump.h"     // HP - счётчик пишет в него мощность
+#include "ModbusLock.h"          // Modbus_LockRefused
 #include "../core/Rtos.h"         // xModbusSemaphore, _delay, TaskSuspendAll, Watchdog_AliveHere
 #include "../net/ParamRegistry.h" // таблица параметров веб-API (внизу файла)
 
@@ -341,7 +342,9 @@ int8_t devModbus::initModbus()
 int8_t devModbus::transact(const char *who, uint8_t id, MB_FUNC func, uint16_t cmd,
                            uint16_t num, uint16_t *rx, const uint16_t *tx)
 {
-	if(!xModbusSemaphore) return err = ERR_NO_MODBUS;            // замок создаётся только при наличии Modbus (Control.ino); без него захват пустого замка - assert ядра
+	// Замок создаётся в setup() после HP.initHeatPump, а initFC/initSDM ходят по шине раньше. До старта планировщика
+	// SemaphoreTake замок не трогает (задач нет), поэтому пустой замок там допустим; после старта пустой замок - assert ядра.
+	if(Modbus_LockRefused(xModbusSemaphore != NULL, xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED)) return err = ERR_NO_MODBUS;
 	if(SemaphoreTake(xModbusSemaphore, (MODBUS_TIME_WAIT / portTICK_PERIOD_MS)) == pdFALSE) // Захват мютекса потока или ОЖИДАНИЕ MODBUS_TIME_WAIT
 	{
 		journal.jprintf((char*) cErrorMutex, who, MutexModbusBusy);

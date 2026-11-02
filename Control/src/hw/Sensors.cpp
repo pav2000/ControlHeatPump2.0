@@ -538,19 +538,31 @@ void devRelay::initRelay(int sensor)
 }
 
 
+// Выход реле с точки зрения межблокировок (Safety.h)
+static SAFETY_OUT relay_safety_out(uint8_t n)
+{
+	if(n == RCOMP) return SAFE_COMP;
+	if(n == PUMP_IN) return SAFE_PUMP_IN;
+	if(n == PUMP_OUT) return SAFE_PUMP_OUT;
+#ifdef RHEAT
+	if(n == RHEAT) return SAFE_HEATER;
+#endif
+#ifdef R4WAY
+	if(n == R4WAY) return SAFE_4WAY;
+#endif
+	return SAFE_OTHER;
+}
+
 // Установить реле в состояние r, базовая функция все остальные функции используют ее
 // Если состояния совпадают то ничего не делаем, 0/-1 - выкл основной алгоритм, fR_Status* - включить, -fR_Status* - выключить)
 int8_t devRelay::set_Relay(int8_t r, bool planned)
 {
 	if(!(flags & (1 << fPresent))) return ERR_DEVICE;  // Реле не установлено  и пытаемся его включить
-	if(r == 0) r = -fR_StatusMain;
-	else if(r == fR_StatusAllOff) {
-		flags &= ~fR_StatusMask;
-		r = -fR_StatusMain;
-	}
-	flags = (flags & ~(1 << abs(r))) | ((r > 0) << abs(r));
+	const char *src = r == fR_StatusAllOff ? "all" : (r == fR_StatusManual || r == -fR_StatusManual) ? "manual" : "auto";
+	flags = Relay_ApplyStatus(flags, r);
 	r = (flags & fR_StatusMask) != 0;
 	if(Relay == r) return OK;   // Ничего менять не надо выходим
+	HP.safety_check(relay_safety_out(number), r, name, src);   // межблокировки: пока только наблюдение
     Relay = r;                  // Все удачно, сохранить
 	if(testMode == NORMAL || testMode == HARD_TEST || (testMode == TEST && number != RCOMP)) {
 #ifndef RELAY_INVERT            // Нет инвертирования реле -  Влючение реле (Relay=true) соответсвует НИЗКИЙ уровень на выходе МК
@@ -583,7 +595,7 @@ int8_t devRelay::set_Relay(int8_t r, bool planned)
 // ---- реле ----
 enum { R_ON = 1, R_PRESENT, R_NOTE, R_PIN };
 static const ApiParam apiRelayTab[] = {
-	SA("on",      0,     MK_BOOL, 1, R_ON),        // состояние; запись: включить вручную / выключить по всем алгоритмам
+	SA("on",      PF_OFF, MK_BOOL, 1, R_ON),       // состояние; запись: включить вручную / выключить по всем алгоритмам, только при остановленном ТН (В-5)
 	SA("present", PF_RO, MK_BOOL, 1, R_PRESENT),
 	SA("note",    PF_RO, MK_TEXT, 1, R_NOTE),
 	SA("pin",     PF_RO, MK_INT,  1, R_PIN),
@@ -608,7 +620,7 @@ static int api_set_rl(uint8_t hook, uint8_t dev, const char *val)
 	if(hook != R_ON) return AE_FAIL;
 	bool on;
 	if(!strcmp(val, "1") || !strcmp(val, "true")) on = true; else if(!strcmp(val, "0") || !strcmp(val, "false")) on = false; else return AE_BAD_VALUE;
-	return HP.dRelay[dev].set_Relay(on ? fR_StatusManual : fR_StatusAllOff) == OK ? AE_OK : AE_FAIL;
+	return (on ? HP.dRelay[dev].set_Relay(fR_StatusManual) : HP.dRelay[dev].set_AllOFF()) == OK ? AE_OK : AE_FAIL;
 }
 static const ApiOps apiOpsRelay = { 0, api_get_rl, api_set_rl, 0, 0, api_rl_n, api_rl_name, api_rl_ok };
 extern const ApiGroup ApiGrpRelay;

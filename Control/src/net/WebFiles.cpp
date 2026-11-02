@@ -24,6 +24,25 @@
 
 // Генерация различных файлов для выгрузки
 #define STR_END   strcat(Socket[thread].outBuf,"\r\n")      // Макрос на конец строки
+
+// Значение параметра из реестра (раздел 6.7): name - строка STRCONST, ключ = sect + "." + name строчными
+#define TXT_VAL(sect, name)  api_text_cat(Socket[thread].outBuf, sizeof(Socket[thread].outBuf) - 2, sect, name)
+
+// Строки «подпись значение» таблицей: подписи здесь, значения - из реестра. Буфер уходит в сокет, когда заполнится.
+struct TxtKey { const char *label; const char *name; };
+static void txt_keys(uint8_t thread, const char *sect, const TxtKey *t, uint8_t n)
+{
+	for(uint8_t i = 0; i < n; i++) {
+		if(strlen(Socket[thread].outBuf) > sizeof(Socket[thread].outBuf) - 512) {
+			sendBufferRTOS(thread, (byte*)Socket[thread].outBuf, strlen(Socket[thread].outBuf));
+			Socket[thread].outBuf[0] = 0;
+		}
+		strcat(Socket[thread].outBuf, t[i].label);
+		TXT_VAL(sect, t[i].name);
+		STR_END;
+	}
+}
+#define TXT_KEYS(sect, ...) do { static const TxtKey t_[] = { __VA_ARGS__ }; txt_keys(thread, sect, t_, sizeof(t_) / sizeof(t_[0])); } while(0)
 extern uint16_t sendPacketRTOS(uint8_t thread, const uint8_t * buf, uint16_t len,uint16_t pause);
 
 // Генерация заголовка
@@ -169,13 +188,14 @@ void get_txtState(uint8_t thread, boolean header)
 
         strcat(Socket[thread].outBuf,"\n  8. Электросчетчик SDM\r\n");
          #ifdef USE_ELECTROMETER_SDM
-           strcat(Socket[thread].outBuf,"Текущее входное напряжение [В]: ");                          HP.dSDM.get_paramSDM((char*)sdm_VOLTAGE,Socket[thread].outBuf); STR_END;
-           strcat(Socket[thread].outBuf,"Текущий потребляемый ток ТН [А]: ");                         HP.dSDM.get_paramSDM((char*)sdm_CURRENT,Socket[thread].outBuf); STR_END;
-           strcat(Socket[thread].outBuf,"Текущая потребляемая активная мощность ТН [Вт]: ");          HP.dSDM.get_paramSDM((char*)sdm_ACPOWER,Socket[thread].outBuf); STR_END;
-           strcat(Socket[thread].outBuf,"Коэффициент мощности: ");                                    HP.dSDM.get_paramSDM((char*)sdm_POW_FACTOR,Socket[thread].outBuf); STR_END;
-           strcat(Socket[thread].outBuf,"Угол фазы (градусы): ");                                     HP.dSDM.get_paramSDM((char*)sdm_PHASE,Socket[thread].outBuf); STR_END;
-           strcat(Socket[thread].outBuf,"Суммарная активная энергия [кВт/ч]: ");                     HP.dSDM.get_paramSDM((char*)sdm_ACENERGY,Socket[thread].outBuf); STR_END;
-           strcat(Socket[thread].outBuf,"Cостояние связи со счетчиком: ");                            HP.dSDM.get_paramSDM((char*)sdm_LINK,Socket[thread].outBuf); STR_END;
+           TXT_KEYS("sdm",
+           	{ "Текущее входное напряжение [В]: ", sdm_VOLTAGE },
+           	{ "Текущий потребляемый ток ТН [А]: ", sdm_CURRENT },
+           	{ "Текущая потребляемая активная мощность ТН [Вт]: ", sdm_ACPOWER },
+           	{ "Коэффициент мощности: ", sdm_POW_FACTOR },
+           	{ "Угол фазы (градусы): ", sdm_PHASE },
+           	{ "Суммарная активная энергия [кВт/ч]: ", sdm_ACENERGY },
+           	{ "Cостояние связи со счетчиком: ", sdm_LINK });
          #else
            strcat(Socket[thread].outBuf,"SDM absent\r\n");
          #endif  
@@ -215,252 +235,281 @@ void get_txtSettings(uint8_t thread)
                     case pCOOL: strcat(Socket[thread].outBuf,"Охлаждение\r\n"); break;
                     default:    strcat(Socket[thread].outBuf,"Выключено\r\n"); break;
                    }  
-     strcat(Socket[thread].outBuf,"Бойлер:"); HP.Prof.get_boiler((char*)boil_BOILER_ON,Socket[thread].outBuf); STR_END;
+     TXT_KEYS("boiler",
+     	{ "Бойлер:", boil_BOILER_ON });
      
  
      strcat(Socket[thread].outBuf,"\n  1.1 Отопление\r\n");
-     strcat(Socket[thread].outBuf,"Алгоритм работы отопления: "); HP.Prof.get_paramHeatHP((char*)hp_RULE,Socket[thread].outBuf,HP.dFC.get_present()); STR_END;
-     strcat(Socket[thread].outBuf,"Целевая температура дома (C°): ");HP.Prof.get_paramHeatHP((char*)hp_TEMP1,Socket[thread].outBuf,HP.dFC.get_present());STR_END;
-     strcat(Socket[thread].outBuf,"Целевая температура обратки (C°):");HP.Prof.get_paramHeatHP((char*)hp_TEMP2,Socket[thread].outBuf,HP.dFC.get_present());STR_END;
-     strcat(Socket[thread].outBuf,"Что является целью: ");  HP.Prof.get_paramHeatHP((char*)hp_TARGET,Socket[thread].outBuf,HP.dFC.get_present());STR_END;
-     strcat(Socket[thread].outBuf,"Гистерезис целевой температуры (C°): ");HP.Prof.get_paramHeatHP((char*)hp_DTEMP,Socket[thread].outBuf,HP.dFC.get_present());STR_END;
+     TXT_KEYS("heat",
+     	{ "Алгоритм работы отопления: ", hp_RULE },
+     	{ "Целевая температура дома (C°): ", hp_TEMP1 },
+     	{ "Целевая температура обратки (C°):", hp_TEMP2 },
+     	{ "Что является целью: ", hp_TARGET },
+     	{ "Гистерезис целевой температуры (C°): ", hp_DTEMP });
     
      strcat(Socket[thread].outBuf,"  - Использование ночного тарифа -\r\n");
-     strcat(Socket[thread].outBuf,"Добавка к целевой температуре по часам (C°): ");HP.Prof.get_paramHeatHP((char*)ADD_DELTA_TEMP,Socket[thread].outBuf,HP.dFC.get_present());STR_END;
-     strcat(Socket[thread].outBuf,"Начальный час добавки к целевой температуре: ");HP.Prof.get_paramHeatHP((char*)ADD_DELTA_HOUR,Socket[thread].outBuf,HP.dFC.get_present());STR_END;
-     strcat(Socket[thread].outBuf,"Конечный час добавки к целевой температуре: ");HP.Prof.get_paramHeatHP((char*)ADD_DELTA_END_HOUR,Socket[thread].outBuf,HP.dFC.get_present());STR_END;  
+     TXT_KEYS("heat",
+     	{ "Добавка к целевой температуре по часам (C°): ", ADD_DELTA_TEMP },
+     	{ "Начальный час добавки к целевой температуре: ", ADD_DELTA_HOUR },
+     	{ "Конечный час добавки к целевой температуре: ", ADD_DELTA_END_HOUR });
        
      if (HP.get_ruleHeat()!=pHYSTERESIS)
          {
          strcat(Socket[thread].outBuf," - ПИД -\r\n");
-         strcat(Socket[thread].outBuf,"Целевая температура подачи ПИД ТН (C°): ");HP.Prof.get_paramHeatHP((char*)hp_TEMP_PID,Socket[thread].outBuf,HP.dFC.get_present());STR_END;
-         strcat(Socket[thread].outBuf,"Постоянная интегрирования времени в секундах ПИД ТН: ");HP.Prof.get_paramHeatHP((char*)hp_HP_TIME,Socket[thread].outBuf,HP.dFC.get_present());STR_END;
-         strcat(Socket[thread].outBuf,"Пропорциональная составляющая ПИД ТН: ");HP.Prof.get_paramHeatHP((char*)hp_HP_PRO,Socket[thread].outBuf,HP.dFC.get_present());STR_END;
-         strcat(Socket[thread].outBuf,"Интегральная составляющая ПИД ТН: ");HP.Prof.get_paramHeatHP((char*)hp_HP_IN,Socket[thread].outBuf,HP.dFC.get_present());STR_END;
-         strcat(Socket[thread].outBuf,"Дифференциальная составляющая ПИД ТН: ");HP.Prof.get_paramHeatHP((char*)hp_HP_DIF,Socket[thread].outBuf,HP.dFC.get_present());STR_END;
+         TXT_KEYS("heat",
+         	{ "Целевая температура подачи ПИД ТН (C°): ", hp_TEMP_PID },
+         	{ "Постоянная интегрирования времени в секундах ПИД ТН: ", hp_HP_TIME },
+         	{ "Пропорциональная составляющая ПИД ТН: ", hp_HP_PRO },
+         	{ "Интегральная составляющая ПИД ТН: ", hp_HP_IN },
+         	{ "Дифференциальная составляющая ПИД ТН: ", hp_HP_DIF });
          }
          
      strcat(Socket[thread].outBuf,"  - Опции -\r\n"); 
-     strcat(Socket[thread].outBuf,"Использование погодозависимости: ");HP.Prof.get_paramHeatHP((char*)hp_WEATHER,Socket[thread].outBuf,HP.dFC.get_present());STR_END;
-     strcat(Socket[thread].outBuf,"Коэффициент погодозависимости: ");HP.Prof.get_paramHeatHP((char*)hp_K_WEATHER,Socket[thread].outBuf,HP.dFC.get_present());STR_END;
+     TXT_KEYS("heat",
+     	{ "Использование погодозависимости: ", hp_WEATHER },
+     	{ "Коэффициент погодозависимости: ", hp_K_WEATHER });
         
      strcat(Socket[thread].outBuf," - Защиты - \r\n");
-     strcat(Socket[thread].outBuf,"Tемпература подачи максимальная (C°): ");HP.Prof.get_paramHeatHP((char*)hp_TEMP_IN,Socket[thread].outBuf,HP.dFC.get_present());STR_END;
-     strcat(Socket[thread].outBuf,"Tемпература обратки минимальная (C°): ");HP.Prof.get_paramHeatHP((char*)hp_TEMP_OUT,Socket[thread].outBuf,HP.dFC.get_present());STR_END;
-     strcat(Socket[thread].outBuf,"Максимальная разность температур конденсатора (C°): ");HP.Prof.get_paramHeatHP((char*)hp_D_TEMP,Socket[thread].outBuf,HP.dFC.get_present());STR_END;
+     TXT_KEYS("heat",
+     	{ "Tемпература подачи максимальная (C°): ", hp_TEMP_IN },
+     	{ "Tемпература обратки минимальная (C°): ", hp_TEMP_OUT },
+     	{ "Максимальная разность температур конденсатора (C°): ", hp_D_TEMP });
      sendBufferRTOS(thread,(byte*)Socket[thread].outBuf,strlen(Socket[thread].outBuf)); 
  
      strcpy(Socket[thread].outBuf,"\n  1.2 Охлаждение\r\n");
-     strcat(Socket[thread].outBuf,"Алгоритм работы отопления: "); HP.Prof.get_paramCoolHP((char*)hp_RULE,Socket[thread].outBuf,HP.dFC.get_present());STR_END;
-     strcat(Socket[thread].outBuf,"Целевая температура дома (C°): ");HP.Prof.get_paramCoolHP((char*)hp_TEMP1,Socket[thread].outBuf,HP.dFC.get_present());STR_END;
-     strcat(Socket[thread].outBuf,"Целевая температура обратки (C°):");HP.Prof.get_paramCoolHP((char*)hp_TEMP2,Socket[thread].outBuf,HP.dFC.get_present());STR_END;
-     strcat(Socket[thread].outBuf,"Что является целью: ");  HP.Prof.get_paramCoolHP((char*)hp_TARGET,Socket[thread].outBuf,HP.dFC.get_present());STR_END;
-     strcat(Socket[thread].outBuf,"Гистерезис целевой температуры (C°): ");HP.Prof.get_paramCoolHP((char*)hp_DTEMP,Socket[thread].outBuf,HP.dFC.get_present());STR_END;
+     TXT_KEYS("cool",
+     	{ "Алгоритм работы отопления: ", hp_RULE },
+     	{ "Целевая температура дома (C°): ", hp_TEMP1 },
+     	{ "Целевая температура обратки (C°):", hp_TEMP2 },
+     	{ "Что является целью: ", hp_TARGET },
+     	{ "Гистерезис целевой температуры (C°): ", hp_DTEMP });
 
      if (HP.get_ruleCool()!=pHYSTERESIS)
          {
          strcat(Socket[thread].outBuf," - ПИД -\r\n");	
-         strcat(Socket[thread].outBuf,"Целевая температура подачи ПИД ТН (C°): ");HP.Prof.get_paramCoolHP((char*)hp_TEMP_PID,Socket[thread].outBuf,HP.dFC.get_present());STR_END;
-         strcat(Socket[thread].outBuf,"Постоянная интегрирования времени в секундах ПИД ТН: ");HP.Prof.get_paramCoolHP((char*)hp_HP_TIME,Socket[thread].outBuf,HP.dFC.get_present());STR_END;
-         strcat(Socket[thread].outBuf,"Пропорциональная составляющая ПИД ТН: ");HP.Prof.get_paramCoolHP((char*)hp_HP_PRO,Socket[thread].outBuf,HP.dFC.get_present());STR_END;
-         strcat(Socket[thread].outBuf,"Интегральная составляющая ПИД ТН: ");HP.Prof.get_paramCoolHP((char*)hp_HP_IN,Socket[thread].outBuf,HP.dFC.get_present());STR_END;
-         strcat(Socket[thread].outBuf,"Дифференциальная составляющая ПИД ТН: ");HP.Prof.get_paramCoolHP((char*)hp_HP_DIF,Socket[thread].outBuf,HP.dFC.get_present());STR_END;
+         TXT_KEYS("cool",
+         	{ "Целевая температура подачи ПИД ТН (C°): ", hp_TEMP_PID },
+         	{ "Постоянная интегрирования времени в секундах ПИД ТН: ", hp_HP_TIME },
+         	{ "Пропорциональная составляющая ПИД ТН: ", hp_HP_PRO },
+         	{ "Интегральная составляющая ПИД ТН: ", hp_HP_IN },
+         	{ "Дифференциальная составляющая ПИД ТН: ", hp_HP_DIF });
          }
      strcat(Socket[thread].outBuf," - Опции -\r\n"); 
-     strcat(Socket[thread].outBuf,"Использование погодозависимости: ");HP.Prof.get_paramCoolHP((char*)hp_WEATHER,Socket[thread].outBuf,HP.dFC.get_present());STR_END;
-     strcat(Socket[thread].outBuf,"Коэффициент погодозависимости: ");HP.Prof.get_paramCoolHP((char*)hp_K_WEATHER,Socket[thread].outBuf,HP.dFC.get_present());STR_END;
+     TXT_KEYS("cool",
+     	{ "Использование погодозависимости: ", hp_WEATHER },
+     	{ "Коэффициент погодозависимости: ", hp_K_WEATHER });
          
      strcat(Socket[thread].outBuf," - Защиты -\r\n");
-     strcat(Socket[thread].outBuf,"Tемпература подачи максимальная (C°): ");HP.Prof.get_paramCoolHP((char*)hp_TEMP_IN,Socket[thread].outBuf,HP.dFC.get_present());STR_END;
-     strcat(Socket[thread].outBuf,"Tемпература обратки минимальная (C°): ");HP.Prof.get_paramCoolHP((char*)hp_TEMP_OUT,Socket[thread].outBuf,HP.dFC.get_present());STR_END;
-     strcat(Socket[thread].outBuf,"Максимальная разность температур конденсатора (C°): ");HP.Prof.get_paramCoolHP((char*)hp_D_TEMP,Socket[thread].outBuf,HP.dFC.get_present());STR_END;
+     TXT_KEYS("cool",
+     	{ "Tемпература подачи максимальная (C°): ", hp_TEMP_IN },
+     	{ "Tемпература обратки минимальная (C°): ", hp_TEMP_OUT },
+     	{ "Максимальная разность температур конденсатора (C°): ", hp_D_TEMP });
      sendBufferRTOS(thread,(byte*)Socket[thread].outBuf,strlen(Socket[thread].outBuf));   
      
      strcpy(Socket[thread].outBuf,"\n  1.3 ГВС\r\n");
-     strcat(Socket[thread].outBuf,"Целевая температура бойлера (C°): ");HP.Prof.get_boiler((char*)boil_TEMP_TARGET,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Гистерезис целевой температуры (C°): ");HP.Prof.get_boiler((char*)boil_DTARGET,Socket[thread].outBuf);STR_END;
+     TXT_KEYS("boiler",
+     	{ "Целевая температура бойлера (C°): ", boil_TEMP_TARGET },
+     	{ "Гистерезис целевой температуры (C°): ", boil_DTARGET });
      
      strcat(Socket[thread].outBuf," - Использование ночного тарифа - \r\n");
-     strcat(Socket[thread].outBuf,"Добавка к целевой температуре по часам (C°): ");HP.Prof.get_boiler((char*)ADD_DELTA_TEMP,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Начальный час добавки к целевой температуре: ");HP.Prof.get_boiler((char*)ADD_DELTA_HOUR,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Конечный час добавки к целевой температуре: ");HP.Prof.get_boiler((char*)ADD_DELTA_END_HOUR,Socket[thread].outBuf);STR_END;  
+     TXT_KEYS("boiler",
+     	{ "Добавка к целевой температуре по часам (C°): ", ADD_DELTA_TEMP },
+     	{ "Начальный час добавки к целевой температуре: ", ADD_DELTA_HOUR },
+     	{ "Конечный час добавки к целевой температуре: ", ADD_DELTA_END_HOUR });
      
      strcat(Socket[thread].outBuf," - Встроенный ТЭН -\r\n");
-     strcat(Socket[thread].outBuf,"Бойлер греет только ТЭН (ТН бойлер не греет): ");HP.Prof.get_boiler((char*)boil_fHeaterOnly,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Ускоренный нагрев ГВС (одновременное использование ТЭНа и ТН для нагрева): ");HP.Prof.get_boiler((char*)boil_TURBO_BOILER,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Использование ТЭНа для догрева бойлера до высоких температур: ");HP.Prof.get_boiler((char*)boil_ADD_HEATING,Socket[thread].outBuf); STR_END;
-     strcat(Socket[thread].outBuf,"Значение температуры для включения догрева бойлера (C°): "); HP.Prof.get_boiler((char*)boil_TEMP_RBOILER,Socket[thread].outBuf) ;STR_END;
-     strcat(Socket[thread].outBuf,"Гистерезис температуры догрева бойлера, если догрев не по расписанию °C: "); HP.Prof.get_boiler((char*)boil_dAddHeat,Socket[thread].outBuf) ;STR_END;
-     strcat(Socket[thread].outBuf,"Включать догрев, если компрессор не нагрел бойлер до температуры догрева: ");HP.Prof.get_boiler((char*)boil_fAddHeatingForce,Socket[thread].outBuf);STR_END;
+     TXT_KEYS("boiler",
+     	{ "Бойлер греет только ТЭН (ТН бойлер не греет): ", boil_fHeaterOnly },
+     	{ "Ускоренный нагрев ГВС (одновременное использование ТЭНа и ТН для нагрева): ", boil_TURBO_BOILER },
+     	{ "Использование ТЭНа для догрева бойлера до высоких температур: ", boil_ADD_HEATING },
+     	{ "Значение температуры для включения догрева бойлера (C°): ", boil_TEMP_RBOILER },
+     	{ "Гистерезис температуры догрева бойлера, если догрев не по расписанию °C: ", boil_dAddHeat },
+     	{ "Включать догрев, если компрессор не нагрел бойлер до температуры догрева: ", boil_fAddHeatingForce });
      
      
      if (HP.dFC.get_present()) // Только для инвертора
          {
          strcat(Socket[thread].outBuf," - ПИД -\r\n");
-         strcat(Socket[thread].outBuf,"Использовать ПИД управление инвертором: ");HP.Prof.get_boiler((char*)boil_fBoilerPID,Socket[thread].outBuf);STR_END;  
-         strcat(Socket[thread].outBuf,"Целевая температура подачи (C°): ");HP.Prof.get_boiler((char*)boil_BOIL_TEMP,Socket[thread].outBuf);STR_END;
-         strcat(Socket[thread].outBuf,"Постоянная интегрирования времени (сек.): ");HP.Prof.get_boiler((char*)boil_BOIL_TIME,Socket[thread].outBuf);STR_END;
-         strcat(Socket[thread].outBuf,"Пропорциональная составляющая: ");HP.Prof.get_boiler((char*)boil_BOIL_PRO,Socket[thread].outBuf);STR_END;
-         strcat(Socket[thread].outBuf,"Интегральная составляющая: ");HP.Prof.get_boiler((char*)boil_BOIL_IN,Socket[thread].outBuf);STR_END;
-         strcat(Socket[thread].outBuf,"Дифференциальная составляющая: ");HP.Prof.get_boiler((char*)boil_BOIL_DIF,Socket[thread].outBuf);STR_END;
+         TXT_KEYS("boiler",
+         	{ "Использовать ПИД управление инвертором: ", boil_fBoilerPID },
+         	{ "Целевая температура подачи (C°): ", boil_BOIL_TEMP },
+         	{ "Постоянная интегрирования времени (сек.): ", boil_BOIL_TIME },
+         	{ "Пропорциональная составляющая: ", boil_BOIL_PRO },
+         	{ "Интегральная составляющая: ", boil_BOIL_IN },
+         	{ "Дифференциальная составляющая: ", boil_BOIL_DIF });
          }
          
      strcat(Socket[thread].outBuf," - Защиты при работе теплового насоса -\r\n");
-     strcat(Socket[thread].outBuf,"Tемпература подачи максимальная (C°): ");HP.Prof.get_boiler((char*)boil_TEMP_MAX,Socket[thread].outBuf);STR_END;
+     TXT_KEYS("boiler",
+     	{ "Tемпература подачи максимальная (C°): ", boil_TEMP_MAX });
      
      strcat(Socket[thread].outBuf," - Опции -\r\n");
-     strcat(Socket[thread].outBuf,"Греть совместно с отоплением, если ТН работает на отопление: ");HP.Prof.get_boiler((char*)boil_TOGETHER_HEAT,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Профилактика сальмонеллы (1 раз в неделю): ");HP.Prof.get_boiler((char*)boil_SALMONELLA,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Длительная обработка сальмонеллы: ");HP.Prof.get_boiler((char*)boil_fSalmonellaHold,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Управления циркуляционным насосом ГВС: ");HP.Prof.get_boiler((char*)boil_CIRCULATION,Socket[thread].outBuf); STR_END;
-     strcat(Socket[thread].outBuf,"Время работы насоса ГВС (мин.): ");HP.Prof.get_boiler((char*)boil_CIRCUL_WORK,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Пауза в работе насоса ГВС (мин.): ");HP.Prof.get_boiler((char*)boil_CIRCUL_PAUSE,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"При нагреве бойлера сбрасывать ""избыточное"" тепло систему отопления: ");HP.Prof.get_boiler((char*)boil_RESET_HEAT,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Время сброса тепла (мин.): ");HP.Prof.get_boiler((char*)boil_RESET_TIME,Socket[thread].outBuf);  STR_END;
+     TXT_KEYS("boiler",
+     	{ "Греть совместно с отоплением, если ТН работает на отопление: ", boil_TOGETHER_HEAT },
+     	{ "Профилактика сальмонеллы (1 раз в неделю): ", boil_SALMONELLA },
+     	{ "Длительная обработка сальмонеллы: ", boil_fSalmonellaHold },
+     	{ "Управления циркуляционным насосом ГВС: ", boil_CIRCULATION },
+     	{ "Время работы насоса ГВС (мин.): ", boil_CIRCUL_WORK },
+     	{ "Пауза в работе насоса ГВС (мин.): ", boil_CIRCUL_PAUSE },
+     	{ "При нагреве бойлера сбрасывать ""избыточное"" тепло систему отопления: ", boil_RESET_HEAT },
+     	{ "Время сброса тепла (мин.): ", boil_RESET_TIME });
      
    
      strcat(Socket[thread].outBuf," - Расписание работы -\r\n");
-     strcat(Socket[thread].outBuf,"Использование расписания: ");HP.Prof.get_boiler((char*)boil_SCHEDULER_ON,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Работа по расписанию только для ТЭНа: ");HP.Prof.get_boiler((char*)boil_SCHEDULER_ADDHEAT,Socket[thread].outBuf);STR_END; 
-     HP.Prof.get_boiler((char*)boil_SCHEDULER,Socket[thread].outBuf);STR_END;
+     TXT_KEYS("boiler",
+     	{ "Использование расписания: ", boil_SCHEDULER_ON },
+     	{ "Работа по расписанию только для ТЭНа: ", boil_SCHEDULER_ADDHEAT },
+     	{ "", boil_SCHEDULER });
      sendBufferRTOS(thread,(byte*)Socket[thread].outBuf,strlen(Socket[thread].outBuf));  
 
      strcpy(Socket[thread].outBuf,"\n  1.4 Текущий профиль ТН\r\n");  
-     strcat(Socket[thread].outBuf,"Номер профиля: "); HP.Prof.get_paramProfile((char*)prof_ID_PROFILE,Socket[thread].outBuf);STR_END; 
-     strcat(Socket[thread].outBuf,"Имя профиля: "); HP.Prof.get_paramProfile((char*)prof_NAME_PROFILE,Socket[thread].outBuf);STR_END; 
-     strcat(Socket[thread].outBuf,"Описание профиля: "); HP.Prof.get_paramProfile((char*)prof_NOTE_PROFILE,Socket[thread].outBuf);STR_END; 
-     strcat(Socket[thread].outBuf,"Дата изменения профиля: "); HP.Prof.get_paramProfile((char*)prof_DATE_PROFILE,Socket[thread].outBuf);STR_END; 
-     strcat(Socket[thread].outBuf,"CRC16 профиля: "); HP.Prof.get_paramProfile((char*)prof_CRC16_PROFILE,Socket[thread].outBuf);STR_END; 
+     HP.Prof.info_txt(Socket[thread].outBuf);
      sendBufferRTOS(thread,(byte*)Socket[thread].outBuf,strlen(Socket[thread].outBuf));  
      
      strcpy(Socket[thread].outBuf,"\n  1.5 Опции ТН\r\n");
-     strcat(Socket[thread].outBuf,"Расположение файлов веб-сервера на SPI Flash (иначе на SD карте): "); HP.get_optionHP((char*)option_WebOnSPIFlash,Socket[thread].outBuf);STR_END; 
-     strcat(Socket[thread].outBuf,"Сохранение состояния ТН в ЕЕПРОМ, для восстановления его после сброса: "); HP.get_optionHP((char*)option_SAVE_ON,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Число попыток пуска компрессора: "); HP.get_optionHP((char*)option_ATTEMPT,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Интервал накопления точек графиков в памяти, сек.: "); HP.get_optionHP((char*)option_TIME_CHART,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Графики в памяти пишутся только во время работы компрессора: "); HP.get_optionHP((char*)option_Charts_when_comp_on,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Запись истории на SD карту (раз в минуту): "); HP.get_optionHP((char*)option_History,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Детализация ВКЛ/ВЫКЛ компрессора в истории (10 с, 5 мин): "); HP.get_optionHP((char*)option_HistoryDetail,Socket[thread].outBuf);STR_END;
+     TXT_KEYS("ohp",
+     	{ "Расположение файлов веб-сервера на SPI Flash (иначе на SD карте): ", option_WebOnSPIFlash },
+     	{ "Сохранение состояния ТН в ЕЕПРОМ, для восстановления его после сброса: ", option_SAVE_ON },
+     	{ "Число попыток пуска компрессора: ", option_ATTEMPT },
+     	{ "Интервал накопления точек графиков в памяти, сек.: ", option_TIME_CHART },
+     	{ "Графики в памяти пишутся только во время работы компрессора: ", option_Charts_when_comp_on },
+     	{ "Запись истории на SD карту (раз в минуту): ", option_History },
+     	{ "Детализация ВКЛ/ВЫКЛ компрессора в истории (10 с, 5 мин): ", option_HistoryDetail });
      
 
      strcat(Socket[thread].outBuf," - Настройки контура отопления -\r\n");
-     strcat(Socket[thread].outBuf,"Использование дополнительного ТЭНа отопления: "); HP.get_optionHP((char*)option_ADD_HEAT,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Температура для управления дополнительным ТЭНом (C°): ");HP.get_optionHP((char*)option_TEMP_RHEAT,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Время работы насоса отопления при выключенном компрессоре (сек): "); HP.get_optionHP((char*)option_PUMP_WORK,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Время паузы насоса отопления при выключенном компрессоре (сек): "); HP.get_optionHP((char*)option_PUMP_PAUSE,Socket[thread].outBuf);STR_END;
+     TXT_KEYS("ohp",
+     	{ "Использование дополнительного ТЭНа отопления: ", option_ADD_HEAT },
+     	{ "Температура для управления дополнительным ТЭНом (C°): ", option_TEMP_RHEAT },
+     	{ "Время работы насоса отопления при выключенном компрессоре (сек): ", option_PUMP_WORK },
+     	{ "Время паузы насоса отопления при выключенном компрессоре (сек): ", option_PUMP_PAUSE });
      
      strcat(Socket[thread].outBuf," - Времена и задержки -\r\n");
-     strcat(Socket[thread].outBuf,"Минимальное время простоя компрессора (мин): "); HP.get_optionHP((char*)option_PAUSE,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Задержка включения компрессора после включения насосов (сек): "); HP.get_optionHP((char*)option_DELAY_ON_PUMP,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Задержка выключения насосов после выключения компрессора (сек): "); HP.get_optionHP((char*)option_DELAY_OFF_PUMP,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Задержка включения ТН после внезапного сброса контроллера (сек): "); HP.get_optionHP((char*)option_DELAY_START_RES,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Задержка перед повторным включением ТН при ошибке (попытки пуска) (сек): "); HP.get_optionHP((char*)option_DELAY_REPEAD_START,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Задержка между переключением реверсивного клапана и включением компрессора (сек): "); HP.get_optionHP((char*)option_DELAY_R4WAY,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Пауза после переключение ГВС (сек): "); HP.get_optionHP((char*)option_DELAY_BOILER_SW,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Время на сколько блокируются защиты при переходе с ГВС (сек): "); HP.get_optionHP((char*)option_DELAY_BOILER_OFF,Socket[thread].outBuf);STR_END;
-     // Дополнительно нет на морде
-     strcat(Socket[thread].outBuf,"Задержка после срабатывания датчика перед включением разморозки (сек): "); HP.get_optionHP((char*)option_DELAY_DEFROST_ON,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Задержка перед выключением разморозки (сек): "); HP.get_optionHP((char*)option_DELAY_DEFROST_OFF,Socket[thread].outBuf);STR_END;
+     TXT_KEYS("ohp",
+     	{ "Минимальное время простоя компрессора (мин): ", option_PAUSE },
+     	{ "Задержка включения компрессора после включения насосов (сек): ", option_DELAY_ON_PUMP },
+     	{ "Задержка выключения насосов после выключения компрессора (сек): ", option_DELAY_OFF_PUMP },
+     	{ "Задержка включения ТН после внезапного сброса контроллера (сек): ", option_DELAY_START_RES },
+     	{ "Задержка перед повторным включением ТН при ошибке (попытки пуска) (сек): ", option_DELAY_REPEAD_START },
+     	{ "Задержка между переключением реверсивного клапана и включением компрессора (сек): ", option_DELAY_R4WAY },
+     	{ "Пауза после переключение ГВС (сек): ", option_DELAY_BOILER_SW },
+     	{ "Время на сколько блокируются защиты при переходе с ГВС (сек): ", option_DELAY_BOILER_OFF });
+#ifdef DEFROST     // ключи разморозки есть только у воздушного ТН
+     TXT_KEYS("ohp",
+     	{ "Задержка после срабатывания датчика перед включением разморозки (сек): ", option_DELAY_DEFROST_ON },
+     	{ "Задержка перед выключением разморозки (сек): ", option_DELAY_DEFROST_OFF });
+#endif
   
      strcat(Socket[thread].outBuf," - Дополнительное оборудование -\r\n");
-     strcat(Socket[thread].outBuf,"Использование резервного питания от генератора (ограничение мощности): ");  HP.get_optionHP((char*)option_fBackupPower,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Максимальная мощность при питании от генератора (вт.): "); HP.get_optionHP((char*)option_maxBackupPower,Socket[thread].outBuf);STR_END;
+     TXT_KEYS("ohp",
+     	{ "Использование резервного питания от генератора (ограничение мощности): ", option_fBackupPower },
+     	{ "Максимальная мощность при питании от генератора (вт.): ", option_maxBackupPower });
      strcat(Socket[thread].outBuf,"Включённые флаги отладки: ");
      for(uint8_t i = 0; i < DbgCount; i++) if(dbgFlags & DbgTable[i].bit) { strcat(Socket[thread].outBuf, DbgTable[i].name); strcat(Socket[thread].outBuf, " "); }
      STR_END;
-     strcat(Socket[thread].outBuf,"Генерация звукового сигнала: "); HP.get_optionHP((char*)option_BEEP,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Многоблочное чтение SD карты: "); HP.get_optionHP((char*)option_SDMB,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Использование Nextion дисплея: "); HP.get_optionHP((char*)option_NEXTION,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Включать дисплей при пуске компрессора: "); HP.get_optionHP((char*)option_NEXTION_WORK,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Время засыпания дисплея Nextion (мин.): "); HP.get_optionHP((char*)option_NEXT_SLEEP,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Яркость дисплея Nextion в %: "); HP.get_optionHP((char*)option_NEXT_DIM,Socket[thread].outBuf);STR_END;
+     TXT_KEYS("ohp",
+     	{ "Генерация звукового сигнала: ", option_BEEP },
+     	{ "Многоблочное чтение SD карты: ", option_SDMB },
+     	{ "Использование Nextion дисплея: ", option_NEXTION },
+     	{ "Включать дисплей при пуске компрессора: ", option_NEXTION_WORK },
+     	{ "Время засыпания дисплея Nextion (мин.): ", option_NEXT_SLEEP },
+     	{ "Яркость дисплея Nextion в %: ", option_NEXT_DIM });
      sendBufferRTOS(thread,(byte*)Socket[thread].outBuf,strlen(Socket[thread].outBuf));  
     
      strcpy(Socket[thread].outBuf,"\n\n  1.6 Сетевые настройки\r\n");
-     strcat(Socket[thread].outBuf,"Использование DHCP: "); HP.get_network((char*)net_DHCP,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"IP адрес контроллера: "); HP.get_network((char*)net_IP,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"DNS сервер: "); HP.get_network((char*)net_DNS,Socket[thread].outBuf); STR_END;
-     strcat(Socket[thread].outBuf,"Шлюз: "); HP.get_network((char*)net_GATEWAY,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Маска подсети: "); HP.get_network((char*)net_SUBNET,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"MAC адрес контроллера: "); HP.get_network((char*)net_MAC,Socket[thread].outBuf);STR_END;
+     TXT_KEYS("net",
+     	{ "Использование DHCP: ", net_DHCP },
+     	{ "IP адрес контроллера: ", net_IP },
+     	{ "DNS сервер: ", net_DNS },
+     	{ "Шлюз: ", net_GATEWAY },
+     	{ "Маска подсети: ", net_SUBNET },
+     	{ "MAC адрес контроллера: ", net_MAC });
 
-     strcat(Socket[thread].outBuf,"Запрет пинга контроллера: "); HP.get_network((char*)net_NO_PING,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Использование паролей: ");   HP.get_network((char*)net_PASS,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Пароль пользователя (user): "); HP.get_network((char*)net_PASSUSER,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Пароль администратора (admin): "); HP.get_network((char*)net_PASSADMIN,Socket[thread].outBuf); STR_END;
+     TXT_KEYS("net",
+     	{ "Запрет пинга контроллера: ", net_NO_PING },
+     	{ "Использование паролей: ", net_PASS },
+     	{ "Пароль пользователя (user): ", net_PASSUSER },
+     	{ "Пароль администратора (admin): ", net_PASSADMIN });
 
-     strcat(Socket[thread].outBuf,"Проверка ping до сервера: "); HP.get_network((char*)net_PING_TIME,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Адрес пингуемого сервера: "); HP.get_network((char*)net_PING_ADR,Socket[thread].outBuf); STR_END;
-     strcat(Socket[thread].outBuf,"Контроль связи с чипом Wiznet W5xxx раз 10 сек.: "); HP.get_network((char*)net_INIT_W5200,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Время очистки сокетов Wiznet W5xxx: "); HP.get_network((char*)net_RES_SOCKET,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Время сброса Wiznet W5xxx: "); strcat(Socket[thread].outBuf,nameWiznet);strcat(Socket[thread].outBuf,": "); HP.get_network((char*)net_RES_W5200,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Размер пакета для отправки в байтах: "); HP.get_network((char*)net_SIZE_PACKET,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Не ожидать получения ACK при посылке следующего пакета: "); HP.get_network((char*)net_NO_ACK,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Пауза перед отправкой следующего пакета, если нет ожидания ACK. (мсек): "); HP.get_network((char*)net_DELAY_ACK,Socket[thread].outBuf);STR_END;
+     TXT_KEYS("net",
+     	{ "Проверка ping до сервера: ", net_PING_TIME },
+     	{ "Адрес пингуемого сервера: ", net_PING_ADR },
+     	{ "Контроль связи с чипом Wiznet W5xxx раз 10 сек.: ", net_INIT_W5200 },
+     	{ "Время очистки сокетов Wiznet W5xxx: ", net_RES_SOCKET });
+     strcat(Socket[thread].outBuf,"Время сброса Wiznet W5xxx: "); strcat(Socket[thread].outBuf,nameWiznet);strcat(Socket[thread].outBuf,": "); TXT_VAL("net", net_RES_W5200); STR_END;
+     TXT_KEYS("net",
+     	{ "Размер пакета для отправки в байтах: ", net_SIZE_PACKET },
+     	{ "Не ожидать получения ACK при посылке следующего пакета: ", net_NO_ACK },
+     	{ "Пауза перед отправкой следующего пакета, если нет ожидания ACK. (мсек): ", net_DELAY_ACK });
 
      
      strcat(Socket[thread].outBuf,"\n  1.7 Настройки даты и времени\r\n");
-     strcat(Socket[thread].outBuf,"Установленная дата: "); HP.get_datetime((char*)time_DATE,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Установленное время: "); HP.get_datetime((char*)time_TIME,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Адрес NTP сервера: "); HP.get_datetime((char*)time_NTP,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Часовой пояс (часы): "); HP.get_datetime((char*)time_TIMEZONE,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Синхронизация времени по NTP раз в сутки: "); HP.get_datetime((char*)time_UPDATE,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Синхронизация раз в час с I2C часами: "); HP.get_datetime((char*)time_UPDATE_I2C,Socket[thread].outBuf);STR_END;
+     TXT_KEYS("time",
+     	{ "Установленная дата: ", time_DATE },
+     	{ "Установленное время: ", time_TIME },
+     	{ "Адрес NTP сервера: ", time_NTP },
+     	{ "Синхронизация времени по NTP раз в сутки: ", time_UPDATE },
+     	{ "Синхронизация раз в час с I2C часами: ", time_UPDATE_I2C });
   
      sendBufferRTOS(thread,(byte*)Socket[thread].outBuf,strlen(Socket[thread].outBuf));  
       
      strcpy(Socket[thread].outBuf,"\n  1.8 Уведомления\r\n");
-     strcat(Socket[thread].outBuf,"Сброс контроллера: "); HP.message.get_messageSetting((char*)mess_MESS_RESET,Socket[thread].outBuf); STR_END;
-     strcat(Socket[thread].outBuf,"Возникновение ошибок: "); HP.message.get_messageSetting((char*)mess_MESS_ERROR,Socket[thread].outBuf); STR_END;
-     strcat(Socket[thread].outBuf,"Сигнал «жизни» (ежедневно в 12-00): "); HP.message.get_messageSetting((char*)mess_MESS_LIFE,Socket[thread].outBuf); STR_END;
-     strcat(Socket[thread].outBuf,"Достижение граничной температуры: "); HP.message.get_messageSetting((char*)mess_MESS_TEMP,Socket[thread].outBuf);  STR_END;
-     strcat(Socket[thread].outBuf," Граничная температура в доме (если меньше то посылается уведомление): "); HP.message.get_messageSetting((char*)mess_MESS_TIN,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf," Граничная температура бойлера (если меньше то посылается уведомление): "); HP.message.get_messageSetting((char*)mess_MESS_TBOILER,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf," Граничная температура компрессора (если больше то посылается уведомление): "); HP.message.get_messageSetting((char*)mess_MESS_TCOMP,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Проблемы с SD картой и SPI flash: "); HP.message.get_messageSetting((char*)mess_MESS_SD,Socket[thread].outBuf); STR_END;
-     strcat(Socket[thread].outBuf,"Прочие уведомления: "); HP.message.get_messageSetting((char*)mess_MESS_WARNING,Socket[thread].outBuf);STR_END;
+     TXT_KEYS("message",
+     	{ "Сброс контроллера: ", mess_MESS_RESET },
+     	{ "Возникновение ошибок: ", mess_MESS_ERROR },
+     	{ "Сигнал «жизни» (ежедневно в 12-00): ", mess_MESS_LIFE },
+     	{ "Достижение граничной температуры: ", mess_MESS_TEMP },
+     	{ " Граничная температура в доме (если меньше то посылается уведомление): ", mess_MESS_TIN },
+     	{ " Граничная температура бойлера (если меньше то посылается уведомление): ", mess_MESS_TBOILER },
+     	{ " Граничная температура компрессора (если больше то посылается уведомление): ", mess_MESS_TCOMP },
+     	{ "Проблемы с SD картой и SPI flash: ", mess_MESS_SD },
+     	{ "Прочие уведомления: ", mess_MESS_WARNING });
      strcat(Socket[thread].outBuf," - Настройка отправки почты -\r\n");
-     strcat(Socket[thread].outBuf,"Посылать уведомления по почте: "); HP.message.get_messageSetting((char*)mess_MAIL,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Адрес smtp сервера: "); HP.message.get_messageSetting((char*)mess_SMTP_SERVER,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Порт smtp сервера: "); HP.message.get_messageSetting((char*)mess_SMTP_PORT,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Необходимость авторизации на сервере: ");HP.message.get_messageSetting((char*)mess_MAIL_AUTH,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Логин для входа: "); HP.message.get_messageSetting((char*)mess_SMTP_LOGIN,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Пароль для входа: "); HP.message.get_messageSetting((char*)mess_SMTP_PASS,Socket[thread].outBuf); STR_END;
-     strcat(Socket[thread].outBuf,"Адрес отправителя: "); HP.message.get_messageSetting((char*)mess_SMTP_MAILTO,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Адрес получателя: "); HP.message.get_messageSetting((char*)mess_SMTP_RCPTTO,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Добавлять в уведомление информацию о состоянии ТН: "); HP.message.get_messageSetting((char*)mess_MAIL_INFO,Socket[thread].outBuf);STR_END;
+     TXT_KEYS("message",
+     	{ "Посылать уведомления по почте: ", mess_MAIL },
+     	{ "Адрес smtp сервера: ", mess_SMTP_SERVER },
+     	{ "Порт smtp сервера: ", mess_SMTP_PORT },
+     	{ "Необходимость авторизации на сервере: ", mess_MAIL_AUTH },
+     	{ "Логин для входа: ", mess_SMTP_LOGIN },
+     	{ "Пароль для входа: ", mess_SMTP_PASS },
+     	{ "Адрес отправителя: ", mess_SMTP_MAILTO },
+     	{ "Адрес получателя: ", mess_SMTP_RCPTTO },
+     	{ "Добавлять в уведомление информацию о состоянии ТН: ", mess_MAIL_INFO });
      strcat(Socket[thread].outBuf," - Настройка отправки SMS -\r\n");
-     strcat(Socket[thread].outBuf,"Посылать уведомления по SMS: "); HP.message.get_messageSetting((char*)mess_SMS,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Телефон получателя: "); HP.message.get_messageSetting((char*)mess_SMS_PHONE,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Сервис отправки SMS: ");HP.message.get_messageSetting((char*)mess_SMS_SERVICE,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Адрес сервиса отправки SMS: ");HP.message.get_messageSetting((char*)mess_SMS_IP,Socket[thread].outBuf);STR_END;
-     HP.message.get_messageSetting((char*)mess_SMS_NAMEP1,Socket[thread].outBuf);strcat(Socket[thread].outBuf,": ");HP.message.get_messageSetting((char*)mess_SMS_P1,Socket[thread].outBuf);STR_END;
-     HP.message.get_messageSetting((char*)mess_SMS_NAMEP2,Socket[thread].outBuf);strcat(Socket[thread].outBuf,": ");HP.message.get_messageSetting((char*)mess_SMS_P2,Socket[thread].outBuf);STR_END;
+     TXT_KEYS("message",
+     	{ "Посылать уведомления по SMS: ", mess_SMS },
+     	{ "Телефон получателя: ", mess_SMS_PHONE },
+     	{ "Сервис отправки SMS: ", mess_SMS_SERVICE },
+     	{ "Адрес сервиса отправки SMS: ", mess_SMS_IP });
+     TXT_VAL("message", mess_SMS_NAMEP1); strcat(Socket[thread].outBuf,": "); TXT_VAL("message", mess_SMS_P1); STR_END;
+     TXT_VAL("message", mess_SMS_NAMEP2); strcat(Socket[thread].outBuf,": "); TXT_VAL("message", mess_SMS_P2); STR_END;
      sendBufferRTOS(thread,(byte*)Socket[thread].outBuf,strlen(Socket[thread].outBuf)); 
       
       // MQTT
      strcpy(Socket[thread].outBuf,"\n  1.9 Настройка MQTT\r\n");
       #ifdef MQTT
-     strcat(Socket[thread].outBuf,"Включить отправку на сервер MQTT: ");HP.clMQTT.get_paramMQTT((char*)mqtt_USE_MQTT,Socket[thread].outBuf);  STR_END;
-     strcat(Socket[thread].outBuf,"Отправка на сервер ThingSpeak: "); HP.clMQTT.get_paramMQTT((char*)mqtt_USE_TS,Socket[thread].outBuf);  STR_END;
-     strcat(Socket[thread].outBuf,"Включить отсылку дополнительных данных: "); HP.clMQTT.get_paramMQTT((char*)mqtt_BIG_MQTT,Socket[thread].outBuf); STR_END;
-     strcat(Socket[thread].outBuf,"Включить передачу данных с электросчетчика SDM120: "); HP.clMQTT.get_paramMQTT((char*)mqtt_SDM_MQTT,Socket[thread].outBuf); STR_END;
-     strcat(Socket[thread].outBuf,"Включить передачу данных об инверторе: ");HP.clMQTT.get_paramMQTT((char*)mqtt_FC_MQTT,Socket[thread].outBuf); STR_END;
-     strcat(Socket[thread].outBuf,"Включить передачу данных об эффективности ТН: "); HP.clMQTT.get_paramMQTT((char*)mqtt_COP_MQTT,Socket[thread].outBuf); STR_END;
-     strcat(Socket[thread].outBuf,"Интервал передачи данных [1...1000] (минут): "); HP.clMQTT.get_paramMQTT((char*)mqtt_TIME_MQTT,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Адрес MQTT сервера: ");HP.clMQTT.get_paramMQTT((char*)mqtt_ADR_MQTT,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Порт MQTT сервера: "); HP.clMQTT.get_paramMQTT((char*)mqtt_PORT_MQTT,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Логин для входа: "); HP.clMQTT.get_paramMQTT((char*)mqtt_LOGIN_MQTT,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Пароль для входа: "); HP.clMQTT.get_paramMQTT((char*)mqtt_PASSWORD_MQTT,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Идентификатор клиента: "); HP.clMQTT.get_paramMQTT((char*)mqtt_ID_MQTT,Socket[thread].outBuf);STR_END;
+     TXT_KEYS("mqtt",
+     	{ "Включить отправку на сервер MQTT: ", mqtt_USE_MQTT },
+     	{ "Отправка на сервер ThingSpeak: ", mqtt_USE_TS },
+     	{ "Включить отсылку дополнительных данных: ", mqtt_BIG_MQTT },
+     	{ "Включить передачу данных с электросчетчика SDM120: ", mqtt_SDM_MQTT },
+     	{ "Включить передачу данных об инверторе: ", mqtt_FC_MQTT },
+     	{ "Включить передачу данных об эффективности ТН: ", mqtt_COP_MQTT },
+     	{ "Интервал передачи данных [1...1000] (минут): ", mqtt_TIME_MQTT },
+     	{ "Адрес MQTT сервера: ", mqtt_ADR_MQTT },
+     	{ "Порт MQTT сервера: ", mqtt_PORT_MQTT },
+     	{ "Логин для входа: ", mqtt_LOGIN_MQTT },
+     	{ "Пароль для входа: ", mqtt_PASSWORD_MQTT },
+     	{ "Идентификатор клиента: ", mqtt_ID_MQTT });
      strcat(Socket[thread].outBuf," - Сервис <Народный мониторинг> -\r\n");
-     strcat(Socket[thread].outBuf,"Включить передачу данных: "); HP.clMQTT.get_paramMQTT((char*)mqtt_USE_NARMON,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Посылать расширенный набор данных: "); HP.clMQTT.get_paramMQTT((char*)mqtt_BIG_NARMON,Socket[thread].outBuf); STR_END;
-     strcat(Socket[thread].outBuf,"Адрес сервиса: ");HP.clMQTT.get_paramMQTT((char*)mqtt_ADR_NARMON,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Порт сервиса: "); HP.clMQTT.get_paramMQTT((char*)mqtt_PORT_NARMON,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Логин для входа (получается при регистрации): "); HP.clMQTT.get_paramMQTT((char*)mqtt_LOGIN_NARMON,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Личный код для передачи (смотреть в разделе API MQTT сервиса): "); HP.clMQTT.get_paramMQTT((char*)mqtt_PASSWORD_NARMON,Socket[thread].outBuf);STR_END;
-     strcat(Socket[thread].outBuf,"Имя устройства (корень всех топиков): "); HP.clMQTT.get_paramMQTT((char*)mqtt_ID_NARMON,Socket[thread].outBuf);STR_END;
+     TXT_KEYS("mqtt",
+     	{ "Включить передачу данных: ", mqtt_USE_NARMON },
+     	{ "Посылать расширенный набор данных: ", mqtt_BIG_NARMON },
+     	{ "Адрес сервиса: ", mqtt_ADR_NARMON },
+     	{ "Порт сервиса: ", mqtt_PORT_NARMON },
+     	{ "Логин для входа (получается при регистрации): ", mqtt_LOGIN_NARMON },
+     	{ "Личный код для передачи (смотреть в разделе API MQTT сервиса): ", mqtt_PASSWORD_NARMON },
+     	{ "Имя устройства (корень всех топиков): ", mqtt_ID_NARMON });
      #else
       strcat(Socket[thread].outBuf,"Не поддерживается, нет в прошивке");
      #endif
@@ -555,21 +604,23 @@ void get_txtSettings(uint8_t thread)
 			 strcat(Socket[thread].outBuf," D");_itoa(PIN_EEV3_D26,Socket[thread].outBuf);
 			 strcat(Socket[thread].outBuf," D");_itoa(PIN_EEV4_D27,Socket[thread].outBuf);STR_END;
 
-			 strcat(Socket[thread].outBuf,"Минимальное положение (шаги): ");  HP.dEEV.get_paramEEV((char*)eev_MIN, Socket[thread].outBuf);  STR_END;
-			 strcat(Socket[thread].outBuf,"Полное открыте (шаги):");  HP.dEEV.get_paramEEV((char*)eev_MAX, Socket[thread].outBuf);  STR_END;
+			 TXT_KEYS("eev",
+			 	{ "Минимальное положение (шаги): ", eev_MIN },
+			 	{ "Полное открыте (шаги):", eev_MAX });
 			 strcat(Socket[thread].outBuf,"Формула перегрева: ");
  			 HP.dEEV.get_ruleEEVtext(Socket[thread].outBuf); STR_END;
              strcat(Socket[thread].outBuf,"Алгоритм ПИД ЭРВ: ");
              strcat(Socket[thread].outBuf,"PID_FORMULA1");STR_END;
-             strcat(Socket[thread].outBuf,"Целевой перегрев (C°): "); HP.dEEV.get_paramEEV((char*)eev_TARGET, Socket[thread].outBuf);  STR_END;
-             strcat(Socket[thread].outBuf,"ПИД, период (сек): ");  HP.dEEV.get_paramEEV((char*)eev_TIME, Socket[thread].outBuf);  STR_END;
-             strcat(Socket[thread].outBuf,"Пропорциональная составляющая: ");  HP.dEEV.get_paramEEV((char*)eev_KP, Socket[thread].outBuf); STR_END;
-             strcat(Socket[thread].outBuf,"Интегральная составляющая: ");  HP.dEEV.get_paramEEV((char*)eev_KI, Socket[thread].outBuf); STR_END;
-             strcat(Socket[thread].outBuf,"Дифференциальная составляющая: ");  HP.dEEV.get_paramEEV((char*)eev_KD, Socket[thread].outBuf); STR_END;
-             strcat(Socket[thread].outBuf,"Ручное управление, открытие ЭРВ (шаги): ");  HP.dEEV.get_paramEEV((char*)eev_MANUAL, Socket[thread].outBuf); STR_END;
-             strcat(Socket[thread].outBuf,"Поправка (C°): ");  HP.dEEV.get_paramEEV((char*)eev_CONST, Socket[thread].outBuf); STR_END;
-             strcat(Socket[thread].outBuf,"Используемый фреон: "); STR_END;
-             strcat(Socket[thread].outBuf, noteFreon[HP.dEEV.get_typeFreon()]);
+             TXT_KEYS("eev",
+             	{ "Целевой перегрев (C°): ", eev_TARGET },
+             	{ "ПИД, период (сек): ", eev_TIME },
+             	{ "Пропорциональная составляющая: ", eev_KP },
+             	{ "Интегральная составляющая: ", eev_KI },
+             	{ "Дифференциальная составляющая: ", eev_KD },
+             	{ "Ручное управление, открытие ЭРВ (шаги): ", eev_MANUAL },
+             	{ "Поправка (C°): ", eev_CONST });
+             strcat(Socket[thread].outBuf,"Используемый фреон: ");
+             strcat(Socket[thread].outBuf, noteFreon[HP.dEEV.get_typeFreon()]); STR_END;
              strcat(Socket[thread].outBuf,"Текущее положение: ");
 #ifdef EEV_PREFER_PERCENT
 			_dtoa(Socket[thread].outBuf, HP.dEEV.calc_percent(HP.dEEV.get_EEV()), 2);
@@ -579,27 +630,29 @@ void get_txtSettings(uint8_t thread)
              STR_END;
              strcat(Socket[thread].outBuf,"Текущий перегрев (градусы): ");   _ftoa(Socket[thread].outBuf,(float)HP.dEEV.get_Overheat()/100.0,2); STR_END;
              strcat(Socket[thread].outBuf," - Корректировка перегрева -\r\n");
-             strcat(Socket[thread].outBuf,"Флаг включения корректировки перегрева от разности температур конденсатора и испарителя: ");  HP.dEEV.get_paramEEV((char*)eev_cCORRECT,Socket[thread].outBuf);STR_END;
-             strcat(Socket[thread].outBuf,"Задержка после старта компрессора (сек): ");  HP.dEEV.get_paramEEV((char*)eev_cDELAY,Socket[thread].outBuf);STR_END; 
-             strcat(Socket[thread].outBuf,"Период в циклах ЭРВ, сколько пропустить (циклы): ");  HP.dEEV.get_paramEEV((char*)eev_cPERIOD,Socket[thread].outBuf);STR_END; 
-             strcat(Socket[thread].outBuf,"Температура нагнетания - конденсации (C°): ");  HP.dEEV.get_paramEEV((char*)eev_cDELTA,Socket[thread].outBuf);STR_END; 
-             strcat(Socket[thread].outBuf,"Стартовый перегрев (C°): ");  HP.dEEV.get_paramEEV((char*)eev_cOH_START,Socket[thread].outBuf);STR_END;
-             strcat(Socket[thread].outBuf,"Минимальный перегрев (C°): ");  HP.dEEV.get_paramEEV((char*)eev_cOH_MIN,Socket[thread].outBuf);STR_END;
-             strcat(Socket[thread].outBuf,"Максимальный перегрев (C°): ");  HP.dEEV.get_paramEEV((char*)eev_cOH_MAX,Socket[thread].outBuf);STR_END; 
+             TXT_KEYS("eev",
+             	{ "Флаг включения корректировки перегрева от разности температур конденсатора и испарителя: ", eev_cCORRECT },
+             	{ "Задержка после старта компрессора (сек): ", eev_cDELAY },
+             	{ "Период в циклах ЭРВ, сколько пропустить (циклы): ", eev_cPERIOD },
+             	{ "Температура нагнетания - конденсации (C°): ", eev_cDELTA },
+             	{ "Стартовый перегрев (C°): ", eev_cOH_START },
+             	{ "Минимальный перегрев (C°): ", eev_cOH_MIN },
+             	{ "Максимальный перегрев (C°): ", eev_cOH_MAX });
 
              strcat(Socket[thread].outBuf," - Глобальные настройки -\r\n");
-             strcat(Socket[thread].outBuf,"Ошибка при которой происходит уменьшение ПИД ЭРВ (C°): ");  HP.dEEV.get_paramEEV((char*)eev_PID2_delta,Socket[thread].outBuf);STR_END;
-             strcat(Socket[thread].outBuf,"Скорость шагового двигателя ЭРВ (импульсы в сек.): ");  HP.dEEV.get_paramEEV((char*)eev_SPEED,Socket[thread].outBuf);STR_END; 
-             strcat(Socket[thread].outBuf,"ПУСКОВАЯ позиция ЭРВ - то что при старте компрессора, при раскрутке (шаги): ");  HP.dEEV.get_paramEEV((char*)eev_PRE_START_POS,Socket[thread].outBuf);STR_END; 
-             strcat(Socket[thread].outBuf,"СТАРТОВАЯ позиция ЭРВ после раскрутки компрессора т.е. позиция скоторой начинается работа ПИД (шаги): ");  HP.dEEV.get_paramEEV((char*)eev_START_POS,Socket[thread].outBuf);STR_END; 
-             strcat(Socket[thread].outBuf,"Задержка включения ЭРВ после включения компрессора (сек.): ");  HP.dEEV.get_paramEEV((char*)eev_DELAY_ON_PID,Socket[thread].outBuf);STR_END; 
-             strcat(Socket[thread].outBuf,"Время после старта компрессора когда ЭРВ выходит на стартовую позицию - облегчение пуска вначале ЭРВ (сек.): ");  HP.dEEV.get_paramEEV((char*)eev_DELAY_START_POS,Socket[thread].outBuf);STR_END; 
-             strcat(Socket[thread].outBuf,"Задержка закрытия ЭРВ после выключения насосов (се.к): ");  HP.dEEV.get_paramEEV((char*)eev_DELAY_OFF,Socket[thread].outBuf);STR_END; 
-             strcat(Socket[thread].outBuf,"Задержка между открытием ЭРВ и включением компрессора, для выравнивания давлений (сек.): ");  HP.dEEV.get_paramEEV((char*)eev_DELAY_ON,Socket[thread].outBuf);STR_END; 
-             strcat(Socket[thread].outBuf,"Флаг удержания мотора шагового двигателя ЭРВ: ");  HP.dEEV.get_paramEEV((char*)eev_HOLD_MOTOR,Socket[thread].outBuf);STR_END; 
-             strcat(Socket[thread].outBuf,"Закрытие ЭРВ при выключении компрессора: "); HP.dEEV.get_paramEEV((char*)eev_CLOSE,Socket[thread].outBuf);STR_END;
-             strcat(Socket[thread].outBuf,"Всегда начинать работу ЭРВ со стратовой позиции: "); HP.dEEV.get_paramEEV((char*)eev_START,Socket[thread].outBuf);STR_END;
-             strcat(Socket[thread].outBuf,"Использовать спецальную позицию ЭРВ при пуске компрессора: "); HP.dEEV.get_paramEEV((char*)eev_LIGHT_START,Socket[thread].outBuf);STR_END;
+             TXT_KEYS("eev",
+             	{ "Ошибка при которой происходит уменьшение ПИД ЭРВ (C°): ", eev_PID2_delta },
+             	{ "Скорость шагового двигателя ЭРВ (импульсы в сек.): ", eev_SPEED },
+             	{ "ПУСКОВАЯ позиция ЭРВ - то что при старте компрессора, при раскрутке (шаги): ", eev_PRE_START_POS },
+             	{ "СТАРТОВАЯ позиция ЭРВ после раскрутки компрессора т.е. позиция скоторой начинается работа ПИД (шаги): ", eev_START_POS },
+             	{ "Задержка включения ЭРВ после включения компрессора (сек.): ", eev_DELAY_ON_PID },
+             	{ "Время после старта компрессора когда ЭРВ выходит на стартовую позицию - облегчение пуска вначале ЭРВ (сек.): ", eev_DELAY_START_POS },
+             	{ "Задержка закрытия ЭРВ после выключения насосов (се.к): ", eev_DELAY_OFF },
+             	{ "Задержка между открытием ЭРВ и включением компрессора, для выравнивания давлений (сек.): ", eev_DELAY_ON },
+             	{ "Флаг удержания мотора шагового двигателя ЭРВ: ", eev_HOLD_MOTOR },
+             	{ "Закрытие ЭРВ при выключении компрессора: ", eev_CLOSE },
+             	{ "Всегда начинать работу ЭРВ со стратовой позиции: ", eev_START },
+             	{ "Использовать спецальную позицию ЭРВ при пуске компрессора: ", eev_LIGHT_START });
          }
         #else 
             strcat(Socket[thread].outBuf,"\n  3.2 EEV absent \r\n");    
@@ -609,53 +662,63 @@ void get_txtSettings(uint8_t thread)
        strcpy(Socket[thread].outBuf,"\n  3.3 Частотный преобразователь\r\n");
        if (HP.dFC.get_present()) 
          {
-         strcat(Socket[thread].outBuf,"Текущая частота (гц): ");  HP.dFC.get_paramFC((char*)fc_cFC,Socket[thread].outBuf);STR_END; 
+         TXT_KEYS("fc",
+         	{ "Текущая частота (гц): ", fc_cFC });
          #ifdef FC_ANALOG_CONTROL // Аналоговое управление
               strcat(Socket[thread].outBuf," - Аналоговое управление -\r\n");
-              strcat(Socket[thread].outBuf,"Отсчеты ЦАП соответсвующие частоте 0 гц (отсчеты): ");  HP.dFC.get_paramFC((char*)fc_LEVEL0,Socket[thread].outBuf);STR_END; 
-              strcat(Socket[thread].outBuf,"Отсчеты ЦАП соответсвующие максимальной частоте (отсчеты): ");  HP.dFC.get_paramFC((char*)fc_LEVEL100,Socket[thread].outBuf);STR_END; 
+              TXT_KEYS("fc",
+              	{ "Отсчеты ЦАП соответсвующие частоте 0 гц (отсчеты): ", fc_LEVEL0 },
+              	{ "Отсчеты ЦАП соответсвующие максимальной частоте (отсчеты): ", fc_LEVEL100 });
           #else
              strcat(Socket[thread].outBuf," - Управление идет через Modbus - \r\n"); 
-             strcat(Socket[thread].outBuf,"Блокировка инвертора: ");  HP.dFC.get_paramFC((char*)fc_BLOCK,Socket[thread].outBuf);STR_END; 
-             strcat(Socket[thread].outBuf,"Флаг автоматического сброса не критичной ошибки инвертора: ");  HP.dFC.get_paramFC((char*)fc_AUTO_RESET_FAULT,Socket[thread].outBuf);STR_END; 
+             TXT_KEYS("fc",
+             	{ "Блокировка инвертора: ", fc_BLOCK },
+             	{ "Флаг автоматического сброса не критичной ошибки инвертора: ", fc_AUTO_RESET_FAULT });
           #endif
-	       strcat(Socket[thread].outBuf,"Время обновления алгоритма пид регулятора (сек): ");  HP.dFC.get_paramFC((char*)fc_UPTIME,Socket[thread].outBuf);STR_END; 
-	       strcat(Socket[thread].outBuf,"Проценты от уровня защит (мощность, ток, давление, температура) при которой происходит блокировка роста частоты (%): ");  HP.dFC.get_paramFC((char*)fc_PID_STOP,Socket[thread].outBuf);STR_END; 
+	       TXT_KEYS("fc",
+	       	{ "Время обновления алгоритма пид регулятора (сек): ", fc_UPTIME },
+	       	{ "Проценты от уровня защит (мощность, ток, давление, температура) при которой происходит блокировка роста частоты (%): ", fc_PID_STOP });
 	       
            strcat(Socket[thread].outBuf," - Граничные температуры - \r\n");
-	       strcat(Socket[thread].outBuf,"Защита по температуре нагнетания - сколько градусов не доходит до максимальной и при этом происходит уменьшение частоты (C°): ");  HP.dFC.get_paramFC((char*)fc_DT_COMP_TEMP,Socket[thread].outBuf);STR_END; 
-	       strcat(Socket[thread].outBuf,"Превышение температуры от уставок (подача) при которой срабатыват защита, уменьшается частота ((C°): ");  HP.dFC.get_paramFC((char*)fc_DT_TEMP,Socket[thread].outBuf);STR_END; 
-	       strcat(Socket[thread].outBuf,"Превышение температуры от уставок (подача) при которой срабатыват защита ГВС, уменьшается частота (C°): ");  HP.dFC.get_paramFC((char*)fc_DT_TEMP_BOILER,Socket[thread].outBuf);STR_END; 
+	       TXT_KEYS("fc",
+	       	{ "Защита по температуре нагнетания - сколько градусов не доходит до максимальной и при этом происходит уменьшение частоты (C°): ", fc_DT_COMP_TEMP },
+	       	{ "Превышение температуры от уставок (подача) при которой срабатыват защита, уменьшается частота ((C°): ", fc_DT_TEMP },
+	       	{ "Превышение температуры от уставок (подача) при которой срабатыват защита ГВС, уменьшается частота (C°): ", fc_DT_TEMP_BOILER });
 	
 	       strcat(Socket[thread].outBuf," - Стартовые частоты - \r\n");
-	       strcat(Socket[thread].outBuf,"Стартовая частота инвертора (гц): ");  HP.dFC.get_paramFC((char*)fc_START_FREQ,Socket[thread].outBuf);STR_END; 
-	       strcat(Socket[thread].outBuf,"Стартовая частота инвертора ГВС (гц): ");  HP.dFC.get_paramFC((char*)fc_START_FREQ_BOILER,Socket[thread].outBuf);STR_END; 
+	       TXT_KEYS("fc",
+	       	{ "Стартовая частота инвертора (гц): ", fc_START_FREQ },
+	       	{ "Стартовая частота инвертора ГВС (гц): ", fc_START_FREQ_BOILER });
 	       
 	       strcat(Socket[thread].outBuf," - Минимальные частоты - \r\n");
-	       strcat(Socket[thread].outBuf,"Минимальная частота инвертора (гц): ");  HP.dFC.get_paramFC((char*)fc_MIN_FREQ,Socket[thread].outBuf);STR_END;
-	       strcat(Socket[thread].outBuf,"Mинимальная частота инвертора при охлаждении (гц): ");  HP.dFC.get_paramFC((char*)fc_MIN_FREQ_COOL,Socket[thread].outBuf);STR_END;
-	       strcat(Socket[thread].outBuf,"Минимальная частота инвертора при нагреве ГВС (гц): ");  HP.dFC.get_paramFC((char*)fc_MIN_FREQ_BOILER,Socket[thread].outBuf);STR_END;
-	       strcat(Socket[thread].outBuf,"Минимальная частота инвертора РУЧНОЙ РЕЖИМ (гц): ");  HP.dFC.get_paramFC((char*)fc_MIN_FREQ_USER,Socket[thread].outBuf);STR_END;
+	       TXT_KEYS("fc",
+	       	{ "Минимальная частота инвертора (гц): ", fc_MIN_FREQ },
+	       	{ "Mинимальная частота инвертора при охлаждении (гц): ", fc_MIN_FREQ_COOL },
+	       	{ "Минимальная частота инвертора при нагреве ГВС (гц): ", fc_MIN_FREQ_BOILER },
+	       	{ "Минимальная частота инвертора РУЧНОЙ РЕЖИМ (гц): ", fc_MIN_FREQ_USER });
 	      
 	       strcat(Socket[thread].outBuf," - Максимальные частоты - \r\n");
-	       strcat(Socket[thread].outBuf,"Максимальная частота инвертора (гц): ");  HP.dFC.get_paramFC((char*)fc_MAX_FREQ,Socket[thread].outBuf);STR_END; 
-	       strcat(Socket[thread].outBuf,"Максимальная частота инвертора в режиме охлаждения (гц): ");  HP.dFC.get_paramFC((char*)fc_MAX_FREQ_COOL,Socket[thread].outBuf);STR_END; 
-	       strcat(Socket[thread].outBuf,"Максимальная частота инвертора в режиме ГВС (гц): ");  HP.dFC.get_paramFC((char*)fc_MAX_FREQ_BOILER,Socket[thread].outBuf);STR_END; 
-	       strcat(Socket[thread].outBuf,"Максимальная частота инвертора РУЧНОЙ РЕЖИМ (гц): ");  HP.dFC.get_paramFC((char*)fc_MAX_FREQ_USER,Socket[thread].outBuf);STR_END; 
+	       TXT_KEYS("fc",
+	       	{ "Максимальная частота инвертора (гц): ", fc_MAX_FREQ },
+	       	{ "Максимальная частота инвертора в режиме охлаждения (гц): ", fc_MAX_FREQ_COOL },
+	       	{ "Максимальная частота инвертора в режиме ГВС (гц): ", fc_MAX_FREQ_BOILER },
+	       	{ "Максимальная частота инвертора РУЧНОЙ РЕЖИМ (гц): ", fc_MAX_FREQ_USER });
 	
            strcat(Socket[thread].outBuf," - Ограничение ПИД регулятора - \r\n");	    
-	       strcat(Socket[thread].outBuf,"Максимальный шаг (на увеличение) изменения частоты при ПИД регулировании (Гц): ");  HP.dFC.get_paramFC((char*)fc_PID_FREQ_STEP,Socket[thread].outBuf);STR_END; 
-	       strcat(Socket[thread].outBuf,"Шаг уменьшения инвертора при достижении максимальной температуры, мощности и тока (гц): ");  HP.dFC.get_paramFC((char*)fc_STEP_FREQ,Socket[thread].outBuf);STR_END; 
-	       strcat(Socket[thread].outBuf,"Шаг уменьшения инвертора при достижении максимальной температуры, мощности и тока ГВС (гц): ");  HP.dFC.get_paramFC((char*)fc_STEP_FREQ_BOILER,Socket[thread].outBuf);STR_END; 
+	       TXT_KEYS("fc",
+	       	{ "Максимальный шаг (на увеличение) изменения частоты при ПИД регулировании (Гц): ", fc_PID_FREQ_STEP },
+	       	{ "Шаг уменьшения инвертора при достижении максимальной температуры, мощности и тока (гц): ", fc_STEP_FREQ },
+	       	{ "Шаг уменьшения инвертора при достижении максимальной температуры, мощности и тока ГВС (гц): ", fc_STEP_FREQ_BOILER });
 	     } 
         else strcat(Socket[thread].outBuf,"FC absent \r\n");    
         sendBufferRTOS(thread,(byte*)Socket[thread].outBuf,strlen(Socket[thread].outBuf));  
         
        strcpy(Socket[thread].outBuf,"\n  3.4. Электросчетчик SDM120\r\n");
          #ifdef USE_ELECTROMETER_SDM
-           strcat(Socket[thread].outBuf,"MAX напряжение при контроле входного напряжения (В): ");    HP.dSDM.get_paramSDM((char*)sdm_MAX_VOLTAGE,Socket[thread].outBuf); STR_END;
-           strcat(Socket[thread].outBuf,"MIN напряжение при контроле входного напряжения (В): ");    HP.dSDM.get_paramSDM((char*)sdm_MIN_VOLTAGE,Socket[thread].outBuf); STR_END;
-           strcat(Socket[thread].outBuf,"MAX максимальная мощность при контроле мощности (Вт): ");   HP.dSDM.get_paramSDM((char*)sdm_MAX_POWER,Socket[thread].outBuf); STR_END;
+           TXT_KEYS("sdm",
+           	{ "MAX напряжение при контроле входного напряжения (В): ", sdm_MAX_VOLTAGE },
+           	{ "MIN напряжение при контроле входного напряжения (В): ", sdm_MIN_VOLTAGE },
+           	{ "MAX максимальная мощность при контроле мощности (Вт): ", sdm_MAX_POWER });
         #else
            strcat(Socket[thread].outBuf,"SDM120 absent\r\n");    
          #endif  
@@ -684,7 +747,7 @@ void get_txtSettings(uint8_t thread)
 
 // Выгрузка ВСЕЙ микросхемы I2C-памяти одним файлом.
 //
-// Кнопка "Прочитать всю EEPROM" в морде (Main/files.html) ссылается на
+// Кнопка "Прочитать всю EEPROM" в морде (Web/files.html) ссылается на
 // settings_eeprom.bin; без этого обработчика запрос провалился бы в поиск файла на
 // SD и получил 404.
 //

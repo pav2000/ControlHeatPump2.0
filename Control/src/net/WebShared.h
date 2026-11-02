@@ -80,6 +80,11 @@ void          readFileSD(char *filename, uint8_t thread);
 struct SpiTest { SpiReadStat flash, sd; uint32_t reg8_ns, reg16_ns, open_us, read16_ns; };
 void          spiTestRun(SpiTest *t, uint8_t *buf, uint16_t chunk);
 
+// Значение ключа реестра текстом (api_text), дописывается в конец buf - всего не больше cap байт: settings.txt, state.txt,
+// письмо о состоянии читают параметры через реестр, а не через прежние строковые get_param*. Ключ = sect + '.' + name
+// строчными (name - строка STRCONST, как в таблицах реестра). Права не проверяются. Определена в WebApiGet.cpp.
+void     api_text_cat(char *buf, uint16_t cap, const char *sect, const char *name);
+
 // Генерируемые файлы и выгрузки. Определены в WebFiles.cpp.
 void     get_txtState(uint8_t thread, boolean header);
 void     get_txtJournal(uint8_t thread);

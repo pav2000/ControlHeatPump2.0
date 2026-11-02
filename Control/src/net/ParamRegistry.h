@@ -127,6 +127,7 @@ struct ApiAction {
 	const char *name;       // "power.on"
 	uint8_t     user;       // 1 - разрешено роли user
 	int       (*fn)(ApiOut *o, const char *p);     // p - значение параметра p= (уже раскодированное, "" если не задано)
+	uint8_t     off;        // 1 - только при остановленном ТН (как PF_OFF у параметров): на работающем ответ busy, fn не вызывается
 };
 
 struct ApiCtx {
@@ -149,6 +150,10 @@ int  api_set (const ApiCtx *c, const char *query, ApiOut *o);
 int  api_do  (const ApiCtx *c, const char *query, ApiOut *o);
 int  api_meta(const ApiCtx *c, const char *query, ApiOut *o);
 uint32_t api_schema(const ApiCtx *c);        // хеш состава реестра (E2)
+// Значение одного ключа простым текстом - для текстовых файлов и писем (settings.txt, state.txt, письмо о состоянии):
+// числа как в JSON, флажки «да»/«нет», перечисления подписью, строки без кавычек и экранирования.
+// Права не проверяются - что выводить, решает вызывающий. Возврат AE_*; при ошибке пишется «-», неизвестный ключ - «?».
+int  api_text(const ApiCtx *c, const char *key, ApiOut *o);
 void api_put_hex32(ApiOut *o, uint32_t v);
 
 // ---- помощники для таблиц в прошивке ----

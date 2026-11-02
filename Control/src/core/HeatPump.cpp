@@ -54,18 +54,35 @@ boolean  Charts_when_comp_on = false;
 
 // Аварийный останов компрессора из set_Error: без журнала и ожиданий, способ выбирается так же, как в COMPRESSOR_OFF.
 // Реле RCOMP снимается всегда: это провод ХОД инвертора или пускатель компрессора без инвертора, а при управлении
-// инвертором по Modbus оно не используется (реле нет - set_OFF ничего не делает). Без провода ХОД инвертор
+// инвертором по Modbus оно не используется (реле нет - set_AllOFF ничего не делает). Без провода ХОД инвертор
 // останавливается ещё и командой по шине (Н-24: прежде пускатель на RCOMP в такой сборке не снимался).
+// Снимаются все источники, и ручной тоже: прежде включённый вручную через API компрессор аварию переживал (6.2).
 // true - останов отдан.
 bool HeatPump::compressor_emergency_off()
 {
-	dRelay[RCOMP].set_OFF();
+	dRelay[RCOMP].set_AllOFF();
 #ifndef FC_USE_RCOMP
 	if(dFC.get_present()) return dFC.emergency_stop() == OK;
 #endif
 	return true;
 }
 
+
+// Межблокировки выходов (Safety.h). Этап наблюдения: отказ только пишется в журнал, переключение выполняет вызывающий.
+SAFETY_WHY HeatPump::safety_check(SAFETY_OUT out, bool on, const char *name, const char *src)
+{
+	SafetyState s;
+	s.comp_on        = is_compressor_on();
+	s.since_comp_off = stopCompressor ? Uptime_s() - stopCompressor : UINT32_MAX;
+	s.pump_in        = dRelay[PUMP_IN].get_Relay();
+	s.pump_out       = dRelay[PUMP_OUT].get_Relay();
+	s.defrost        = (get_modWork() & pDEFROST) != 0;
+	s.overrun_in     = DELAY_BEFORE_STOP_IN_PUMP;
+	s.overrun_out    = Option.delayOffPump;
+	SAFETY_WHY w = Safety_Allow(out, on, s);
+	if(w) journal.jprintf_time("$Safety: %s %s by %s - %s (observe only)\n", name, on ? "ON" : "OFF", src, Safety_WhyText(w));
+	return w;
+}
 
 // Установка критической ошибки для класса ТН вызывает останов ТН
 // Возвращает ошибку останова ТН
@@ -469,7 +486,7 @@ void HeatPump::relayAllOFF()
 {
   uint8_t i;
   journal.jprintf(" All relay off\n");
-  for(i=0;i<RNUMBER;i++)  dRelay[i].set_OFF();         // Выключить все реле;
+  for(i=0;i<RNUMBER;i++)  dRelay[i].set_AllOFF();      // Выключить все реле, и включённые вручную тоже (6.2)
 }                               
 
 // Переключение на бойлер или обратно (true-бойлер false-отопление/охлаждение) возврат onBoiler
@@ -1548,15 +1565,12 @@ MODE_HP HeatPump::EvaluateWorkMode()
 if(!GETBIT(Option.flags,fBackupPower)){ // Нет питания от резервного источника
 	if (GETBIT(Option.flags,fAddHeat))
 	{
-		if(!GETBIT(Option.flags,fTypeRHEAT)) // резерв
-		{
-			if (((sTemp[TIN].get_Temp()>Option.tempRHEAT)&&(dRelay[RHEAT].get_Relay()))||((ret==pOFF)&&(dRelay[RHEAT].get_Relay()))) {journal.jprintf(" TIN=%.2f, add heatting off . . .\n",sTemp[TIN].get_Temp()/100.0); dRelay[RHEAT].set_OFF();} // Гистерезис 0.2 градуса что бы не щелкало
-			if ((sTemp[TIN].get_Temp()<Option.tempRHEAT-HYSTERESIS_RHEAD)&&(!dRelay[RHEAT].get_Relay())&&(ret!=pOFF)) {journal.jprintf(" TIN=%.2f, add heatting on . . .\n",sTemp[TIN].get_Temp()/100.0); dRelay[RHEAT].set_ON();}
-		}
-		else                                // бивалент
-		{
-			if ( ((sTemp[TOUT].get_Temp()>Option.tempRHEAT)&&(dRelay[RHEAT].get_Relay()))||((ret==pOFF)&&(dRelay[RHEAT].get_Relay())) ) {journal.jprintf(" TOUT=%.2f, add heatting off . . .\n",sTemp[TOUT].get_Temp()/100.0);dRelay[RHEAT].set_OFF();} // Гистерезис 0.2 градуса что бы не щелкало
-			if ((sTemp[TOUT].get_Temp()<Option.tempRHEAT-HYSTERESIS_RHEAD)&&(!dRelay[RHEAT].get_Relay())&&(ret!=pOFF)) {journal.jprintf(" TOUT=%.2f, add heatting on . . .\n",sTemp[TOUT].get_Temp()/100.0); dRelay[RHEAT].set_ON();}
+		const uint8_t s = GETBIT(Option.flags,fTypeRHEAT) ? TOUT : TIN;   // бивалент - по улице, резерв - по дому
+		uint8_t act = ClimateAddHeatStep(dRelay[RHEAT].get_Relay(), sTemp[s].get_Temp(), Option.tempRHEAT, HYSTERESIS_RHEAD,
+		                                 ret != pOFF, dRelay[PUMP_OUT].get_Relay());
+		if(act != RELAY_KEEP) {
+			journal.jprintf(" %s=%.2f, add heatting %s . . .\n", sTemp[s].get_name(), sTemp[s].get_Temp()/100.0, act == RELAY_ON ? "on" : "off");
+			if(act == RELAY_ON) dRelay[RHEAT].set_ON(); else dRelay[RHEAT].set_OFF();
 		}
 	}
 }	
@@ -1786,6 +1800,9 @@ void HeatPump::compressorON()
 		resetPID(); 										// Инициализировать переменные ПИД регулятора
 		if(Charts_when_comp_on) task_updstat_chars = 0;
 	    command_completed = Uptime_s();
+#ifndef FC_USE_RCOMP
+		if(dFC.get_present()) safety_check(SAFE_COMP, true, dFC.get_name(), "Modbus");   // инвертор пускается по шине, мимо реле RCOMP
+#endif
 	  	COMPRESSOR_ON;                                      // Включить компрессор
 		if(error || dFC.get_err()) return; // Ошибка - выходим
 	} else { // if (get_errcode()==OK)

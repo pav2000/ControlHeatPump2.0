@@ -714,7 +714,7 @@ STRCONST(sdm_ACENERGY, "ACENERGY");        // Суммарная активна�
 STRCONST(sdm_LINK, "LINK");                // Состояние связи со счетчиком
 STRCONST(sdm_ERRORS, "ERR");                // Ошибок чтения Modbus
 
-// Описание имен параметров профиля для функций get_paramProfile set_paramProfile	
+// Имена параметров профиля (ключи реестра)	
 STRCONST(prof_NAME_PROFILE, "NAME");   // Имя профиля до 10 русских букв
 STRCONST(prof_ENABLE_PROFILE, "ENABLE"); // разрешение использовать в списке
 STRCONST(prof_ID_PROFILE, "ID");       // номер профиля, нумерация c 1
@@ -864,7 +864,7 @@ STRCONST(fc_ReturnOilPeriod, "ROP");           // Время возврата м
 STRCONST(fc_ReturnOilPerDivHz, "ROPH");        // Частота при которой возвращается масло
 STRCONST(fc_ReturnOilEEV, "ROE");              // Шаги ЭРВ при котором возвращается масло
 
-// Описание имен параметров опций ТН  для функций get_optionHP ("get_oHP") set_optionHP ("set_oHP")
+// Имена параметров опций ТН (ключи реестра группы ohp)
 STRCONST(option_ADD_HEAT, "HEAT_list");                  // использование дополнительного нагревателя (значения 1 и 0)
 STRCONST(option_TEMP_RHEAT, "TEMP_RHEAT");           // температура для управления RHEAT (градусы)
 STRCONST(option_PUMP_WORK, "PUMP_WORK");             // работа насоса конденсатора при выключенном компрессоре секунды

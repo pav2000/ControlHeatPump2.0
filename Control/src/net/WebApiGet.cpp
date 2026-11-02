@@ -824,7 +824,7 @@ static const int FCB = __COUNTER__;
 	#define FB_DT 0.01f, 9.99f
 #endif
 static const ApiParam apiFcTab[] = {
-	FCK(fc_ON_OFF,  0,     MK_BOOL, 1, 0, 0),
+	FCK(fc_ON_OFF,  PF_OFF, MK_BOOL, 1, 0, 0),             // пуск/останов инвертора вручную: только при остановленном ТН (В-5)
 	FCK(fc_INFO,    PF_RO, MK_TEXT, 1, 0, 0),                 // регистры по Modbus: «код|описание|значение;...», опрос занимает секунды
 	FCK(fc_NAME,    PF_RO, MK_TEXT, 1, 0, 0),
 	FCK(fc_NOTE,    PF_RO, MK_TEXT, 1, 0, 0),
@@ -1011,6 +1011,24 @@ static const ApiGroup *const apiGroups[] = { &ApiGrpState, &ApiGrpHeat, &ApiGrpC
 	&ApiGrpSdm,
 #endif
 };
+
+void api_text_cat(char *buf, uint16_t cap, const char *sect, const char *name)
+{
+	char key[48];
+	uint8_t n = 0;
+	while(*sect && n < sizeof(key) - 2) key[n++] = *sect++;
+	key[n++] = '.';
+	for(; *name && n < sizeof(key) - 1; name++) key[n++] = (*name >= 'A' && *name <= 'Z') ? (char)(*name + 32) : *name;
+	key[n] = 0;
+	ApiCtx c;
+	c.groups = apiGroups; c.ng = sizeof(apiGroups) / sizeof(apiGroups[0]);
+	c.acts = 0; c.na = 0; c.role = ROLE_ADMIN; c.running = 0; c.scratch = 0; c.scratch_cap = 0;
+	uint16_t len = (uint16_t)strlen(buf);
+	if(len + 1 >= cap) return;
+	ApiOut o;
+	api_out_init(&o, buf + len, (uint16_t)(cap - len));
+	api_text(&c, key, &o);
+}
 
 // ---- действия do ----
 static int apiAct_power_on(ApiOut *o, const char *)  { HP.sendCommand(pSTART); api_put(o, "\"ok\""); return AE_OK; }
@@ -1344,7 +1362,7 @@ static const ApiAction apiActions[] = {
 	{ "wdt.reset",      0, apiAct_wdt_reset },
 	{ "tasks.reset",    0, apiAct_tasks_reset },
 	{ "modbus.read",    0, apiAct_modbus_read },
-	{ "modbus.write",   0, apiAct_modbus_write },
+	{ "modbus.write",   0, apiAct_modbus_write, 1 },   // запись регистров инвертора только при остановленном ТН (В-5)
 	{ "dbg.default",    0, apiAct_dbg_default },
 	{ "onewire.scan",   0, apiAct_onewire_scan },
 #ifdef EEV_DEF

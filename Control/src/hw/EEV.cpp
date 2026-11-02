@@ -582,94 +582,6 @@ void devEEV::CorrectOverheatInit(void)
 	OHCor_tdelta = 0;
 }
 
- // Получить параметр ЭРВ в виде строки
- // var - строка с параметром ret-выходная строка, ответ ДОБАВЛЯЕТСЯ
-void devEEV::get_paramEEV(char *var, char *ret)
-{
-	if(strcmp(var, eev_POS)==0) {
-		_itoa(EEV,ret);
-	} else if(strcmp(var, eev_POSp)==0){
-		ret = dptoa(ret + m_strlen(ret), get_EEV() > 0 ? calc_percent(get_EEV()) : 0, 2);
-		*(ret - 1) = '\0';
-	} else if(strcmp(var, eev_POSpp)==0){
-		_itoa(EEV,ret);
-		strcat(ret," (");
-		ret = dptoa(ret + m_strlen(ret), get_EEV() > 0 ? calc_percent(get_EEV()) : 0, 2);
-		strcpy(ret - 1, "%)");
-		if(stepperEEV.isBusy()) strcat(ret, "⇔");  // признак движения
-	} else if(strcmp(var, eev_OVERHEAT)==0){
-		_dtoa(ret, Overheat, 2);
-	} else if(strcmp(var, eev_ERROR)==0){  _itoa(err,ret);
-	} else if(strcmp(var, eev_MIN)==0){    _itoa(_data.minSteps,ret);
-	} else if(strcmp(var, eev_MAX)==0){	   _itoa(_data.maxSteps,ret);
-	} else if(strcmp(var, eev_TIME)==0){   _itoa(_data.pid_time,ret);
-	} else if(strcmp(var, eev_TARGET)==0){ _dtoa(ret, _data.tOverheat, 2);
-	} else if(strcmp(var, eev_tOverheatTCOMP)==0){ _dtoa(ret, _data.tOverheatTCOMP, 2);
-	} else if(strcmp(var, eev_tOverheatTCOMP_delta)==0){ _dtoa(ret, _data.tOverheatTCOMP_delta, 2);
-	} else if(strcmp(var, eev_PID2_delta)==0){ _dtoa(ret, _data.pid2_delta, 2);
-	} else if(strcmp(var, eev_KP)==0){     _dtoa(ret, -_data.pid.Kp, 3);
-	} else if(strcmp(var, eev_KP2)==0){    _dtoa(ret, -_data.pid2.Kp, 3);
-	} else if(strcmp(var, eev_KI2)==0){	   _dtoa(ret, -_data.pid2.Ki / _data.pid_time, 3);
-	} else if(strcmp(var, eev_KD2)==0){	   _dtoa(ret, -_data.pid2.Kd * _data.pid_time, 3);
-	} else if(strcmp(var, eev_KI)==0){	   _dtoa(ret, -_data.pid.Ki,3);
-	} else if(strcmp(var, eev_KD)==0){	   _dtoa(ret,-_data.pid.Kd,3);
-	} else if(strcmp(var, eev_ERR_KP)==0){ 	_dtoa(ret, _data.pid2_delta, 2);
-	} else if(strcmp(var, eev_CONST)==0){  _dtoa(ret, _data.Correction,2);
-	} else if(strcmp(var, eev_FREON)==0){
-		strcat(ret, noteFreon[FREON]);
-	}   else if(strcmp(var, eev_RULE)==0){
-		web_fill_tag_select(ret, noteRuleEEV, get_ruleEEV());
-	} else if(strcmp(var, eev_NAME)==0){    strcat(ret,name);
-	} else if(strcmp(var, eev_NOTE)==0){    strcat(ret,note);
-	} else if(strcmp(var, eev_REMARK)==0){  strcat(ret,noteRemarkEEV[get_ruleEEV()]);
-	} else if(strcmp(var, eev_PINS)==0){
-		strcat(ret,"D");  _itoa(PIN_EEV1_D24,ret);
-		strcat(ret," D"); _itoa(PIN_EEV2_D25,ret);
-		strcat(ret," D"); _itoa(PIN_EEV3_D26,ret);
-		strcat(ret," D"); _itoa(PIN_EEV4_D27,ret);
-	} else if(strcmp(var, eev_cCORRECT)==0){_itoa((_data.flags & (1<<fCorrectOverHeat)) != 0, ret);
-	} else if(strcmp(var, eev_cDELAY)==0){ 	_itoa(_data.OHCor_Delay, ret);
-	} else if(strcmp(var, eev_cPERIOD)==0){	_itoa(_data.OHCor_Period, ret);
-	} else if(strcmp(var, eev_cDELTA)==0){ 	_dtoa(ret, _data.OHCor_TDIS_TCON, 2);
-	} else if(strcmp(var, eev_cOH_MIN)==0){	_dtoa(ret, _data.OverheatMin, 2);
-	} else if(strcmp(var, eev_cOH_MAX)==0){	_dtoa(ret, _data.OverheatMax, 2);
-	} else if(strcmp(var, eev_cOH_START)==0){_dtoa(ret, _data.OverHeatStart, 2);
-	} else if(strcmp(var, eev_cOH_TDELTA)==0){if(OHCor_tdelta) _dtoa(ret, OHCor_tdelta, 2); else strcat(ret, "-");
-	} else if(strcmp(var, eev_cOH_START)==0){_dtoa(ret, _data.OverHeatStart/100, 2);
-    } else if(strcmp(var, eev_cDELTA_Thr)==0){	_dtoa(ret, _data.OHCor_TDIS_TCON_Thr, 2);
-    } else if(strcmp(var, eev_cOH_cDELTA_MAX)==0){	_itoa(_data.OHCor_TDIS_TCON_MAX, ret);
-    } else if(strcmp(var, eev_PID_MAX)==0){	_itoa(_data.pid_max, ret); // ограничение ПИД в шагах ЭРВ
-	} else if(strcmp(var, eev_SPEED)==0){  	_itoa(_data.speedEEV, ret);
-	} else if(strcmp(var, eev_CLOSE)==0){           _itoa((_data.flags & (1<<fEevClose))!=0, ret);
-	} else if(strcmp(var, eev_LIGHT_START)==0){    	_itoa((_data.flags & (1<<fLightStart))!=0, ret);
-	} else if(strcmp(var, eev_START )==0){          _itoa((_data.flags & (1<<fStartFlagPos))!=0, ret);
-#ifdef EEV_PREFER_PERCENT
-	} else if(strcmp(var, eev_MANUAL)==0){ 			_dtoa(ret, calc_percent(_data.manualStep), 2);
-	} else if(strcmp(var, eev_PRE_START_POS)==0){	_dtoa(ret, calc_percent(_data.preStartPos), 2);
-	} else if(strcmp(var, eev_START_POS)==0){    	_dtoa(ret, calc_percent(_data.StartPos), 2);
-	} else if(strcmp(var, eev_PosAtHighTemp)==0){ 	_dtoa(ret, calc_percent(_data.PosAtHighTemp), 2);
-#else
-	} else if(strcmp(var, eev_MANUAL)==0){ 			_itoa(_data.manualStep, ret);
-	} else if(strcmp(var, eev_PRE_START_POS)==0){	_itoa(_data.preStartPos, ret);
-	} else if(strcmp(var, eev_START_POS)==0){    	_itoa(_data.StartPos, ret);
-	} else if(strcmp(var, eev_PosAtHighTemp)==0){ 	_itoa(_data.PosAtHighTemp, ret);
-#endif
-	} else if(strcmp(var, eev_DELAY_ON_PID)==0){  	_itoa(_data.delayOnPid, ret);
-	} else if(strcmp(var, eev_DELAY_START_POS)==0){	_itoa(_data.DelayStartPos, ret);
-	} else if(strcmp(var, eev_DELAY_OFF)==0){	  	_itoa(_data.delayOff, ret);
-	} else if(strcmp(var, eev_DELAY_ON)==0){	   	_itoa(_data.delayOn, ret);
-	} else if(strcmp(var, eev_HOLD_MOTOR)==0){   	_itoa((_data.flags & (1<<fHoldMotor))!=0, ret);
-	} else if(strcmp(var, eev_PRESENT)==0){         _itoa((_data.flags & (1<<fPresent))!=0, ret);
-	} else if(strcmp(var, eev_SEEK_ZERO)==0){   	_itoa((_data.flags & (1<<fOneSeekZero))!=0, ret);
-	} else if(strcmp(var, eev_PID_P_ON_M )==0){     _itoa((_data.flags & (1<<fPID_PropOnMeasure))!=0, ret);
-	} else if(strcmp(var, eev_fEEVStartPosByTemp)==0){ _itoa((_data.flags & (1<<fEEV_StartPosByTemp))!=0, ret);
-	} else if(strcmp(var, eev_fEEV_DirectAlgorithm)==0){ _itoa((_data.flags & (1<<fEEV_DirectAlgorithm))!=0, ret);
-	} else if(strcmp(var, eev_trend_threshold)==0){	_itoa(_data.trend_threshold, ret);
-	} else if(strcmp(var, eev_trend_mul_threshold)==0){	_dtoa(ret, _data.trend_mul_threshold, 2);
-	} else if(strcmp(var, eev_tOverheat2_low)==0){	_dtoa(ret, _data.tOverheat2_low, 2);
-	} else if(strcmp(var, eev_tOverheat2_low_hyst)==0){	_dtoa(ret, _data.tOverheat2_low_hyst, 2);
-	} else strcat(ret,"E10");
-}
 
 void devEEV::get_ruleEEVtext(char *strReturn)
 {
@@ -728,8 +640,8 @@ static const char *const apiLabRuleEEV[] = { "TEVAOUT-T[PEVA]",
 	#define EPOS(nm, hk) ES(nm, 0, MK_INT, 1, hk, 0, 8192)        // положение в шагах
 #endif
 static const ApiParam apiEevTab[] = {
-	ES(eev_POS,    0,     MK_INT, 1,   E_POS,   0, 8192),
-	ES(eev_POSp,   0,     MK_NUM, 100, E_POSP,  0, 100),
+	ES(eev_POS,    PF_OFF, MK_INT, 1,  E_POS,   0, 8192),             // положение ЭРВ вручную: только при остановленном ТН (В-5)
+	ES(eev_POSp,   PF_OFF, MK_NUM, 100, E_POSP, 0, 100),
 	ES(eev_POSpp,  PF_RO, MK_TEXT, 1,  E_POSPP, 0, 0),                // «шаги (проценты%)» и ⇔ при движении
 	ES(eev_OVERHEAT, PF_RO, MK_NUM, 100, E_OH,  0, 0),
 	ES(eev_ERROR,  PF_RO, MK_INT, 1,   E_ERR,   0, 0),

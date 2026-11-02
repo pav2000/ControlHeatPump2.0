@@ -30,7 +30,8 @@
 #include "StepMotor.h" 
 #include "../core/Profile.h"
 #include "../net/MQTT.h"
-#include "BusOneWire.h" 
+#include "BusOneWire.h"
+#include "../core/Safety.h"                 // биты состояния реле fR_Status* 
 
 #include "../core/Device.h"   // общие флаги датчиков, часы, set_Error
 
@@ -203,11 +204,7 @@ private:
 // ---------------------------------------------------------------------------
 // ---- И С П О Л Н И Т Е Л Ь Н Ы Е   У С Т Р О Й С Т В А ----
 // ---------------------------------------------------------------------------
-#define fR_StatusMain		1			// b1: Состояние Вкл/Выкл Основного алгоритма
-#define fR_StatusManual		3			// b3: Состояние Вкл/Выкл Вручную
-#define fR_StatusDaily		4			// b3: Состояние Вкл/Выкл Дневное включение
-#define fR_StatusMask		((1<<fR_StatusMain)|(1<<fR_StatusManual)|(1<<fR_StatusDaily))	// битовая маска
-#define fR_StatusAllOff		-127		// выключить по всем алгоритмам
+// Биты состояния реле по источникам (fR_Status*) - в Safety.h
 
 class devRelay : public Device
 {
@@ -215,6 +212,7 @@ public:
   void initRelay(int sensor);                            // Инициализация реле
   __attribute__((always_inline)) inline int8_t  set_ON(bool planned = false) {return set_Relay(fR_StatusMain, planned);}    // Включить реле (planned - плановое переключение, в журнал только при флаге RELP)
   __attribute__((always_inline)) inline int8_t  set_OFF(bool planned = false){return set_Relay(-fR_StatusMain, planned);}   // Выключить реле
+  __attribute__((always_inline)) inline int8_t  set_AllOFF(){return set_Relay(fR_StatusAllOff);}   // Выключить всеми источниками, и ручным тоже: аварийный и общий останов
   int8_t  set_Relay(int8_t r, bool planned = false);                           // Установить реле в состояние (0/-1 - выкл основной алгоритм, fR_Status* - включить, -fR_Status* - выключить)
   inline boolean get_Relay(){return Relay;}                    // Прочитать состояние реле
   int8_t  get_pinD(){return pin;}                        // Получить ногу куда прицеплено реле
@@ -303,7 +301,6 @@ public:
 	int8_t  set_zero();                                    // Гарантированно (шагов больше чем диапазон) закрыть ЭРВ возвращает код ошибки
 
 
-	void get_paramEEV(char *var, char *ret);              // Получить параметр ЭРВ в виде строки
 
 	// Функции чтения настроек ЭРВ в бинарном виде
 	int16_t get_tOverheat(){return  _data.tOverheat;}     // Получить целевой перегрев

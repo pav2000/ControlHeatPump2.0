@@ -504,6 +504,12 @@ uint8_t SensorsNeeded(bool house_on, bool tin_used, bool weather, bool boiler_on
 // - пауза ТН начинается с паузы насосов: таймер взводится на pause. Прежде он оставался от
 //   прошлого цикла, и первое включение ждало случайный остаток от 0 до pause секунд.
 //   Насосы к этому моменту уже выключены остановом компрессора (после delayOffPump).
+uint8_t ClimateAddHeatStep(bool on, int16_t t, int16_t target, int16_t hyst, bool want, bool flow)
+{
+	if(on) return (t > target || !want || !flow) ? RELAY_OFF : RELAY_KEEP;
+	return (t < target - hyst && want && flow) ? RELAY_ON : RELAY_KEEP;
+}
+
 uint8_t ClimatePumpPauseStep(uint8_t *start_pump, uint16_t *timer, uint16_t work, uint16_t pause)
 {
 	if(!*start_pump || !work) return RELAY_KEEP;    // автомат стоит или функция выключена

@@ -22,6 +22,7 @@
  * буферы приходят от вызывающего. Числа разбираются и округляются через my_atof и rd.
  */
 #include <string.h>
+#include <stdlib.h>     // atoi - номер перечисления в api_text
 #include "ParamRegistry.h"
 #include "../util/Util.h"
 
@@ -622,6 +623,11 @@ int api_do(const ApiCtx *c, const char *query, ApiOut *o)
 			api_put(o, "{\"d\":{},\"e\":{"); put_str_n(o, av, al); api_put(o, ":\"forbidden\"}}");
 			return o->over ? -2 : 0;
 		}
+		if(a->off && c->running) {                     // действие над выходами при работающем ТН (В-5)
+			api_put(o, "{\"d\":{},\"e\":{"); put_str_n(o, av, al); api_putc(o, ':');
+			api_put_str(o, ApiErrName[AE_BUSY]); api_put(o, "}}");
+			return o->over ? -2 : 0;
+		}
 		const char *pp = "";
 		const char *pv; uint16_t pl;
 		if(qfind(query, "p", &pv, &pl)) {              // параметры действия: номер профиля, пара «из:в» ...
@@ -727,6 +733,54 @@ int api_meta(const ApiCtx *c, const char *query, ApiOut *o)
 // Хеш состава реестра (E2): меняется при любом изменении ключей, типов,
 // границ, подписей и прав. Считается по запросу, статического кеша нет.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Значение ключа текстом (api_text)
+// ---------------------------------------------------------------------------
+static uint8_t hexval(char h) { return h >= 'a' ? h - 'a' + 10 : h >= 'A' ? h - 'A' + 10 : h - '0'; }
+
+// JSON-строка с кавычками в [s, s+n) -> её содержимое на том же месте. Возвращает новую длину.
+static uint16_t unescape_inplace(char *s, uint16_t n)
+{
+	uint16_t r = 1, w = 0;                                   // r: после открывающей кавычки
+	while(r + 1 < n) {                                       // до закрывающей
+		char ch = s[r++];
+		if(ch == '\\' && r + 1 < n) {
+			char e = s[r++];
+			if(e == 'n') ch = '\n'; else if(e == 'r') ch = '\r'; else if(e == 't') ch = '\t';
+			else if(e == 'u' && r + 4 < n) { ch = (char)(hexval(s[r + 2]) << 4 | hexval(s[r + 3])); r += 4; }   // пишем только \u00XX
+			else ch = e;                                     // \" \\ \/
+		}
+		s[w++] = ch;
+	}
+	s[w] = 0;
+	return w;
+}
+
+int api_text(const ApiCtx *c, const char *key, ApiOut *o)
+{
+	const ApiGroup *g = 0; uint8_t dev = 0;
+	const ApiParam *p = lookup(c, key, (uint16_t)strlen(key), &g, &dev);
+	if(!p) { api_putc(o, '?'); return AE_UNKNOWN; }
+	if(is_devgroup(g) && !g->ops->devok(dev)) { api_putc(o, '-'); return AE_NA; }
+	uint16_t mark = o->len;
+	int e = put_value(g, p, dev, o);
+	if(e == AE_OK && o->over) e = AE_TOO_BIG;
+	char *v = o->p + mark;
+	uint16_t n = (uint16_t)(o->len - mark);
+	const char *rep = 0;
+	if(e != AE_OK) rep = "-";
+	else if(n >= 2 && v[0] == '"') { o->len = (uint16_t)(mark + unescape_inplace(v, n)); return AE_OK; }
+	else if(slice_is(v, n, "true")) rep = "да";
+	else if(slice_is(v, n, "false")) rep = "нет";
+	else if(slice_is(v, n, "null")) rep = "-";
+	else if(p->lab && n && v[0] >= '0' && v[0] <= '9') {    // перечисление: номер -> подпись
+		uint8_t i = (uint8_t)atoi(v);
+		if(i < lab_count(p)) rep = p->lab[i];
+	}
+	if(rep) { o->len = mark; o->p[mark] = 0; api_put(o, rep); }
+	return e;
+}
+
 static uint32_t fnv(uint32_t h, const void *d, size_t n)
 {
 	const uint8_t *p = (const uint8_t *)d;
