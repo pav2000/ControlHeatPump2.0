@@ -590,7 +590,6 @@ STRCONST(cInvalid, "invalid");
 STRCONST(cStrEnd, "\n");
 STRCONST(cErrorRS485, "%s: Read error %s, code=%d repeat . . .\n"); // имя, функция, код
 STRCONST(cErrorMutex, "Function %s: %s, mutex is busy\n");   // функция, мютекс
-STRCONST(cAddHeat, "+");                                     // Значек нагрева ГВС ТЭНом
 STRCONST(http_get_str1,  "GET ");
 STRCONST(http_get_str2,  " HTTP/1.0\r\nHost: ");
 STRCONST(http_get_str3,  "\r\nAccept: text/html\r\n\r\n");
@@ -608,7 +607,6 @@ STRCONST(nameHeatPump, "Heat Pump");         // Имя теплового нас
 STRCONST(MutexI2CBusy, "I2C"); 
 STRCONST(MutexModbusBusy, "Modbus"); 
 STRCONST(MutexWebThreadBusy, "WebThread"); 
-STRCONST(MutexSPIBusy, "SPI"); 
 STRCONST(MutexCommandBusy, "Command"); 
 
 // Описание имен параметров ЭРВ для функций get_pEEV set_pEEV
@@ -628,9 +626,6 @@ STRCONST(eev_tOverheatTCOMP_delta, "TRG2D"); // Перегрев2 дельта �
 STRCONST(eev_KP, "KP");                  // ПИД Коэф пропорц.   В ТЫСЯЧНЫХ!!!
 STRCONST(eev_KI, "KI");                  // ПИД Коэф интегр.  для настройки Ki=0   В ТЫСЯЧНЫХ!!!
 STRCONST(eev_KD, "KD");                  // ПИД Коэф дифф.    В ТЫСЯЧНЫХ!!!
-STRCONST(eev_KP2, "KP2");                // ПИД Коэф пропорц.   В ТЫСЯЧНЫХ!!!
-STRCONST(eev_KI2, "KI2");                // ПИД Коэф интегр.  для настройки Ki=0   В ТЫСЯЧНЫХ!!!
-STRCONST(eev_KD2, "KD2");                // ПИД Коэф дифф.    В ТЫСЯЧНЫХ!!!
 STRCONST(eev_PID2_delta, "P2D");        // Дельта для консервативных вычислений ПИДа (Для формулы 1  это ошибка при которой начинает уменьшаться пропорциональная)
 STRCONST(eev_PID_MAX, "PMAX");           // ограничение ПИД в шагах ЭРВ
 STRCONST(eev_CONST, "CONST");            // Корректировка перегрева (постоянная ошибка)
@@ -651,7 +646,6 @@ STRCONST(eev_cOH_MIN, "cOH_MIN");        // Минимальный перегр�
 STRCONST(eev_cOH_START, "cOH_START");    // Стартовый перегрев (сотые градуса)
 STRCONST(eev_cOH_MAX, "cOH_MAX");        // Максимальный перегрев (сотые градуса)
 STRCONST(eev_cOH_TDELTA, "cTDELTA");    // Расчитанная целевая дельта Нагнетание-Конденсации
-STRCONST(eev_ERR_KP, "ERR_KP");          // Ошибка (в сотых градуса) при которой происходит уменьшение пропорциональной составляющей ПИД ЭРВ
 STRCONST(eev_SPEED, "SPEED");            // Скорость шагового двигателя ЭРВ (импульсы в сек.)
 STRCONST(eev_PRE_START_POS, "PSP");      // ПУСКОВАЯ позиция ЭРВ (ТО что при старте компрессора ПРИ РАСКРУТКЕ)
 STRCONST(eev_START_POS, "SP");           // СТАРТОВАЯ позиция ЭРВ после раскрутки компрессора т.е. ПОЗИЦИЯ С КОТОРОЙ НАЧИНАЕТСЯ РАБОТА проходит DelayStartPos сек
@@ -705,7 +699,6 @@ STRCONST(sdm_MIN_VOLTAGE, "MINV");  // Контроль напряжения м�
 STRCONST(sdm_MAX_POWER, "MAXP");      // Контроль мощности максимум
 STRCONST(sdm_VOLTAGE, "VOLT");          // Напряжение
 STRCONST(sdm_CURRENT, "CURRENT");          // Ток
-STRCONST(sdm_REPOWER, "REPOWER");          // Реактивная мощность
 STRCONST(sdm_ACPOWER, "ACPOWER");          // Активная мощность
 STRCONST(sdm_POW_FACTOR, "PF");    // Коэффициент мощности
 STRCONST(sdm_PHASE, "PHASE");              // Угол фазы (градусы)
@@ -717,13 +710,7 @@ STRCONST(sdm_ERRORS, "ERR");                // Ошибок чтения Modbus
 // Имена параметров профиля (ключи реестра)	
 STRCONST(prof_NAME_PROFILE, "NAME");   // Имя профиля до 10 русских букв
 STRCONST(prof_ENABLE_PROFILE, "ENABLE"); // разрешение использовать в списке
-STRCONST(prof_ID_PROFILE, "ID");       // номер профиля, нумерация c 1
 STRCONST(prof_NOTE_PROFILE, "NOTE");   // описание профиля
-STRCONST(prof_DATE_PROFILE, "DATE");   // дата профиля
-STRCONST(prof_CRC16_PROFILE, "CRC16"); // контрольная сумма профиля
-STRCONST(prof_NUM_PROFILE, "NUM");     // максимальное число профилей
-STRCONST(prof_TBL_PROFILE, "TBL");     // таблица всех слотов профилей одним ответом
-STRCONST(prof_SEL_PROFILE, "SEL");     // список профилей (пока не используется)
 
 // Описание имен параметров уведомлений для функций set_messageSetting get_messageSetting
 STRCONST(mess_MAIL, "MAIL");                  // флаг уведомления скидывать на почту
@@ -792,7 +779,6 @@ STRCONST(time_TIME, "TIME");         // текущее время  12:45 без 
 STRCONST(time_DATE, "DATE");         // текущая дата типа  12/04/2016
 STRCONST(time_NTP, "NTP");           // адрес NTP сервера строка до 60 символов.
 STRCONST(time_UPDATE, "UPDATE");     // Время синхронизации с NTP сервером.
-STRCONST(time_TIMEZONE, "TIMEZONE"); // Часовой пояс
 STRCONST(time_UPDATE_I2C, "UPDATE_I2C"); // Синхронизация времени раз в час с i2c часами
 
 // Сеть
