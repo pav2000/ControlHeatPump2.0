@@ -87,12 +87,7 @@ function gWinText(w) {
 // ---- файлы истории и статистики с SD-карты ----
 // Загрузить файл с контроллера: ok(текст) или fail(код)
 function gFetch(url, ok, fail) {
-	var r = new XMLHttpRequest();
-	r.open('GET', urlcontrol + '/' + url, true);
-	r.timeout = 60000;
-	r.onload = function() { if(r.status == 200) ok(r.responseText); else fail(r.status); };
-	r.onerror = r.ontimeout = function() { fail(0); };
-	r.send(null);
+	api.fetchText(url, 60000, function(text, code) { if(code == 200) ok(text); else fail(code); });		// через очередь и повтор api (scripts.js)
 }
 // Шапка *_head.csv: «Время;<ось><имя>;<ось><имя>...», первая буква - тип оси (T °C, P бар, V В, W кВт, C COP, R %, S шаг, F м³/ч, H Гц, M моточасы)
 function gHead(text) {

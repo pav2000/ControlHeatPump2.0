@@ -33,6 +33,7 @@
 #include "../../Constant.h"
 #include "../hw/GpioDirect.h"
 #include "mini-printf.h"   // MINI_PRINTF_FMT - проверка форматов компилятором
+#include "NetLayout.h"      // NL_MODE_*, раскладка буферов сокетов
 // Если mini-printf.h взят из копии БЕЗ этого макроса (например из sketchbook,
 // который не выровняли), собираем без проверки форматов - но собираем. Иначе
 // IDE выдаёт три десятка ошибок на ровном месте, что уже случилось.
@@ -54,7 +55,9 @@ extern EthernetServer server1;
 // пространства имён даст внутреннее связывание и модули его не увидят.
 extern const char nameWiznet[];
 
-uint16_t sendPacketRTOS(uint8_t thread, const uint8_t *buf, uint16_t len, uint16_t pause);
+uint16_t sendPacketRTOS(uint8_t thread, const uint8_t *buf, uint16_t len);
+void netApplyRtr();             // записать в чип таймаут повтора пакета (net.rtr) и число повторов; замок сети держит вызывающий
+extern uint8_t netLayoutMode;   // действующая раскладка буферов сокетов (NetLayout.h), меняется только в initW5200 при закрытых сокетах; читается без замка
 uint16_t sendConstRTOS(uint8_t thread, const char *buf);
 uint16_t sendBufferRTOS(uint8_t thread, const uint8_t *buf, uint16_t len);
 uint16_t sendPrintfRTOS(uint8_t thread, const char *format, ...) MINI_PRINTF_FMT(2, 3);

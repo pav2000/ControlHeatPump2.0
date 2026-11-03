@@ -729,7 +729,7 @@ void Statistics::SendFileData(uint8_t thread, SdFile *File, char *filename, bool
 	}
 	File->close();
 	uint32_t readed = m_strlen((char*)_buffer_);
-	if(sendPacketRTOS(thread, _buffer_, readed, 0) != readed) {
+	if(sendPacketRTOS(thread, _buffer_, readed) != readed) {
 		journal.jprintf(" Error sendh %s\n", filename);
 		return;
 	}
@@ -787,12 +787,12 @@ bool Statistics::SendFileChunk(uint8_t thread, uint32_t *len, bool noMarkers, bo
 		tail = n - done;
 		n = HistoryDropMarkers((char*)_buffer_, done);
 		if(tail) memmove(_buffer_ + n, _buffer_ + done, tail);   // хвост сразу за сжатой частью; ниже сдвигается в начало
-		if(n && sendPacketRTOS(thread, _buffer_, n, 0) != n) return false;
+		if(n && sendPacketRTOS(thread, _buffer_, n) != n) return false;
 		if(tail) memmove(_buffer_, _buffer_ + n, tail);
 		*len = tail;
 		return true;
 	}
-	if(n && sendPacketRTOS(thread, _buffer_, n, 0) != n) return false;
+	if(n && sendPacketRTOS(thread, _buffer_, n) != n) return false;
 	*len = 0;
 	return true;
 }
@@ -812,7 +812,7 @@ void Statistics::SendFileDataByPeriod(uint8_t thread, SdFile *File, char *Prefix
 		sendConstRTOS(thread, HEADER_FILE_NOT_FOUND);
 		return;
 	}
-	if(sendPacketRTOS(thread, _buffer_, bendfile, 0) != bendfile) {
+	if(sendPacketRTOS(thread, _buffer_, bendfile) != bendfile) {
 		journal.jprintf(" Error sendh %s\n", Prefix);
 		return;
 	}
@@ -929,13 +929,13 @@ xFoundStart:
 			if(bendfile) while(done && _buffer_[done - 1] != '\n') done--;
 			tail = readed - done;
 			uint32_t w = HistoryThin((char*)_buffer_, done, step, lastStep);
-			if(w && sendPacketRTOS(thread, _buffer_, w, 0) != w) {
+			if(w && sendPacketRTOS(thread, _buffer_, w) != w) {
 				journal.jprintf(" Error send %s\n", filename);
 				return;
 			}
 			memmove(_buffer_, _buffer_ + done, tail);
 			readed = tail;
-		} else if(sendPacketRTOS(thread, _buffer_, readed, 0) != readed) {
+		} else if(sendPacketRTOS(thread, _buffer_, readed) != readed) {
 			journal.jprintf(" Error send %s\n", filename);
 			return;
 		}
@@ -953,7 +953,7 @@ xFoundStart:
 	}
 	if(readed && step) readed = HistoryThin((char*)_buffer_, readed, step, lastStep);
 	if(readed) {
-		if(sendPacketRTOS(thread, _buffer_, readed, 0) != readed) {
+		if(sendPacketRTOS(thread, _buffer_, readed) != readed) {
 			journal.jprintf(" Error send %s\n", filename);
 		}
 	}

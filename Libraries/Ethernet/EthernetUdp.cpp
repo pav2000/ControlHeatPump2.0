@@ -40,6 +40,7 @@ uint8_t EthernetUDP::begin(uint16_t port) {
   if (_sock != MAX_SOCK_NUM)
     return 0;
   for (int i = 0; i < MAX_SOCK_NUM; i++) {
+    if (!W5100.sockUsable(i)) continue;      // сокет с нулевым буфером передачи (раскладка NetLayout.h)
     uint8_t s = W5100.readSnSR(i);
    //  Serial.print("W5100.readSnSR(i)=0x"); Serial.println(s,HEX);
       if (s == SnSR::CLOSED || s == SnSR::FIN_WAIT) {

@@ -10,6 +10,8 @@
 #ifndef	W5500_H_INCLUDED
 #define	W5500_H_INCLUDED
 
+#include "../../../Control/src/net/NetLayout.h"   // раскладка буферов передачи сокетов (NL_MODE_*)
+
 /*
 class MR {
 public:
@@ -122,6 +124,10 @@ class W5500Class {
 
 public:
   void init();
+  // Раскладка буферов передачи (NetLayout.h: NL_MODE_OLD / NL_MODE_FAST0). Режим только запоминается, в чип он пишется в init() после каждого
+  // сброса: init() зовут и resetWiznet, и каждый Ethernet.begin, раскладка должна переживать все вызовы.
+  void setLayoutMode(uint8_t mode) { layoutMode = mode; }
+  bool sockUsable(uint8_t s) { return NetLayout_Usable(layoutMode, s); }   // сокеты с нулевым буфером не используются (веб, клиенты, UDP)
   /**
    * @brief	This function is being used for copy the data form Receive buffer of the chip to application buffer.
    * 
@@ -322,6 +328,7 @@ private:
 
 public:
   static const uint16_t SSIZE = 2048; // Max Tx buffer size
+  uint8_t layoutMode;   // NL_MODE_*, 0 - прежняя раскладка (глобальный объект инициализируется нулями)
 private:
   static const uint16_t RSIZE = 2048; // Max Rx buffer size
 

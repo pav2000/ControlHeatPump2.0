@@ -616,9 +616,10 @@ extern const ApiGroup ApiGrpEev;
 #endif     // у классов-владельцев
 
 // ---- группа sys: служебные данные для страниц системы ----
-enum { Y_SOCKETS = 1, Y_SOCKRES, Y_OWPIN, Y_LSTATS, Y_LHIST, Y_FREERAM, Y_INFO, Y_CONST, Y_CONST1, Y_WDT, Y_TASKS, Y_ERRORS, Y_ERRORS1, Y_LHISTOLD, Y_WEBSTAT, Y_SPI };
+enum { Y_SOCKETS = 1, Y_WEBSOCKS, Y_SOCKRES, Y_OWPIN, Y_LSTATS, Y_LHIST, Y_FREERAM, Y_INFO, Y_CONST, Y_CONST1, Y_WDT, Y_TASKS, Y_ERRORS, Y_ERRORS1, Y_LHISTOLD, Y_WEBSTAT, Y_SPI };
 static const ApiParam apiSysTab[] = {
 	{ "sockets",    0, 0, 0, 0, 1, PT_CALL, PF_RO | PF_AR, MK_TABLE, Y_SOCKETS, 0 },    // состояние сокетов сетевого чипа
+	{ "web_socks",  0, 0, 0, 0, 1, PT_CALL, PF_RO, MK_INT,   Y_WEBSOCKS, 0 },   // число веб-сокетов в действующей раскладке (морда по нему выбирает очередь запросов)
 	{ "socket_res", 0, 0, 0, 0, 1, PT_CALL, PF_RO | PF_AR, MK_INT,   Y_SOCKRES, 0 },    // сколько зависших сокетов сброшено
 	{ "onewire_pin", 0, 0, 0, 0, 1, PT_CALL, PF_RO,        MK_TEXT,  Y_OWPIN,   0 },    // вывод или мастер шины OneWire
 	{ "list_stats", 0, 0, 0, 0, 1, PT_CALL, PF_RO,         MK_TABLE, Y_LSTATS,  0 },    // файлы статистики на SD по годам (csv), новые первыми
@@ -690,6 +691,17 @@ static void api_put_webstat(ApiOut *o)
 	api_put_acc(o, "stop", webStat.stop); api_putc(o, ',');
 	api_put_acc(o, "lock", webStat.lockWait); api_putc(o, ',');
 	api_put_acc(o, "file_read", webStat.fileRead); api_putc(o, ',');
+	api_put_acc(o, "space_wait", webStat.spaceWait); api_putc(o, ',');
+	api_put_acc(o, "send_ok", webStat.sendOk); api_putc(o, ',');
+	api_put(o, "\"socks\":[");                                    // по сокетам: n - запросов, avg/max - время запроса, b - отправлено байт
+	for(uint8_t i = 0; i < 8; i++) {
+		if(i) api_putc(o, ',');
+		api_put(o, "{\"n\":"); api_put_int(o, (int32_t) webStat.sockReq[i].n);
+		api_put(o, ",\"avg\":"); api_put_int(o, (int32_t) StatAcc_Avg(&webStat.sockReq[i]));
+		api_put(o, ",\"max\":"); api_put_int(o, (int32_t) webStat.sockReq[i].max);
+		api_put(o, ",\"b\":"); api_put_int(o, (int32_t) webStat.sockBytes[i]); api_putc(o, '}');
+	}
+	api_put(o, "],");
 	api_put_acc(o, "file_send", webStat.fileSend);
 	api_put(o, ",\"lock_fail\":"); api_put_int(o, (int32_t) webStat.lockFail);
 	api_put(o, ",\"slow_stop\":"); api_put_int(o, (int32_t) webStat.slowStop);
@@ -766,6 +778,7 @@ static int api_get_sys(uint8_t hook, uint8_t, ApiOut *o)
 	if(hook == Y_SOCKETS) socketInfoApi(o);
 	else if(hook == Y_WEBSTAT) api_put_webstat(o);
 	else if(hook == Y_SPI) api_put_spi(o);
+	else if(hook == Y_WEBSOCKS) api_put_int(o, NetLayout_WebCount(netLayoutMode));
 	else if(hook == Y_SOCKRES) api_put_int(o, HP.socketRes());
 	else if(hook == Y_LSTATS) api_put_year_files(o, 0);
 	else if(hook == Y_LHIST) api_put_year_files(o, 1);

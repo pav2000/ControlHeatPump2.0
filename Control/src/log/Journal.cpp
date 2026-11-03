@@ -271,7 +271,7 @@ int32_t Journal::send_Data(uint8_t thread)
 			SerialDbg.print(errorReadI2C);
 			return 0;                                                                           // SEM-OK: замок сети взят обратно и принадлежит web_server
 		}
-		if(sendPacketRTOS(thread, (byte*) Socket[thread].outBuf, len, 0) == 0) return 0;        // SEM-OK: замок вернулся к web_server, при ошибке выход
+		if(sendPacketRTOS(thread, (byte*) Socket[thread].outBuf, len) == 0) return 0;        // SEM-OK: замок вернулся к web_server, при ошибке выход
 		_delay(2);
 		sum = sum + len;                                                                        // сколько байт передано
 		if(sum >= avail) break;                                                                 // Все передано уходим

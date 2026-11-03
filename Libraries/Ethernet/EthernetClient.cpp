@@ -47,6 +47,7 @@ int EthernetClient::connect(IPAddress ip, uint16_t port) {
     return 0;
    }
   for (int i = 0; i < MAX_SOCK_NUM; i++) {
+    if (!W5100.sockUsable(i)) continue;      // сокет с нулевым буфером передачи (раскладка NetLayout.h)
     uint8_t s = W5100.readSnSR(i);
     if (s == SnSR::CLOSED || s == SnSR::FIN_WAIT || s == SnSR::CLOSE_WAIT) {
       _sock = i;
@@ -236,6 +237,21 @@ void EthernetClient::stop() {
   if (status() != SnSR::CLOSED)
     close(_sock);
 
+  EthernetClass::_server_port[_sock] = 0;
+  _sock = MAX_SOCK_NUM;
+}
+
+void EthernetClient::stopBegin() {
+  if (_sock == MAX_SOCK_NUM)
+    return;
+  disconnect(_sock);                  // FIN клиенту; чип закроет сокет сам, когда придёт ответ
+}
+
+void EthernetClient::stopEnd() {
+  if (_sock == MAX_SOCK_NUM)
+    return;
+  if (status() != SnSR::CLOSED)
+    close(_sock);
   EthernetClass::_server_port[_sock] = 0;
   _sock = MAX_SOCK_NUM;
 }

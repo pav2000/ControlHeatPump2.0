@@ -64,12 +64,7 @@ function load() {
 	}, function(c) { $('state').innerHTML = 'Не удалось загрузить журнал (' + (c || 'нет связи') + ').'; });
 }
 function gFetchLog(ok, fail) {
-	var r = new XMLHttpRequest();
-	r.open('GET', urlcontrol + '/journal.txt', true);
-	r.timeout = 60000;
-	r.onload = function() { if(r.status == 200) ok(r.responseText); else fail(r.status); };
-	r.onerror = r.ontimeout = function() { fail(0); };
-	r.send(null);
+	api.fetchText('journal.txt', 60000, function(text, code) { if(code == 200) ok(text); else fail(code); });		// через очередь и повтор api (scripts.js)
 }
 function clearLog() {
 	if(!confirm('Очистить журнал контроллера?')) return;

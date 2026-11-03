@@ -189,7 +189,8 @@ void HeatPump::dbg_after_load()
 		if(GETBIT(Option.flags, fSDMLogErrors)) m |= DBG_SDM;
 		if(dFC.get_legacy_logwork())            m |= DBG_FCW;
 	}
-	Network.flags &= ~((1 << fWebLogError) | (1 << fWebFullLog));
+	Network.rtr = Rtr_Eff(Network.rtr);            // старый файл: на месте rtr лежали байты выравнивания (нули) - по умолчанию
+	Network.flags &= ~((1 << fWebLogError) | (1 << fWebFullLog) | (1 << fNoAck));   // fNoAck: опция удалена, бит 4 в старых файлах сбрасывается, чтобы им никогда не заняли новый смысл
 	Option.flags  &= ~(1 << fSDMLogErrors);
 	dFC.clear_legacy_logwork();
 	dbgFlags = m;
@@ -663,11 +664,13 @@ void HeatPump::resetSettingHP()
 	strcpy(Network.passUser, "user");              // !save! Пароль пользователя
 	strcpy(Network.passAdmin, "admin");            // !save! Пароль администратора
 	Network.sizePacket = 1465;                      // !save! размер пакета для отправки
-	SETBIT0(Network.flags, fNoAck);                // !save! флаг Не ожидать ответа ACK
-	Network.delayAck = 10;                          // !save! задержка мсек перед отправкой пакета
+	SETBIT0(Network.flags, fNoAck);                // !save! бит 4 и delayAck не используются (опция «Не ждать ACK» удалена), поля хранятся ради формата файла
+	Network.delayAck = 10;                          // !save!
 	strcpy(Network.pingAdr, PING_SERVER);         // !save! адрес для пинга
 	Network.pingTime = 60 * 60;                       // !save! время пинга в секундах
 	SETBIT0(Network.flags, fNoPing);               // !save! Запрет пинга контроллера
+	SETBIT0(Network.flags, fSockFast);             // !save! раскладка сокетов: прежняя
+	Network.rtr = RTR_DEF_MS;                      // !save! таймаут повтора пакета сетевого чипа, мс
 
 	// Время
 	SETBIT1(DateTime.flags, fUpdateNTP);           // Обновление часов по NTP
@@ -740,9 +743,6 @@ char* HeatPump::get_network(char *var,char *ret)
     if(strcmp(var,net_INIT_W5200)==0){if (GETBIT(Network.flags,fInitW5200)) return  strcat(ret,(char*)cOne);       // флаг Контроль связи с чипом раз 10 сек.
                                       else      return  strcat(ret,(char*)cZero);               }else      
     if(strcmp(var,net_PORT)==0){return _itoa(Network.port,ret);                       }else    // Порт веб сервера
-    if(strcmp(var,net_NO_ACK)==0){    if (GETBIT(Network.flags,fNoAck)) return  strcat(ret,(char*)cOne);
-                                      else      return  strcat(ret,(char*)cZero);          }else     
-    if(strcmp(var,net_DELAY_ACK)==0){return _itoa(Network.delayAck,ret);         }else    
     if(strcmp(var,net_PING_ADR)==0){  return strcat(ret,Network.pingAdr);                  }else
     if(strcmp(var,net_PING_TIME)==0){
     	return web_fill_tag_select(ret, "never:0;1 min:0;5 min:0;20 min:0;60 min:0;120 min:0;",
@@ -753,6 +753,9 @@ char* HeatPump::get_network(char *var,char *ret)
 					Network.pingTime == 60*60 ? 4 :
 					Network.pingTime == 120*60 ? 5 : 6);
     } else if(strcmp(var,net_NO_PING)==0){if (GETBIT(Network.flags,fNoPing)) return  strcat(ret,(char*)cOne);
+                                   else      return  strcat(ret,(char*)cZero);                        }else
+    if(strcmp(var,net_RTR)==0){return _itoa(HP.get_netRtr(),ret);         }else
+    if(strcmp(var,net_SOCK_FAST)==0){if (GETBIT(Network.flags,fSockFast)) return  strcat(ret,(char*)cOne);
                                    else      return  strcat(ret,(char*)cZero);                        }else                                                                                          
 
  return strcat(ret,(char*)cInvalid);
@@ -964,7 +967,7 @@ const ApiGroup ApiGrpOhp = { "ohp", apiOhpTab, sizeof(apiOhpTab) / sizeof(apiOhp
 // хеш пересчитывается после записи. Применение сетевых настроек -
 // действие net.apply (WebApiGet.cpp), сами записи ничего не перенастраивают.
 // ---------------------------------------------------------------------------
-enum { N_IP = 1, N_DNS, N_GATEWAY, N_SUBNET, N_MAC, N_RESSOCK, N_RESW, N_PINGT, N_HASHU, N_HASHA, N_NOPING };
+enum { N_IP = 1, N_DNS, N_GATEWAY, N_SUBNET, N_MAC, N_RESSOCK, N_RESW, N_PINGT, N_HASHU, N_HASHA, N_NOPING, N_RTR };
 
 #define NO(f) offsetof(type_NetworkHP, f)
 static const char *const apiLabResSock[] = { "never", "10 sec", "30 sec", "90 sec", 0 };
@@ -989,11 +992,11 @@ static const ApiParam apiNetTab[] = {
 	PN_U16(net_SIZE_PACKET, 64, 2048, 1, NO(sizePacket), 0),
 	PN_BIT(net_INIT_W5200, NO(flags), fInitW5200, PT_B16, 0, 0, 0, 0),
 	PN_U16(net_PORT, 1, 65534, 1, NO(port), 0),
-	PN_BIT(net_NO_ACK, NO(flags), fNoAck, PT_B16, 0, 0, 0, 0),
-	PN_U8 (net_DELAY_ACK, 1, 50, 1, NO(delayAck), 0),
 	PN_STR(net_PING_ADR, NO(pingAdr), 40, 0, 0),
 	{ net_PING_TIME, apiLabPing, 0, 5, 0, 1, PT_CALL, 0, MK_INT, N_PINGT, 0 },
 	PN_BIT(net_NO_PING, NO(flags), fNoPing, PT_B16, 0, N_NOPING, 0, 0),
+	PNH_U16(net_RTR, RTR_MIN_MS, RTR_MAX_MS, 1, NO(rtr), 0, N_RTR),
+	PN_BIT(net_SOCK_FAST, NO(flags), fSockFast, PT_B16, 0, 0, 0, 0),
 };
 
 static void *api_base_net(uint8_t) { return HP.api_network(); }
@@ -1042,6 +1045,7 @@ static void api_after_net(uint8_t hook)
 	case N_HASHU: HP.set_hashUser(); break;
 	case N_HASHA: HP.set_hashAdmin(); break;
 	case N_NOPING: pingW5200(HP.get_NoPing()); break;    // запрет пинга применяется сразу
+	case N_RTR: netApplyRtr(); break;                    // таймаут повтора пишется в чип сразу, без сброса
 	}
 }
 

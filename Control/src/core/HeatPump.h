@@ -147,7 +147,8 @@ struct type_DateTimeHP
 #define fDHCP         0                  // флаг Использование DHCP
 #define fPass         1                  // флаг Использование паролей
 #define fInitW5200    2                  // флаг Контроль связи с чипом раз 10 сек. (самотест регистров W5500)
-#define fNoAck        4                  // флаг Не ожидать ответа ACK
+#define fNoAck        4                  // не используется (опция «Не ждать ACK» удалена), бит зарезервирован: при загрузке настроек сбрасывается
+#define fSockFast     8                  // быстрый сокет 0: раскладка буферов 4,2,2,2,2,2,0,2 КБ и 6 веб-сокетов (NetLayout.h), применяется через net.apply
 #define fNoPing       5                  // флаг Запрет пинга контроллера
 // Устаревшие биты, значения переехали в флаги отладки (DebugFlags.h: WERR, WFULL).
 // Читаются только при переносе настроек, после загрузки очищаются.
@@ -169,9 +170,10 @@ struct type_NetworkHP
     char passAdmin[PASS_LEN+1];           // !save! Пароль администратора
     uint16_t sizePacket;                  // !save! Размер пакета для отправки в байтах
     uint16_t port;                        // !save! порт веб сервера
-    uint8_t delayAck;                     // !save! задержка мсек перед отправкой пакета
+    uint8_t delayAck;                     // !save! не используется (опция «Не ждать ACK» удалена), поле хранится ради формата файла
     char pingAdr[40];                     // !save! адрес для пинга, может быть в любом виде
     uint16_t pingTime;                    // !save! время пинга в секундах
+    uint16_t rtr;                         // !save! таймаут повтора пакета сетевого чипа, мс (RTR_*): лежит в байтах выравнивания, размер структуры прежний; 0 в старых файлах = по умолчанию
 };
 
 // Структура для хранения переменных для паролей
@@ -229,6 +231,7 @@ static_assert(offsetof(type_NetworkHP, passUser) == 48, "сдвинулся па
 static_assert(offsetof(type_NetworkHP, passAdmin) == 59, "сдвинулся пароль администратора");
 static_assert(offsetof(type_NetworkHP, pingAdr) == 75, "сдвинулся адрес пинга");
 static_assert(offsetof(type_NetworkHP, pingTime) == 116, "сдвинулось последнее поле сети");
+static_assert(offsetof(type_NetworkHP, rtr) == 118, "rtr должен лежать в байтах выравнивания сразу за pingTime: тогда размер записи и старые файлы не меняются");
 
 // ---- Уведомления и MQTT ----
 static_assert(sizeof(type_messageHP) == 276, "изменилась раскладка настроек уведомлений");
@@ -384,11 +387,11 @@ class HeatPump
     void set_gateway(IPAddress gateway) {Network.gateway=gateway;}//  Установит gateway адрес
     uint16_t get_port() {return Network.port;}             //  получить порт вебсервера
     inline uint16_t get_NetworkFlags() { return Network.flags; }
-    boolean get_NoAck() { return GETBIT(Network.flags,fNoAck);}  //  Получить флаг Не ожидать ответа ACK
-    uint8_t get_delayAck() {return Network.delayAck;}      //  получить задержку перед отсылкой следующего пакета
     uint16_t get_pingTime() {return Network.pingTime;}     //  получить время пингования сервера, 0 если не надо
     char *  get_pingAdr() {return Network.pingAdr;}         //  получить адрес сервера для пингования
     boolean get_NoPing() { return GETBIT(Network.flags,fNoPing);} //  Получить флаг блокировки пинга
+    uint16_t get_netRtr() { return Rtr_Eff(Network.rtr);}  //  Таймаут повтора пакета сетевого чипа, мс
+    boolean get_SockFast() { return GETBIT(Network.flags,fSockFast);} //  Получить флаг раскладки сокетов «быстрый сокет 0»
     char *  get_netMAC() {return MAC2String(Network.mac);}  //  получить мас адрес контроллера
     boolean get_DHCP() { return GETBIT(Network.flags,fDHCP);}    //  Получить использование DHCP
     byte *get_mac() { return Network.mac;}                 //  Получить mac адрес

@@ -159,6 +159,8 @@ class W5100Class {
 
 public:
   void init();
+  void setLayoutMode(uint8_t) {}                // раскладка буферов поддерживается только W5500
+  bool sockUsable(uint8_t) { return true; }
 
   /**
    * @brief	This function is being used for copy the data form Receive buffer of the chip to application buffer.

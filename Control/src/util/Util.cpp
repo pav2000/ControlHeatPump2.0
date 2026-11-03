@@ -653,6 +653,44 @@ SendWait Send_StallStep(uint16_t free, uint16_t *last_free, uint32_t now_ms, uin
 	return (uint32_t)(now_ms - *progress_ms) >= limit_ms ? SW_STALLED : SW_WAIT;
 }
 
+uint16_t Rtr_Eff(uint16_t ms)
+{
+	return (ms >= RTR_MIN_MS && ms <= RTR_MAX_MS) ? ms : RTR_DEF_MS;
+}
+
+uint16_t Rtr_Reg(uint16_t ms)
+{
+	return (uint16_t) (Rtr_Eff(ms) * 10);
+}
+
+uint32_t Rtr_GiveUpMs(uint16_t ms, uint8_t rcr)
+{
+	return (uint32_t) ms * (((uint32_t) 1 << (rcr + 1)) - 1);
+}
+
+uint8_t Rtr_Rcr(uint16_t ms)
+{
+	ms = Rtr_Eff(ms);
+	uint8_t rcr = 1;
+	while(rcr < 8 && Rtr_GiveUpMs(ms, rcr) < 8800) rcr++;
+	return rcr;
+}
+
+uint16_t Web_HeaderToBuf(char *buf, uint16_t buf_size, const char *hdr)
+{
+	if(hdr == NULL || buf == NULL) return 0;
+	const size_t len = strlen(hdr);
+	if(len == 0 || len * 2 > buf_size) return 0;
+	memcpy(buf, hdr, len);
+	return (uint16_t) len;
+}
+
+CloseWait Close_WaitStep(bool closed, uint32_t elapsed_ms, uint32_t limit_ms)
+{
+	if(closed) return CW_DONE;
+	return elapsed_ms >= limit_ms ? CW_FORCE : CW_WAIT;
+}
+
 void StatAcc_Add(StatAcc *a, uint32_t v)
 {
 	a->n++;

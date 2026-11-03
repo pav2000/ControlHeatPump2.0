@@ -114,6 +114,17 @@ boolean resetWiznet(boolean show)
 const char* NetworkChipOK={" Network library setting: %s, ID chip: 0x%x\n"};
 const char* NetworkChipBad={" WRONG setting library, library: %s, ID: chip 0x%x\n"};
 const char* NetworkError={" $ERROR: Problem reset and setting %s\n"};
+// Таймаут повтора пакета и число повторов в чип (настройка net.rtr). Регистры общие на все сокеты и пишутся на ходу, без сброса чипа и сокетов.
+void netApplyRtr()
+{
+	// SEM-BORROW: xWebThreadSemaphore - обращение к чипу под замком сети, который держит вызывающий
+	const uint16_t ms = HP.get_netRtr();
+	W5100.writeRTR(Rtr_Reg(ms));
+	W5100.writeRCR(Rtr_Rcr(ms));
+}
+
+uint8_t netLayoutMode = NL_MODE_OLD;   // действующая раскладка буферов сокетов; в аварийном режиме сети (safeNetwork) всегда прежняя
+
 boolean initW5200(boolean flag)
 {
 	// SEM-BORROW: xWebThreadSemaphore - обращение к чипу под замком сети, который держит вызывающий
@@ -125,6 +136,8 @@ boolean initW5200(boolean flag)
 #ifdef PIN_ETH_RES
 	pinMode(PIN_ETH_RES, OUTPUT);
 #endif
+	netLayoutMode = (HP.safeNetwork || !HP.get_SockFast()) ? NL_MODE_OLD : NL_MODE_FAST0;
+	W5100.setLayoutMode(netLayoutMode);            // раскладка запоминается, в чип её пишет init() после каждого сброса
 	if(flag) journal.jprintf("Network setup:");
 	if(!resetWiznet(false))  // 1. Сброс и проверка провода (молча)
 	{
@@ -208,8 +221,7 @@ x_TryStaticIP:
 #endif
 
 	pingW5200(HP.get_NoPing());  // Установка пинга флага разрешения пинга
-	W5100.writeRTR(W5200_RTR);   // установка таймаута
-	W5100.writeRCR(W5200_RCR);   // установка числа повторов
+	netApplyRtr();               // таймаут и число повторов (настройка RTR, по умолчанию 400 мс и 4 повтора)
 
 	if(DBG_ON(DBG_PHY)) {
 	if(flag)  // 5. Печать сетевых настроек
@@ -488,14 +500,14 @@ void checkSockStatus()
 // Для разделения доступа к spi используется мютекс  (SemaphoreHandle_t xSPI)
 // возвращает число посланых байт (0-ничего не послано)
 // Работает и с константами во флеш МК: шина SPI посылает их опросом (DMA - только для буферов в ОЗУ)
-// Если pause=0 то ждем подтверждения ACK пакета если pause>0 то просто ждем нужное значение (pause) мсек - работа без подтверждения
 // SEM-HOLD: xWebThreadSemaphore - одалживает замок вызывающего и возвращает его ему же
-uint16_t sendPacketRTOS(uint8_t thread, const uint8_t * buf, uint16_t len, uint16_t pause)
+uint16_t sendPacketRTOS(uint8_t thread, const uint8_t * buf, uint16_t len)
 {
 	uint8_t status = 0;
 	uint16_t ret = 0;
 	uint16_t freesize = 0;
 	uint16_t lastFree = 0;                      // свободно в буфере передачи при прошлом опросе: рост - клиент подтверждает данные
+	const uint32_t tSpace = micros();            // начало ожидания места: сюда уходит RTT
 	uint32_t tProgress = GetTickCount();        // когда место прибавлялось в последний раз
 
 	if(GETBIT(Socket[thread].flags, fLOCK_LOST)) return 0;   // замок уже потерян раньше в этом запросе: на шину и сокет не лезем
@@ -503,8 +515,7 @@ uint16_t sendPacketRTOS(uint8_t thread, const uint8_t * buf, uint16_t len, uint1
 	if(len > W5200_MAX_LEN) ret = W5200_MAX_LEN;
 	else ret = len;
 
-	if(pause == 0) // Честно ждем ack
-	{
+	{    // ожидание места в буфере: клиент подтверждает прежние пакеты (ACK)
 		do// Ожидание освобождения буфера
 		{
 			if(xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) {
@@ -537,15 +548,6 @@ uint16_t sendPacketRTOS(uint8_t thread, const uint8_t * buf, uint16_t len, uint1
 				break;
 			}
 		} while(freesize < ret);
-	} else  // Не ждем ACK а просто делаем задержку
-	{
-		SemaphoreGive (xWebThreadSemaphore);                                                             // Мютекс потока отдать
-		_delay(pause);                                                            // Ждем pause мсек
-		if(SemaphoreTake(xWebThreadSemaphore, (W5200_TIME_WAIT / portTICK_PERIOD_MS)) == pdFALSE) {
-			SETBIT1(Socket[thread].flags, fLOCK_LOST);
-			journal.jprintf("Socket: %d %s\n", Socket[thread].sock, MutexWebThreadBusy);
-			return 0;
-		} // Захват мютекса потока или ОЖИДАНИНЕ W5200_TIME_WAIT
 	}
 
 	if(GETBIT(Socket[thread].flags, fABORT_SOCK)) {
@@ -553,9 +555,11 @@ uint16_t sendPacketRTOS(uint8_t thread, const uint8_t * buf, uint16_t len, uint1
 		return 0;
 	}              // Произошел сброс прерываем передачу
 
+	StatAcc_Add(&webStat.spaceWait, micros() - tSpace);
 	// послать данные
 	W5100.send_data_processing_offset(Socket[thread].sock, 0, (uint8_t *) buf, ret);
 	W5100.execCmdSn(Socket[thread].sock, Sock_SEND);
+	const uint32_t tSendUs = micros();
 
 	// +2008.01 bj : reduce code
 	// Ожидание подтверждения отправки с таймаутом: при зависшем W5500 (SEND_OK не
@@ -578,6 +582,8 @@ uint16_t sendPacketRTOS(uint8_t thread, const uint8_t * buf, uint16_t len, uint1
 			}
 		}
 	}
+	StatAcc_Add(&webStat.sendOk, micros() - tSendUs);
+	if(Socket[thread].sock >= 0) webStat.sockBytes[Socket[thread].sock & 7] += ret;
 	W5100.writeSnIR(Socket[thread].sock, SnIR::SEND_OK);
 	Watchdog_AliveHere();                       // пакет ушёл: поток, отдающий файл, жив, сколько бы ни длилась выгрузка (медленный клиент, VPN)
 	return ret;
@@ -593,13 +599,13 @@ uint16_t sendBufferRTOS(uint8_t thread, const uint8_t * buf, uint16_t len)
 	uint16_t i = 0;
 	while(len > 0) {
 		if(len > W5200_MAX_LEN) {
-			if(sendPacketRTOS(thread, (byte*) buf + i, W5200_MAX_LEN, HP.get_NoAck() ? HP.get_delayAck() : 0) == 0) { // ошибка передачи
+			if(sendPacketRTOS(thread, (byte*) buf + i, W5200_MAX_LEN) == 0) { // ошибка передачи
 				return 0;
 			}
 			i += W5200_MAX_LEN;
 			len -= W5200_MAX_LEN;
 		} else {  // последний пакет или ошибка передачи
-			if(sendPacketRTOS(thread, (byte*) buf + i, len, HP.get_NoAck() ? HP.get_delayAck() : 0) == 0) return 0;
+			if(sendPacketRTOS(thread, (byte*) buf + i, len) == 0) return 0;
 			else {
 				i += len;
 				break;
@@ -619,7 +625,7 @@ uint16_t sendConstRTOS(uint8_t thread, const char * buf)
 {
 	const size_t len = strlen(buf);
 	if(len > W5200_MAX_LEN) return 0;   // В один пакет не влезает выходим
-	return sendPacketRTOS(thread, (const byte*) buf, len, 0);
+	return sendPacketRTOS(thread, (const byte*) buf, len);
 }
 
  // Принт в сокет

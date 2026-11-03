@@ -30,10 +30,12 @@ void W5500Class::init(void)
 
   writeMR(1<<RST);
 
+    uint8_t tx[NL_SOCKETS];
+    NetLayout_Fill(layoutMode, tx);           // размеры передачи по сокетам, КБ (регистр Sn_TXBUF_SIZE принимает 0/1/2/4/8/16 как число КБ)
     for (int i=0; i<MAX_SOCK_NUM; i++) {
         uint8_t cntl_byte = (0x0C + (i<<5));
         write( 0x1E, cntl_byte, 2); //0x1E - Sn_RXBUF_SIZE
-        write( 0x1F, cntl_byte, 2); //0x1F - Sn_TXBUF_SIZE
+        write( 0x1F, cntl_byte, tx[i]); //0x1F - Sn_TXBUF_SIZE
     }
 }
 

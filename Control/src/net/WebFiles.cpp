@@ -43,7 +43,7 @@ static void txt_keys(uint8_t thread, const char *sect, const TxtKey *t, uint8_t 
 	}
 }
 #define TXT_KEYS(sect, ...) do { static const TxtKey t_[] = { __VA_ARGS__ }; txt_keys(thread, sect, t_, sizeof(t_) / sizeof(t_[0])); } while(0)
-extern uint16_t sendPacketRTOS(uint8_t thread, const uint8_t * buf, uint16_t len,uint16_t pause);
+extern uint16_t sendPacketRTOS(uint8_t thread, const uint8_t * buf, uint16_t len);
 
 // Генерация заголовка
 void get_Header(uint8_t thread,char *name_file)
@@ -53,7 +53,7 @@ void get_Header(uint8_t thread,char *name_file)
     strcat(Socket[thread].outBuf, name_file);
     strcat(Socket[thread].outBuf, "\"");
     strcat(Socket[thread].outBuf, WEB_HEADER_END);
-	sendPacketRTOS(thread, (byte*)Socket[thread].outBuf, strlen(Socket[thread].outBuf), 0);
+	sendPacketRTOS(thread, (byte*)Socket[thread].outBuf, strlen(Socket[thread].outBuf));
 	char tb_[NOW_TIME_LEN], db_[NOW_DATE_LEN];
 	sendPrintfRTOS(thread, " ------ Народный контроллер теплового насоса ver. %s  сборка %s %s ------\r\nКонфигурация: %s: %s\r\nСоздание файла: %s %s \r\n\r\n", VERSION,__DATE__,__TIME__,CONFIG_NAME,CONFIG_NOTE,NowTimeToStr(tb_),NowDateToStr(db_));
 }
@@ -439,9 +439,7 @@ void get_txtSettings(uint8_t thread)
      	{ "Время очистки сокетов Wiznet W5xxx: ", net_RES_SOCKET });
      strcat(Socket[thread].outBuf,"Время сброса Wiznet W5xxx: "); strcat(Socket[thread].outBuf,nameWiznet);strcat(Socket[thread].outBuf,": "); TXT_VAL("net", net_RES_W5200); STR_END;
      TXT_KEYS("net",
-     	{ "Размер пакета для отправки в байтах: ", net_SIZE_PACKET },
-     	{ "Не ожидать получения ACK при посылке следующего пакета: ", net_NO_ACK },
-     	{ "Пауза перед отправкой следующего пакета, если нет ожидания ACK. (мсек): ", net_DELAY_ACK });
+     	{ "Размер пакета для отправки в байтах: ", net_SIZE_PACKET });
 
      
      strcat(Socket[thread].outBuf,"\n  1.7 Настройки даты и времени\r\n");
@@ -770,7 +768,7 @@ bool get_binEEPROM(uint8_t thread)
 	strcat(Socket[thread].outBuf, WEB_HEADER_BIN_ATTACH);
 	strcat(Socket[thread].outBuf, "settings_eeprom.bin\"\r\n\r\n");
 	len = strlen(Socket[thread].outBuf);
-	if(sendPacketRTOS(thread, (byte*)Socket[thread].outBuf, len, 0) != len) return 0;
+	if(sendPacketRTOS(thread, (byte*)Socket[thread].outBuf, len) != len) return 0;
 
 	const uint32_t total = I2C_JOURNAL_EEPROM_NEXT;   // размер чипа в байтах
 	for(uint32_t adr = 0; adr < total; adr += W5200_MAX_LEN) {
@@ -799,7 +797,7 @@ bool get_binSettings(uint8_t thread)
     // Сюда можно запихивать текстовую информацию, при чтении бинарных данных она будет игнорироваться
     strcat(Socket[thread].outBuf, HEADER_BIN); // Заголовок по которому определяется начало "бинарных данных"
     len = strlen(Socket[thread].outBuf);
-    if(sendPacketRTOS(thread, (byte*)Socket[thread].outBuf, len, 0) != len) return 0;
+    if(sendPacketRTOS(thread, (byte*)Socket[thread].outBuf, len) != len) return 0;
 
 	// 2. Запись настроек ТН
     uint16_t *size = (uint16_t *)Socket[thread].outBuf;
@@ -840,13 +838,13 @@ void get_csvChart(uint8_t thread)
 	strcpy(Socket[thread].outBuf, WEB_HEADER_OK_CT);
 	strcat(Socket[thread].outBuf, WEB_HEADER_TEXT_ATTACH);
 	strcat(Socket[thread].outBuf, "chart.csv\"\r\n\r\n");
-	sendPacketRTOS(thread, (byte*) Socket[thread].outBuf, strlen(Socket[thread].outBuf), 0);
+	sendPacketRTOS(thread, (byte*) Socket[thread].outBuf, strlen(Socket[thread].outBuf));
 
 	strcpy(Socket[thread].outBuf,"Point;");
 	HP.get_listChart(Socket[thread].outBuf, ";");
 	Socket[thread].outBuf[strlen(Socket[thread].outBuf) - 1] = '\0';
 	STR_END;
-	if(sendPacketRTOS(thread, (byte*) Socket[thread].outBuf, strlen(Socket[thread].outBuf), 0) == 0) return; // передать пакет, при ошибке выйти
+	if(sendPacketRTOS(thread, (byte*) Socket[thread].outBuf, strlen(Socket[thread].outBuf)) == 0) return; // передать пакет, при ошибке выйти
 
 	for(uint16_t point = 0; point < HP.Charts[0].get_num(); point++) { // По всем точкам
 		itoa(point + 1, Socket[thread].outBuf, 10);
@@ -886,7 +884,7 @@ void get_csvChart(uint8_t thread)
 			_dtoa(Socket[thread].outBuf, value, 2);
 		}
 		STR_END;
-		if(sendPacketRTOS(thread, (byte*) Socket[thread].outBuf, strlen(Socket[thread].outBuf), 0) == 0) return; // передать пакет, при ошибке выйти
+		if(sendPacketRTOS(thread, (byte*) Socket[thread].outBuf, strlen(Socket[thread].outBuf)) == 0) return; // передать пакет, при ошибке выйти
 	}
 }
 
@@ -899,20 +897,20 @@ int16_t get_indexNoSD(uint8_t thread)
    	strcpy(Socket[thread].outBuf, WEB_HEADER_OK_CT);
    	strcat(Socket[thread].outBuf, WEB_HEADER_TXT_KEEP);
    	strcat(Socket[thread].outBuf, WEB_HEADER_END);
-   	sendPacketRTOS(thread, (byte*)Socket[thread].outBuf, strlen(Socket[thread].outBuf), 0);
+   	sendPacketRTOS(thread, (byte*)Socket[thread].outBuf, strlen(Socket[thread].outBuf));
     n=sizeof(index_noSD);              // сколько надо передать байт
     while (n>0)                        // Пока есть не отправленные данные
       {
        if(n>=W5200_MAX_LEN)
            {
             memcpy(Socket[thread].outBuf,index_noSD+i,W5200_MAX_LEN);
-            if(sendPacketRTOS(thread,(byte*)Socket[thread].outBuf,W5200_MAX_LEN,0)==0) return 0 ;                      // не последний пакет
+            if(sendPacketRTOS(thread,(byte*)Socket[thread].outBuf,W5200_MAX_LEN)==0) return 0 ;                      // не последний пакет
             i=i+W5200_MAX_LEN;n=n-W5200_MAX_LEN;
            }
        else 
            {
             memcpy(Socket[thread].outBuf,(index_noSD+i),n);
-            if(sendPacketRTOS(thread,(byte*)Socket[thread].outBuf,n,0)==0) return 0; else return sizeof(index_noSD);  // последний пакет
+            if(sendPacketRTOS(thread,(byte*)Socket[thread].outBuf,n)==0) return 0; else return sizeof(index_noSD);  // последний пакет
            }
      } // while (n>0)
   return n;
@@ -938,7 +936,7 @@ void get_datTest(uint8_t thread)
    strcat(Socket[thread].outBuf, "application/x-binary\r\nContent-Length:");
    _itoa((SIZE_TEST/sizeof(Socket[thread].outBuf))*sizeof(Socket[thread].outBuf),Socket[thread].outBuf);  //реальный размер передачи
    strcat(Socket[thread].outBuf,"\r\nContent-Disposition: attachment; filename=\"test.dat\"\r\n\r\n");
-   sendPacketRTOS(thread,(byte*)Socket[thread].outBuf,strlen(Socket[thread].outBuf),0);
+   sendPacketRTOS(thread,(byte*)Socket[thread].outBuf,strlen(Socket[thread].outBuf));
    
    // Генерация файла используется выходной буфер
    memset(Socket[thread].outBuf,0x55,sizeof(Socket[thread].outBuf));   // Заполнение буфера

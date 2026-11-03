@@ -87,19 +87,43 @@ const char *postRet[]            = {"Настройки из файла восс
 
 SdFile wFile;
 fname_t wfname;
+static uint8_t webScanRR = 1;           // указатель круга веб-сокетов, общий для потоков (меняется под замком сети)
 WebStat webStat;                          // метрики веб-сервера, см. WebShared.h
 
-// Выборка состояний веб-сокетов (0...W5200_SOCK_SYS-1) не чаще раза в WEBSTAT_PERIOD_MS: семь чтений Sn_SR, около 25 мкс. Замок сети держит вызывающий.
+// Выборка состояний веб-сокетов (0...NetLayout_WebCount-1) не чаще раза в WEBSTAT_PERIOD_MS: семь чтений Sn_SR, около 25 мкс. Замок сети держит вызывающий.
 // SEM-BORROW: xWebThreadSemaphore - читает регистры чипа, замок у web_server
 static void webStatSample()
 {
 	const uint32_t now = GetTickCount();
 	if(!SockStat_Due(&webStat.sock, now, WEBSTAT_PERIOD_MS)) return;
+	const uint8_t nWeb = NetLayout_WebCount(netLayoutMode);
 	uint8_t sr[W5200_SOCK_SYS];
-	for(uint8_t i = 0; i < W5200_SOCK_SYS; i++) sr[i] = W5100.readSnSR(i);
-	SockStat_Sample(&webStat.sock, sr, W5200_SOCK_SYS, now);
+	for(uint8_t i = 0; i < nWeb; i++) sr[i] = W5100.readSnSR(i);
+	SockStat_Sample(&webStat.sock, sr, nWeb, now);
 }
 
+
+// Закрытие соединения: DISCON, затем ожидание CLOSED до секунды. На время ожидания замок сети отдаётся (раньше stop() держал его весь RTT, 35 мс по VPN, и
+// остальные потоки стояли). Socket[thread].sock остаётся за потоком до конца, чтобы сокет не подобрали другой поток и checkSockStatus.
+// false - замок не вернулся (fLOCK_LOST): шина и сокет чужие, трогать их нельзя.
+// SEM-HOLD: xWebThreadSemaphore - отдаёт замок вызывающего на ожидание и берёт его обратно
+static bool closeSocketRTOS(uint8_t thread)
+{
+	EthernetClient &c = Socket[thread].client;
+	c.stopBegin();
+	const uint32_t t0 = GetTickCount();
+	while(Close_WaitStep(c.status() == SnSR::CLOSED, GetTickCount() - t0, 1000) == CW_WAIT) {
+		xSemaphoreGive(xWebThreadSemaphore);
+		_delay(1);
+		if(SemaphoreTake(xWebThreadSemaphore, (W5200_TIME_WAIT / portTICK_PERIOD_MS)) == pdFALSE) {
+			SETBIT1(Socket[thread].flags, fLOCK_LOST);
+			journal.jprintf("Socket: %d %s\n", Socket[thread].sock, MutexWebThreadBusy);
+			return false;
+		}
+	}
+	c.stopEnd();
+	return true;
+}
 
 void web_server(uint8_t thread)
 {
@@ -117,7 +141,11 @@ void web_server(uint8_t thread)
 
 	spiBusDeselectAll();                    // Это лишнее но для надежности пусть будет
 	webStatSample();                      // состояния сокетов: сколько слушает, сколько закрыто и ждёт повторного открытия
-	for(sock = 0; sock < W5200_SOCK_SYS; sock++)  // Цикл по сокетам веб сервера!!!! служебный не трогаем!!
+	const uint8_t nWeb = NetLayout_WebCount(netLayoutMode);   // сокеты с нулевым буфером (раскладка «быстрый сокет 0») не обслуживаются
+	// Обход веб-сокетов (NetLayout.h): сокет 0 (в раскладке «быстрый сокет 0» единственный с буфером 4 КБ, чип отдаёт ему соединение первым) проверяется в начале
+	// прохода и после каждого обслуженного запроса, остальные идут по кругу с общим указателем. Служебный сокет не трогаем!!
+	WebScan scan; WebScan_Begin(&scan, nWeb, &webScanRR);
+	while((sock = WebScan_Next(&scan)) >= 0)
 	{
 
 		{	// исключение повторного захвата сокетов: сокет занят, если какой-то поток (в том числе отпустивший замок на паузе отдачи) работает с ним
@@ -277,16 +305,19 @@ xUNAUTHORIZED:
 				} // end if (client.available())
 			} // end while (client.connected())
 			const uint32_t tStop = micros();
-			Socket[thread].client.stop();   // close the connection
+			const bool lockOk = closeSocketRTOS(thread);   // закрыть соединение; замок на ожидании отдаётся (раньше stop() держал его весь RTT)
+			if(!lockOk) { Socket[thread].sock = -1; return; }   // SEM-OK: замка нет, отдавать нечего; незакрытый сокет подберёт checkSockStatus
 			const uint32_t dStop = micros() - tStop;
 			StatAcc_Add(&webStat.stop, dStop);
 			if(dStop > 100000UL) webStat.slowStop++;
 			StatAcc_Add(&webStat.req, micros() - tReq);
+			StatAcc_Add(&webStat.sockReq[(uint8_t) sock & 7], micros() - tReq);   // по сокетам: кто сколько запросов и времени обслужил
 			Socket[thread].sock = -1;
+			WebScan_Served(&scan, (uint8_t) sock);   // сокет 0 пора проверить снова
 			server1.begin_(sock);           // сразу снова слушать: иначе сокет стоял закрытым до следующего обхода, и новые соединения получали отказ (CLOSED 8-9 % времени под нагрузкой)
 			taskYIELD();
 		} // end if (client)
-	}  // for (int sock = 0; sock < W5200_SOCK_SYS; sock++)
+	}  // while: обход веб-сокетов
 	SemaphoreGive (xWebThreadSemaphore);              // Семафор отдать
 }
 
@@ -427,7 +458,7 @@ void readFileSD(char *filename, uint8_t thread)
 		if(!n) {
 			Stats.SendFileData(thread, &webFile, filename);
 		} else {
-			sendPacketRTOS(thread, (byte*)Socket[thread].outBuf, strlen(Socket[thread].outBuf), 0);
+			sendPacketRTOS(thread, (byte*)Socket[thread].outBuf, strlen(Socket[thread].outBuf));
 		}
 		return;
 	}
@@ -461,7 +492,7 @@ void readFileSD(char *filename, uint8_t thread)
 			if(!n) {
 				Stats.SendFileData(thread, &webFile, filename, csv && hpfx == history2_file_start);	// csv: шапка уже отправлена, строки-описания раскладки не нужны
 			} else {
-				sendPacketRTOS(thread, (byte*)Socket[thread].outBuf, strlen(Socket[thread].outBuf), 0);
+				sendPacketRTOS(thread, (byte*)Socket[thread].outBuf, strlen(Socket[thread].outBuf));
 			}
 	    }
 		return;
@@ -536,17 +567,20 @@ void readFileSD(char *filename, uint8_t thread)
 xFileFound:
 			// Файл открыт читаем данные и кидаем в сеть
 			if(DBG_ON(DBG_HTTP)) { journal.jprintf("$Thread: %d socket: %d read file: %s\n",thread,Socket[thread].sock,filename); }
-			sendConstRTOS(thread, webFileHeader(filename));
+			// Заголовок кладётся в начало буфера, файл читается следом, первый кусок уходит вместе с заголовком (экономит RTT на ACK заголовка)
+			uint16_t hl = Web_HeaderToBuf(Socket[thread].outBuf, sizeof(Socket[thread].outBuf), webFileHeader(filename));
+			if(hl == 0) sendConstRTOS(thread, webFileHeader(filename));   // заголовок не поместился - отдельным пакетом, как раньше
 			spiBusDeselectAll();
 			for(;;) {
 				uint32_t t1 = micros();
-				n = webFile.read(Socket[thread].outBuf, sizeof(Socket[thread].outBuf));
+				n = webFile.read(Socket[thread].outBuf + hl, sizeof(Socket[thread].outBuf) - hl);
 				StatAcc_Add(&webStat.fileRead, micros() - t1);
-				if(n <= 0) break;
+				if(n <= 0 && hl == 0) break;
 				t1 = micros();
-				const int sent = sendBufferRTOS(thread, (byte*) (Socket[thread].outBuf), n);
+				const int sent = sendBufferRTOS(thread, (byte*) (Socket[thread].outBuf), hl + (n > 0 ? n : 0));   // пустой файл - уходит один заголовок
 				StatAcc_Add(&webStat.fileSend, micros() - t1);
-				if(sent == 0) break;
+				hl = 0;
+				if(sent == 0 || n <= 0) break;
 				spiBusDeselectAll();
 			} // for
 			if(n < 0) journal.jprintf("Read SD error (%d,%d)!\n", card.cardErrorCode(), (int)(card.cardErrorData()));
@@ -561,17 +595,19 @@ xFileFound:
 			SerialFlashFile ff = SerialFlash.open(filename);
 			if(ff) {
 				if(DBG_ON(DBG_HTTP)) { journal.jprintf("$Thread: %d socket: %d read file: %s\n",thread,Socket[thread].sock,filename); }
-				sendConstRTOS(thread, webFileHeader(filename));
+				uint16_t hl = Web_HeaderToBuf(Socket[thread].outBuf, sizeof(Socket[thread].outBuf), webFileHeader(filename));   // заголовок + первый кусок одним вызовом
+				if(hl == 0) sendConstRTOS(thread, webFileHeader(filename));
 				spiBusDeselectAll();
 				for(;;) {
 					uint32_t t1 = micros();
-					n = ff.read(Socket[thread].outBuf, sizeof(Socket[thread].outBuf));
+					n = ff.read(Socket[thread].outBuf + hl, sizeof(Socket[thread].outBuf) - hl);
 					StatAcc_Add(&webStat.fileRead, micros() - t1);
-					if(n <= 0) break;
+					if(n <= 0 && hl == 0) break;
 					t1 = micros();
-					const int sent = sendBufferRTOS(thread, (byte*) (Socket[thread].outBuf), n);
+					const int sent = sendBufferRTOS(thread, (byte*) (Socket[thread].outBuf), hl + (n > 0 ? n : 0));
 					StatAcc_Add(&webStat.fileSend, micros() - t1);
-					if(sent == 0) break;
+					hl = 0;
+					if(sent == 0 || n <= 0) break;
 					spiBusDeselectAll();                          // после отдачи страницы в сеть (замок отпускался) - снова все CS вверх
 				} // for
 			} else {

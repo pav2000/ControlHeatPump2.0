@@ -26,6 +26,8 @@ public:
   virtual int peek();
   virtual void flush();
   virtual void stop();
+  void stopBegin();                  // только DISCON: закрытие ждёт вызывающий (без удержания замка), потом stopEnd()
+  void stopEnd();                    // принудительно закрыть, если не закрылось, и освободить клиента
   virtual uint8_t connected();
   virtual operator bool();
   virtual bool operator==(const EthernetClient&);
