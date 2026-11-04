@@ -84,13 +84,13 @@ function press(p, t) {
 	if(p === null || p === undefined || isNaN(parseFloat(p))) return '–';
 	return p + ' бар' + (t === null || t === undefined || isNaN(parseFloat(t)) ? '' : ' <small>(' + t + '°)</small>');
 }
-var fcHz = '–', fcKw = '';
+var fcHz = '–', fcPower = null;
 var ohBase = {}, ruleV = null, ruleLab = null;
 
 // ключ API -> обработка (прежние имена команд заменены ключами реестра)
 var TEMPS = {tboiler: 'TBOILER', tevaing: 'TEVAING', tevaoutg: 'TEVAOUTG', tevain: 'TEVAIN', tevaout: 'TEVAOUT', tcompin: 'TCOMPIN', tcomp: 'TCOMP', tconoutg: 'TCONOUTG', tconing: 'TCONING'};
 var SUBLAB = {tboiler: 1, tevaing: 1, tevaoutg: 1, tcompin: 1, tcomp: 1, tconoutg: 1, tconing: 1};
-var KEYS = ['eev.rule', 'fc.cfc', 'fc.info1', 'eev.pospp', 'eev.error', 'eev.trg', 'state.overheat', 'state.overcool', 'press.PEVA.value', 'press.PEVA.temp', 'press.PCON.value', 'press.PCON.temp',
+var KEYS = ['eev.rule', 'fc.cfc', 'fc.cpower', 'eev.pospp', 'eev.error', 'eev.trg', 'state.overheat', 'state.overcool', 'press.PEVA.value', 'press.PEVA.temp', 'press.PCON.value', 'press.PCON.temp',
 	'temp.TCONOUT.value', 'temp.TOUT.value', 'temp.TIN.value', 'flow.FLOWEVA.value', 'flow.FLOWCON.value', 'relay.RPUMPI.on', 'relay.RPUMPO.on', 'relay.RBOILER.on', 'ohp.bp',
 	'state.mode', 'state.trg_home', 'state.trg_pid', 'state.power_220', 'state.power_geo', 'state.power_out', 'state.cop'];
 for(var tk in TEMPS) KEYS.push('temp.' + TEMPS[tk] + '.value');
@@ -111,7 +111,7 @@ function onKey(n, v) {
 	case 'flow.FLOWEVA.value': badge('floweva', withSub(isNaN(parseFloat(v)) ? '–' : num(v, 2) + ' м³/ч', BADGES.floweva[0])); break;
 	case 'flow.FLOWCON.value': badge('flowcon', withSub(isNaN(parseFloat(v)) ? '–' : num(v, 2) + ' м³/ч', BADGES.flowcon[0])); break;
 	case 'fc.cfc':   fcHz = num(v, 0); showFc(); break;
-	case 'fc.info1': fcKw = v || ''; showFc(); break;
+	case 'fc.cpower': fcPower = v; showFc(); break;
 	case 'eev.pospp': badge('eev', 'ЭРВ ' + (v === null ? '–' : v)); put('e-pos', parseInt(v) >= 0 ? parseInt(v) : '–'); break;
 	case 'state.overheat': put('e-oh', num(v, 1)); put('s-oh', num(v, 1) + '°'); break;
 	case 'eev.trg':  put('e-trg', num(v, 1)); ohBase.t = parseFloat(v); break;
@@ -135,8 +135,8 @@ function onKey(n, v) {
 	}
 }
 function showFc() {
-	var kw = /^\s*([\d.]+)/.exec(fcKw);
-	badge('fc', fcHz + ' Гц' + (kw ? ' · ' + kw[1] + ' кВт' : ''));
+	var kw = fcPower === null || fcPower === undefined || isNaN(parseFloat(fcPower)) ? '' : ' · ' + (parseFloat(fcPower) / 1000).toFixed(2) + ' кВт';
+	badge('fc', fcHz + ' Гц' + kw);
 }
 function chip(id, name, on, extra, text) {
 	var e = $(id);

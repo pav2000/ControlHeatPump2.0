@@ -846,7 +846,7 @@ static const ApiParam apiFcTab[] = {
 	FCK(fc_STATE,   PF_RO, MK_INT,  1, 0, 0),
 	FCK(fc_FC,      0,     MK_NUM,  100, 0, 0),               // целевая частота (Omron, Гц) или скорость (Vacon, %); границы - динамические
 	FCK(fc_cFC,     PF_RO, MK_NUM,  100, 0, 0),
-	FCK(fc_cPOWER,  PF_RO, MK_NUM,  10, 0, 0),
+	FCK(fc_cPOWER,  PF_RO, MK_NUM,  1, 0, 0),              // текущая мощность, Вт
 	FCK(fc_INFO1,   PF_RO, MK_TEXT, 1, 0, 0),
 	FCK(fc_cCURRENT, PF_RO, MK_NUM, 100, 0, 0),
 	FCK(fc_AUTO_RESET_FAULT, 0, MK_BOOL, 1, 0, 0),
