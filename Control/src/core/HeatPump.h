@@ -290,6 +290,11 @@ class HeatPump
     void     Reset_TempErrors();		// Сбросить счетчик ошибок всех датчиков
     void     resetPID();				// Инициализировать переменные ПИД регулятора
 
+#ifdef EEV_DEF
+    bool beginEEVService();
+    void endEEVService();
+    bool waitEEVService();
+#endif
     void     sendCommand(TYPE_COMMAND c);   // Послать команду на управление ТН
     inline TYPE_COMMAND isCommand()  {return command;}  // Получить текущую команду выполняемую ТН
     int8_t   runCommand();               // Выполнить команду по управлению ТН
@@ -589,6 +594,9 @@ class HeatPump
     type_motoHour motoHour_saved;
     TEST_MODE testMode;                   // Значение режима тестирования
     volatile TYPE_COMMAND command;        // Текущая команда управления ТН (pEMPTY - ничего не выполняется)
+#ifdef EEV_DEF
+    volatile bool eevServiceIssuing;
+#endif
     CommandQueue cmdq;                    // Очередь команд, см. CommandQueue.h; все обращения под запретом прерываний
     type_status Status;                   // Описание состояния ТН
 

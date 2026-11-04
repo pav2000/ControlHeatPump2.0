@@ -135,6 +135,9 @@ void HeatPump::process_error(void)
 
 void HeatPump::initHeatPump()
 {
+#ifdef EEV_DEF
+	eevServiceIssuing = false;
+#endif
 	uint8_t i;
 	NO_Power = 0;
 	flags = 0;
@@ -791,7 +794,7 @@ xGoWait:
 	{
 #ifdef EEV_DEF
 		if(get_State() != pSTARTING_HP) return;            // Могли нажать кнопку стоп, выход из процесса запуска
-		else dEEV.Start();                                     // Включить ЭРВ  найти 0 по завершению позиция 0!!!
+		else { int8_t r = dEEV.Start(); if(r != OK) { setState(pOFF_HP); set_Error(r, (char*) "EEV"); return; } }
 #endif
 
 #ifdef CLEAR_CHART_HP_ON

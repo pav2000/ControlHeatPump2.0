@@ -45,8 +45,9 @@ class StepMotor {
                        uint8_t phase_variant, bool invert);                                                     // Инициализация
    void setSpeed(long whatSpeed);                                                                               // Установка скорости шагов в секунду
    bool step(int number_of_steps);                                                                              // Движение; false - очередь команд полна
-   inline boolean isBusy()  {return busy;}                                                                      // True если мотор шагает
-   inline void offBusy()    {busy=false;}                                                                       // Установка признака - мотор остановлен                                                                      
+   bool isBusy();                       // постановка, очередь или выполняемое движение                                                                      // True если мотор шагает
+   inline void offBusy()    {busy=false;}
+   inline void onBusy()     {busy=true;}  // задача начала движение
    void off();                                                                                                  // выключить двигатель
    TaskHandle_t xHandleStepperEEV;                                                                              // Заголовок задачи шаговый двигатель двигается 
    QueueHandle_t xCommandQueue;                                                                                 // очередь комманд на управление двигателем
@@ -54,7 +55,8 @@ class StepMotor {
     void stepOne(int this_step);
     inline void setPinMotor(int pin, boolean val);
     inline void applyMask(uint8_t mask);   // выставить все четыре обмотки разом
-    boolean busy;
+    volatile boolean busy;
+    volatile uint16_t pendingSend;
     uint8_t phase_variant;                 // PHASE_4/PHASE_8/PHASE_8s, задан в initStepMotor
     bool    invert;                        // инверсия выходов для драйвера L9333
     unsigned long step_delay;              // delay between steps, in ms, based on speed

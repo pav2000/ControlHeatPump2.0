@@ -925,6 +925,11 @@ xLenErr:
 			journal.jprintf("Upload: bad settings length %d of %d bytes received\n", (int) *((uint16_t*) ptr), (int) buf_len);
 			return pSETTINGS_ERR;
 		}
+#ifdef EEV_DEF
+		// Загрузка вызывает InitStepper; проверка раннего снимка IsWorkingNow недостаточна.
+		if(!HP.beginEEVService()) return pSETTINGS_BUSY;
+		struct SettingsEEVGuard { ~SettingsEEVGuard() { HP.endEEVService(); } } eevGuard;
+#endif
 		len = ptr[NEW_OFS_VER] >= SETTINGS_VER_NEW ? HP.load_new(ptr, 1) : HP.load(ptr, 1);
 		if(len <= 0) return pSETTINGS_ERR; // ошибка загрузки настроек
 		boolean ret = true;

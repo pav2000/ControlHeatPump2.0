@@ -197,7 +197,8 @@ int8_t devEEV::Start()
 		return err;
 	}  // если ЭРВ нет то ничего не делаем
 	if((!GETBIT(_data.flags, fOneSeekZero)) || (GETBIT(_data.flags,fOneSeekZero) && (EEV < 0))) { // есть вариант однократного поиска "0" ЭРВ
-		set_zero();
+		int8_t r = set_zero();
+		if(r != OK) return r;
 	}                          // установить 0
 	return OK;
 }
@@ -207,8 +208,8 @@ int8_t devEEV::set_zero()
 	if(!setZero) {
 		journal.jprintf(" EEV: Set zero\n");
 		setZero = true;                                             // Признак ПРОЦЕССА обнуления счетчика шагов EEV  Ставить в начале!!
-		if(testMode != SAFE_TEST) { if(!stepperEEV.step(0)) journal.jprintf("$ERROR - Step motor command queue is FULL!\n"); }  // не  SAFE_TEST - работаем
-		else EEV = 0;                                               // SAFE_TEST только координаты меняем
+		if(testMode != SAFE_TEST) { if(!stepperEEV.step(0)) { setZero = false; journal.jprintf("$ERROR - Step motor command queue is FULL!\n"); return ERR_CONFIG; } }  // не  SAFE_TEST - работаем
+		else { EEV = 0; setZero = false; }                          // SAFE_TEST не запускает задачу шаговика
 	}
 	return OK;
 }
@@ -223,7 +224,7 @@ int8_t devEEV::set_EEV(int16_t x)
 		return err;
 	}
 	if(x < EEV_CLOSE_STEP) x = EEV_CLOSE_STEP; else if(x > _data.maxSteps) x = _data.maxSteps;
-	if(testMode != SAFE_TEST) { if(!stepperEEV.step(x)) journal.jprintf("$ERROR - Step motor command queue is FULL!\n"); }                   // не  SAFE_TEST - работаем
+	if(testMode != SAFE_TEST) { if(!stepperEEV.step(x)) { journal.jprintf("$ERROR - Step motor command queue is FULL!\n"); return ERR_CONFIG; } }                   // не  SAFE_TEST - работаем
 	else EEV = x;                                                    // SAFE_TEST только координаты меняем
 	return err;
 }
@@ -576,7 +577,7 @@ static const ApiParam apiEevTab[] = {
 	ES(eev_OVERHEAT, PF_RO, MK_NUM, 100, E_OH,  0, 0),
 	ES(eev_ERROR,  PF_RO, MK_INT, 1,   E_ERR,   0, 0),
 	ES(eev_MIN,    0,     MK_INT, 1,   E_MIN,   0, 255),              // меньше максимума
-	ES(eev_MAX,    0,     MK_INT, 1,   E_MAX,   0, 8192),             // не меньше минимума; смена перенастраивает драйвер
+	ES(eev_MAX,    PF_OFF, MK_INT, 1,   E_MAX,   0, 8192),             // не меньше минимума; смена перенастраивает драйвер
 	ES(eev_TIME,   0,     MK_INT, 1,   E_TIME,  1, 1000),             // с; смена пересчитывает коэффициенты ПИД
 	PN_I16(eev_TARGET,       0.01f, 50, 100, EO(tOverheat), 0),
 	ES(eev_KP,     0,     MK_NUM, 1000, E_KP,   0, 32),   // в структуре хранятся отрицательными тысячными
@@ -594,7 +595,11 @@ static const ApiParam apiEevTab[] = {
 	PN_I16(eev_SPHZ,         0, 30, 100, EO(sphz100), 0),                 // шагов на герц стартовой частоты, отопление и охлаждение
 	PN_I16(eev_SPHZB,        0, 30, 100, EO(sphzb100), 0),                // то же для ГВС
 	PN_I16(eev_CONST,        -5, 5, 100, EO(Correction), 0),
-	EPOS(eev_MANUAL, E_MANUAL),
+	#ifdef EEV_PREFER_PERCENT
+	ES(eev_MANUAL, PF_OFF, MK_NUM, 100, E_MANUAL, 0, 100),
+#else
+	ES(eev_MANUAL, PF_OFF, MK_INT, 1, E_MANUAL, 0, 8192),
+#endif
 	{ eev_FREON, 0, 0, 0, 0, 1, PT_CALL, PF_RO, MK_TEXT, E_FREON, 0 },
 	{ eev_RULE, apiLabRuleEEV, 0, 0, (uint16_t)EO(ruleEEV), 1, PT_E8, 0, 0, E_RULE, 0 },
 	{ eev_NAME,   0, 0, 0, 0, 1, PT_CALL, PF_RO, MK_TEXT, E_NAME, 0 },
@@ -682,13 +687,13 @@ static int api_set_eev(uint8_t hook, uint8_t, const char *val)
 	float x = my_atof(val);
 	if(x == ATOF_ERROR) return AE_BAD_VALUE;
 	switch(hook) {
-	case E_POS:  if(x < d->minSteps || x > d->maxSteps) return AE_RANGE; HP.dEEV.set_EEV(x); return AE_OK;
-	case E_POSP: x = x * d->maxSteps / 100; if(x < d->minSteps || x > d->maxSteps) return AE_RANGE; HP.dEEV.set_EEV(x); return AE_OK;
+	case E_POS: { if(x < d->minSteps || x > d->maxSteps) return AE_RANGE; if(!HP.beginEEVService()) return AE_BUSY; int8_t r = HP.dEEV.set_EEV(x); HP.endEEVService(); return r == OK ? AE_OK : AE_FAIL; }
+	case E_POSP: { x = x * d->maxSteps / 100; if(x < d->minSteps || x > d->maxSteps) return AE_RANGE; if(!HP.beginEEVService()) return AE_BUSY; int8_t r = HP.dEEV.set_EEV(x); HP.endEEVService(); return r == OK ? AE_OK : AE_FAIL; }
 	case E_MIN:  if(!eev_bounds_valid((uint8_t)x, d->maxSteps, EEV_CLOSE_STEP)) return AE_RANGE; d->minSteps = x; return AE_OK;
 	case E_MAX: {
 		int16_t xx = x;
 		if(!eev_bounds_valid(d->minSteps, xx, EEV_CLOSE_STEP)) return AE_RANGE;
-		if(xx != d->maxSteps) { d->maxSteps = xx; HP.dEEV.InitStepper(); }
+		if(xx != d->maxSteps) { if(!HP.beginEEVService()) return AE_BUSY; d->maxSteps = xx; HP.dEEV.InitStepper(); HP.endEEVService(); }
 		return AE_OK; }
 	case E_TIME: {
 		uint16_t t = x;
@@ -701,12 +706,12 @@ static int api_set_eev(uint8_t hook, uint8_t, const char *val)
 	case E_KI: d->pid.Ki = -rd(x, 1000); return AE_OK;
 	case E_KD: d->pid.Kd = -rd(x, 1000); return AE_OK;
 #ifdef EEV_PREFER_PERCENT
-	case E_MANUAL: d->manualStep = HP.dEEV.calc_pos(rd(x, 100)); if(d->ruleEEV == MANUAL) HP.dEEV.set_EEV(d->manualStep); return AE_OK;
+	case E_MANUAL: { if(!HP.beginEEVService()) return AE_BUSY; int16_t next = HP.dEEV.calc_pos(rd(x, 100)); int8_t r = d->ruleEEV == MANUAL ? HP.dEEV.set_EEV(next) : OK; if(r == OK) d->manualStep = next; HP.endEEVService(); return r == OK ? AE_OK : AE_FAIL; }
 	case E_PSP:    d->preStartPos = HP.dEEV.calc_pos(rd(x, 100)); return AE_OK;
 	case E_SP:     d->StartPos = HP.dEEV.calc_pos(rd(x, 100)); return AE_OK;
 	case E_PHT:    d->PosAtHighTemp = HP.dEEV.calc_pos(rd(x, 100)); return AE_OK;
 #else
-	case E_MANUAL: if(x < d->minSteps || x > d->maxSteps) return AE_RANGE; d->manualStep = x; if(d->ruleEEV == MANUAL) HP.dEEV.set_EEV(d->manualStep); return AE_OK;
+	case E_MANUAL: { if(x < d->minSteps || x > d->maxSteps) return AE_RANGE; if(!HP.beginEEVService()) return AE_BUSY; int8_t r = d->ruleEEV == MANUAL ? HP.dEEV.set_EEV(x) : OK; if(r == OK) d->manualStep = x; HP.endEEVService(); return r == OK ? AE_OK : AE_FAIL; }
 	case E_PSP:    if(x < d->minSteps || x > d->maxSteps) return AE_RANGE; d->preStartPos = x; return AE_OK;
 	case E_SP:     if(x < d->minSteps || x > d->maxSteps) return AE_RANGE; d->StartPos = x; return AE_OK;
 	case E_PHT:    d->PosAtHighTemp = x; return AE_OK;

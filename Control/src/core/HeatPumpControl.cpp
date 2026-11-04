@@ -46,6 +46,39 @@ static uint8_t commandFlags(TYPE_COMMAND c)
 	return 0;
 }
 
+#ifdef EEV_DEF
+// Допуск и очередь пуска защищены одним запретом переключения задач.
+bool HeatPump::beginEEVService()
+{
+	taskENTER_CRITICAL();
+	bool ok = !IsWorkingNow() && command == pEMPTY && cmdq.count == 0 &&
+	          !eevServiceIssuing && !dEEV.stepperEEV.isBusy();
+	if(ok) eevServiceIssuing = true;
+	taskEXIT_CRITICAL();
+	return ok;
+}
+
+void HeatPump::endEEVService()
+{
+	taskENTER_CRITICAL(); eevServiceIssuing = false; taskEXIT_CRITICAL();
+}
+
+// Принятый пуск не пересекается с сервисной постановкой и движением.
+// STOP/REPEAT/RESET не ждут окончания движения.
+bool HeatPump::waitEEVService()
+{
+	for(;;) {
+		taskENTER_CRITICAL();
+		bool active = eevServiceIssuing || dEEV.stepperEEV.isBusy();
+		bool interrupt = CommandQueue_Has(&cmdq, CQ_STOP | CQ_CRITICAL);
+		taskEXIT_CRITICAL();
+		if(interrupt) return false;
+		if(!active) return true;
+		Watchdog_SleepHere(100);
+	}
+}
+#endif
+
 // Поставить команду в очередь и разбудить CommandHP. Выбор "выполняется / в очереди" и постановка идут
 // под одним запретом прерываний: иначе две команды, пришедшие вместе, затирали друг друга. Пробуждение -
 // уведомление задачи: оно не теряется, даже если CommandHP ещё не дошла до ожидания.
@@ -95,10 +128,16 @@ int8_t HeatPump::runCommand()
 		{
 		case pEMPTY:  return true; break;     // 0 Команд нет
 		case pSTART:                          // 1 Пуск теплового насоса
+#ifdef EEV_DEF
+			if(!waitEEVService()) break;
+#endif
 			num_repeat=0;           // обнулить счетчик повторных пусков
 			StartResume(_start);    // включить ТН
 			break;
 		case pAUTOSTART:                      // 2 Пуск теплового насоса автоматический
+#ifdef EEV_DEF
+			if(!waitEEVService()) break;
+#endif
 			StartResume(_start);    // включить ТН
 			break;
 		case pSTOP:                           // 3 Стоп теплового насоса

@@ -1679,6 +1679,7 @@ void vUpdateStepperEEV(void *)
 		// Это значит что шаговик не успевает за темпом выдачи команд программой. Экономим время
 
 		// 1. Чтение очереди команд, для выяснения все таки куда надо двигаться, переходим на относительные координаты
+		HP.dEEV.stepperEEV.onBusy(); // до извлечения из очереди: isBusy не видит пустого окна
 		int16_t steps_left, *step_number = &HP.dEEV.EEV; // получить текущее положение шаговика абсолютное в начале очереди
 		if(*step_number < 0) *step_number = 0;
 		while(xQueueReceive(HP.dEEV.stepperEEV.xCommandQueue,&cmd,0) == pdPASS) ;   // Читаем очередь пока есть чего читать

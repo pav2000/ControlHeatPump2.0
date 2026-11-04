@@ -24,7 +24,7 @@ void StepMotor::initStepMotor(int number_of_steps, int motor_pin_1, int motor_pi
 	this->pin_count = 4;
 	this->phase_variant = phase_variant;       // из Config.h через вызывающего
 	this->invert = invert;                     // инверсия выходов драйвера L9333
-	busy = false;                              // мотор не двигается
+	busy = false; pendingSend = 0;             // мотор не двигается
 
 	// Arduino pins for the motor control connection:
 	this->motor_pin_1 = motor_pin_1;
@@ -53,16 +53,25 @@ void StepMotor::setSpeed(long whatSpeed)
 // печатает вызывающий: журнала модуль не знает и знать не должен.
 bool StepMotor::step(int steps_to_move)
 {
-	// busy ставится ДО постановки в очередь: задача шагового двигателя приоритетом выше и может взять команду и закончить её раньше, чем
-	// вызывающий вернётся, - флаг, поставленный после, оставался бы поднятым навсегда (compressorON ждёт его до 25,5 с).
-	busy = true;                      // флаг начало движения
-	if(xQueueSend(xCommandQueue, &steps_to_move, 20 / portTICK_PERIOD_MS) == errQUEUE_FULL) // команду на движение в очередь
-	{
-		busy = false;                 // не поставлена - движения не будет
-		return false;
-	}
-	if(xHandleStepperEEV != NULL) xTaskNotifyGive(xHandleStepperEEV);   // Разбудить задачу: уведомление не теряется, даже если она ещё не ждёт
-	return true;
+	// Резервируем постановку до обращения к очереди; завершение предыдущего
+	// движения не должно сделать новую команду невидимой для isBusy().
+	taskENTER_CRITICAL();
+	++pendingSend;
+	taskEXIT_CRITICAL();
+	bool ok = xQueueSend(xCommandQueue, &steps_to_move, 20 / portTICK_PERIOD_MS) == pdPASS;
+	taskENTER_CRITICAL();
+	--pendingSend;
+	taskEXIT_CRITICAL();
+	if(ok && xHandleStepperEEV != NULL) xTaskNotifyGive(xHandleStepperEEV);
+	return ok;
+}
+
+bool StepMotor::isBusy()
+{
+	taskENTER_CRITICAL();
+	bool active = busy || pendingSend || (xCommandQueue && uxQueueMessagesWaiting(xCommandQueue));
+	taskEXIT_CRITICAL();
+	return active;
 }
 
 // выставить один пин
