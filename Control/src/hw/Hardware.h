@@ -32,6 +32,7 @@
 #include "../net/MQTT.h"
 #include "BusOneWire.h"
 #include "../core/Safety.h"                 // биты состояния реле fR_Status* 
+#include "../core/EEVSettingsCheck.h"
 #include "../core/EEVHybrid.h"             // биты флагов ЭРВ (гибрид, старт по частоте), настройки гибрида
 #include <stddef.h>                         // offsetof для проверок формата EEPROM
 
@@ -283,6 +284,7 @@ struct type_settingsEEV {                      // Первая переменн�
 	int16_t  sphzb100;						// То же для ГВС (было: гистерезис нижней границы)
 };
 // Размер и смещения - формат EEPROM: поля гибрида лежат на местах прежних полей прямого управления, менять нельзя
+static_assert(offsetof(type_settingsEEV, minSteps) == 33 && offsetof(type_settingsEEV, maxSteps) == 46, "формат EEPROM: границы ЭРВ");
 static_assert(offsetof(type_settingsEEV, hyb_Kc100) == 16 && offsetof(type_settingsEEV, hyb_Ti) == 18 && offsetof(type_settingsEEV, hyb_ohMin100) == 20, "формат EEPROM: усиление, Ti, защита гибрида на месте прежнего pid2");
 static_assert(offsetof(type_settingsEEV, hyb_kff100) == 58 && offsetof(type_settingsEEV, hyb_ffMax) == 60, "формат EEPROM: подача по частоте на месте прежнего перегрева 2");
 static_assert(offsetof(type_settingsEEV, sphz100) == 66 && offsetof(type_settingsEEV, sphzb100) == 68, "формат EEPROM: коэффициенты старта на месте прежних границ перегрева 2");
@@ -306,7 +308,7 @@ public:
 	// Движение ЭРВ
 	inline int16_t get_EEV() {return  EEV;} // Прочитать МГНОВЕННУЮ!! позицию шагового двигателя ЭРВ двигатель может двигаться
 	inline int16_t calc_pos(int16_t percent) { return (int32_t)_data.maxSteps * percent / 10000; } // пересчитать % -> шаги, сотые
-	inline int16_t calc_percent(int16_t pos) { return (int32_t) pos * 10000 / _data.maxSteps; } // пересчитать % -> шаги, сотые
+	inline int16_t calc_percent(int16_t pos) { return eev_calc_percent(pos, _data.maxSteps); } // пересчитать % -> шаги, сотые
 	int8_t  set_EEV(int16_t x);                             // Перейти на позицию абсолютную  возвращает код ошибки
 	int8_t  set_zero();                                    // Гарантированно (шагов больше чем диапазон) закрыть ЭРВ возвращает код ошибки
 

@@ -75,8 +75,8 @@ struct EevHybridState
 void    eevhyb_reset(EevHybridState *st, const EevHybridParams *p, int16_t overheat100, int16_t freq100);
 
 // Один период расчёта. x - текущее положение вентиля, secSinceStart - секунд с пуска компрессора.
-// Возвращает новое положение (в границах minSteps ... maxSteps).
-int16_t eevhyb_step(EevHybridState *st, const EevHybridParams *p, int16_t overheat100, int16_t freq100, int16_t x, uint32_t secSinceStart);
+// Возвращает ограниченное положение; requested при ненулевом указателе получает положение до ограничения (для защит).
+int16_t eevhyb_step(EevHybridState *st, const EevHybridParams *p, int16_t overheat100, int16_t freq100, int16_t x, uint32_t secSinceStart, int32_t *requested = 0);
 
 
 // ---------------------------------------------------------------------------

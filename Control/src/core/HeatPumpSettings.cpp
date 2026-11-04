@@ -85,6 +85,14 @@ x_Error:
 	journal.jprintf("*No verification");
 #endif
 	uint8_t *buffer_max = buffer + size;
+#ifdef EEV_DEF
+	const type_settingsEEV *currentEEV = (const type_settingsEEV*)dEEV.get_save_addr();
+	if(!eev_bounds_scan(buffer, buffer_max, true, SAVE_TYPE_dEEV, offsetof(type_settingsEEV, minSteps),
+	                    offsetof(type_settingsEEV, maxSteps), currentEEV->minSteps, currentEEV->maxSteps, EEV_CLOSE_STEP)) {
+		journal.jprintf(" - invalid EEV settings!\n");
+		return load_fail(ERR_CONFIG, from_RAM);
+	}
+#endif
 	size += 2;
 	load_struct(&Option, &buffer, sizeof(Option));
 	journal.jprintf(", v.%d ", Option.ver);  // вывести версию сохранения
@@ -415,6 +423,14 @@ xReadError:
 		journal.jprintf("structure: records %d, truncated %d, unknown %d, end %d! ", sc.records, sc.truncated, sc.unknown, sc.end_seen);
 		if(from_RAM) return load_fail(ERR_SETTINGS_STRUCT, from_RAM);
 	}
+#ifdef EEV_DEF
+	const type_settingsEEV *currentEEV = (const type_settingsEEV*)dEEV.get_save_addr();
+	if(!eev_bounds_scan(p, p_max, false, NTAG_dEEV, offsetof(type_settingsEEV, minSteps),
+	                    offsetof(type_settingsEEV, maxSteps), currentEEV->minSteps, currentEEV->maxSteps, EEV_CLOSE_STEP)) {
+		journal.jprintf(" - invalid EEV settings!\n");
+		return load_fail(ERR_CONFIG, from_RAM);
+	}
+#endif
 	uint8_t suspended = TaskSuspendAll();         // 1, только если планировщик работает (при старте задач ещё нет)
 	while(p + REC_HDR_SIZE <= p_max) {
 		uint16_t tag = rec_hdr_tag(p);

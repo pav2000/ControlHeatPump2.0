@@ -37,7 +37,7 @@ void eevhyb_reset(EevHybridState *st, const EevHybridParams *p, int16_t overheat
 	st->fPrev100 = freq100;
 }
 
-int16_t eevhyb_step(EevHybridState *st, const EevHybridParams *p, int16_t overheat100, int16_t freq100, int16_t x, uint32_t secSinceStart)
+int16_t eevhyb_step(EevHybridState *st, const EevHybridParams *p, int16_t overheat100, int16_t freq100, int16_t x, uint32_t secSinceStart, int32_t *requested)
 {
 	const int32_t stepMax = p->stepMax > 0 ? p->stepMax : EEVHYB_STEP_MAX_DEFAULT;
 	const int32_t ffMax = p->ffMax > 0 ? p->ffMax : 0;
@@ -64,8 +64,9 @@ int16_t eevhyb_step(EevHybridState *st, const EevHybridParams *p, int16_t overhe
 	st->sPrev100 = s100;
 	st->fPrev100 = freq100;
 
-	if(p->maxSteps < p->minSteps) return x;
+	if(p->maxSteps < p->minSteps) { if(requested) *requested = x; return x; }
 	int32_t n = (int32_t) x + step;
+	if(requested) *requested = n;
 	return (int16_t) (n < p->minSteps ? p->minSteps : n > p->maxSteps ? p->maxSteps : n);
 }
 

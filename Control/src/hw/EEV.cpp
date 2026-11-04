@@ -395,6 +395,8 @@ int8_t devEEV::Update(void) //boolean fHeating)
 	if(!GETBIT(_data.flags, fPresent)) return err;  // если ЭРВ нет то ничего не делаем
 	if(fPause) return err;    // если пауза то выходим
 	int16_t newEEV = 0;
+	int32_t hybridRequested = 0;
+	bool hybridResult = false;
 	switch(_data.ruleEEV)     // В зависимости от правила вычисления перегрева
 	{
 #if defined(TEVAIN)
@@ -411,7 +413,8 @@ int8_t devEEV::Update(void) //boolean fHeating)
 			EevHybridParams hp;
 			hybParams(&hp);
 			const int16_t fq = HP.dFC.get_present() ? HP.dFC.get_frequency() : 0;
-			newEEV = eevhyb_step(&hybState, &hp, Overheat, fq, EEV, Uptime_s() - HP.get_startCompressor());
+			newEEV = eevhyb_step(&hybState, &hp, Overheat, fq, EEV, Uptime_s() - HP.get_startCompressor(), &hybridRequested);
+			hybridResult = true;
 			if(DBG_ON(DBG_EEV)) journal.jprintf("EEV hyb: oh %d, f %d, x %d -> %d, acc %d\n", Overheat, fq, EEV, newEEV, (int) hybState.acc1000);   // перегрев и частота - сотые, acc - тысячные шага
 		} else {                                   // ПИД
 			newEEV = _data.tOverheat - Overheat;   // Расчет ошибки для пида
@@ -437,7 +440,8 @@ int8_t devEEV::Update(void) //boolean fHeating)
 	default:
 		return err;
 	}
-	if(newEEV < _data.minSteps) {
+	const int32_t requestedEEV = hybridResult ? hybridRequested : newEEV;
+	if(requestedEEV < _data.minSteps) {
 #if !defined(DEMO) && defined(EEV_MIN_CONTROL) // Контролировать достижение минимального открытия, ошибка генерится
 		if(HP.is_compressor_on()) {   // во время работы - Сообщение
 			err = ERR_MIN_EEV;
@@ -447,7 +451,7 @@ int8_t devEEV::Update(void) //boolean fHeating)
 #endif
 		newEEV = _data.minSteps;            // ограничение
 	}
-	if(newEEV > _data.maxSteps) {
+	if(requestedEEV > _data.maxSteps) {
 #if !defined(DEMO) && defined(EEV_MAX_CONTROL)   // если задан контроль верхнего диапазона
 		if(HP.is_compressor_on()) {   // во время работы - Сообщение
 			err = ERR_MAX_EEV;
@@ -680,10 +684,10 @@ static int api_set_eev(uint8_t hook, uint8_t, const char *val)
 	switch(hook) {
 	case E_POS:  if(x < d->minSteps || x > d->maxSteps) return AE_RANGE; HP.dEEV.set_EEV(x); return AE_OK;
 	case E_POSP: x = x * d->maxSteps / 100; if(x < d->minSteps || x > d->maxSteps) return AE_RANGE; HP.dEEV.set_EEV(x); return AE_OK;
-	case E_MIN:  if(x >= d->maxSteps) return AE_RANGE; d->minSteps = x; return AE_OK;
+	case E_MIN:  if(!eev_bounds_valid((uint8_t)x, d->maxSteps, EEV_CLOSE_STEP)) return AE_RANGE; d->minSteps = x; return AE_OK;
 	case E_MAX: {
 		int16_t xx = x;
-		if(xx < d->minSteps) return AE_RANGE;
+		if(!eev_bounds_valid(d->minSteps, xx, EEV_CLOSE_STEP)) return AE_RANGE;
 		if(xx != d->maxSteps) { d->maxSteps = xx; HP.dEEV.InitStepper(); }
 		return AE_OK; }
 	case E_TIME: {
