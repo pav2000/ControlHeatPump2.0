@@ -51,6 +51,9 @@ int8_t devVaconFC::initFC()
 	current = 0; // Текуший ток инвертора
 	startCompressor = 0; // время старта компрессора
 	state = ERR_LINK_FC; // Состояние - нет связи с инвертором по Modbus
+#if VACON_MODEL == 20 && !defined(FC_ANALOG_CONTROL)
+	faultMapLast = -2;
+#endif
 
 	testMode = NORMAL; // Значение режима тестирования
 	name = (char*) FC_VACON_NAME; // Имя
@@ -103,6 +106,9 @@ int8_t devVaconFC::initFC()
 	CheckLinkStatus(); // проверка связи с инвертором
 	if(err != OK) return err;// связи нет выходим
 	journal.jprintf("Test link Modbus %s: OK\n", name);// Тест пройден
+#if VACON_MODEL == 20
+	check_fault_map();
+#endif
 
 	uint8_t i = 3;
 	while((state & FC_S_RUN))// Если инвертор работает то остановить его
@@ -125,6 +131,24 @@ int8_t devVaconFC::initFC()
 #endif // #ifndef FC_ANALOG_CONTROL
 	return err;
 }
+
+#if VACON_MODEL == 20 && !defined(FC_ANALOG_CONTROL)
+// Проверка не меняет основной результат опроса; при ошибке код отказа недоступен.
+bool devVaconFC::check_fault_map()
+{
+	int8_t saved = err;
+	uint16_t value = (uint16_t)read_0x03_16(FC_FAULT_MAP);
+	int32_t result = err == OK ? (int32_t)value : -1;
+	err = saved;
+	if(result != faultMapLast) {
+		if(result == 8) journal.jprintf("Vacon 20: ID 852 = 8, fault code mapping OK.\n");
+		else if(result < 0) journal.jprintf("Vacon 20: cannot read ID 852, fault code unavailable.\n");
+		else journal.jprintf("Vacon 20: ID 852 = %d, program ID 852 to 8 for fault code.\n", (int)result);
+		faultMapLast = result;
+	}
+	return result == 8;
+}
+#endif
 
 // Вычисление номинальной мощности двигателя компрессора = U*sqrt(3)*I*cos, W
 void devVaconFC::set_nominal_power(void)
@@ -192,10 +216,20 @@ int8_t devVaconFC::get_readState()
 			set_Error(err, name); // генерация ошибки
 			return err; // Возврат
 		}
+#if VACON_MODEL == 20
+		bool faultMapOk = check_fault_map();
+#endif
 		if(GETBIT(flags, fOnOff)) { // ТН включил компрессор, проверяем состояние инвертора
 			if(state & FC_S_FLT) { // Действующий отказ
+#if VACON_MODEL == 20
+				if(!faultMapOk) journal.jprintf("%s, fault code unavailable - ", name);
+				else {
+#endif
 				uint16_t reg = read_0x03_16(FC_ERROR);
 				journal.jprintf("%s, Fault: %s(%d) - ", name, err ? cError : get_fault_str(reg), err ? err : reg);
+#if VACON_MODEL == 20
+				}
+#endif
 				err = ERR_FC_FAULT;
 			} else if(get_startTime() && Uptime_s() - get_startTime() > FC_ACCEL_TIME / 100 && ((state & (FC_S_RDY | FC_S_RUN | FC_S_DIR)) != (FC_S_RDY | FC_S_RUN))) {
 				err = ERR_MODBUS_STATE;
@@ -397,6 +431,12 @@ int8_t devVaconFC::start_FC()
     } // генерация ошибки
 #else // DEMO
 	if((state & FC_S_FLT)) { // Действующий отказ
+#if VACON_MODEL == 20
+		if(!check_fault_map()) {
+			journal.jprintf("%s, fault code unavailable; skip start and auto reset.\n", name);
+			err = ERR_FC_FAULT;
+		} else {
+#endif
 		uint16_t reg = read_0x03_16(FC_ERROR);
 		journal.jprintf("%s, Fault: %s(%d) - ", name, err ? cError : get_fault_str(reg), err ? err : reg);
 		if(GETBIT(_data.setup_flags, fAutoResetFault)) { // Автосброс не критичного сбоя инвертора
@@ -419,6 +459,9 @@ int8_t devVaconFC::start_FC()
 			journal.jprintf("skip start!\n");
 			err = ERR_FC_FAULT;
 		}
+#if VACON_MODEL == 20
+		}
+#endif
 	}
 	if(err == OK) {
 #ifdef FC_USE_RCOMP // Использовать отдельный провод для команды ход/стоп
@@ -704,11 +747,20 @@ void devVaconFC::get_infoFC(char* buf)
 			get_infoFC_status(buf + m_strlen(buf), state);
 			buf += m_snprintf(buf += m_strlen(buf), 256, "|%Xh;", state);
 			if(err == OK) {
+#if VACON_MODEL == 20
+				bool faultMapOk = check_fault_map();
+				buf += m_snprintf(buf, 256, "2103|Фактическая скорость|%.2d%%;2110|Выходная мощность: %.1d%% (кВт)|%.3d;", read_0x03_16(FC_SPEED), power, get_power());
+				buf += m_snprintf(buf, 256, "2106|Обороты (об/м)|%d;", (int16_t)read_0x03_16(FC_RPM));
+				buf += m_snprintf(buf, 256, "2108|Крутящий момент|%.1d%%;", (int16_t)read_0x03_16(FC_TORQUE));
+				buf += m_snprintf(buf, 256, "2107|Выходное напряжение (В)|%.1d;", read_0x03_16(FC_VOLTAGE));
+				buf += m_snprintf(buf, 256, "2111|Напряжение шины постоянного тока (В)|%d;", read_0x03_16(FC_VOLTATE_DC));
+#else
 				buf += m_snprintf(buf, 256, "2103|Фактическая скорость|%.2d%%;2108 (V1.1)|Выходная мощность: %.1d%% (кВт)|%.3d;", read_0x03_16(FC_SPEED), power, get_power());
 				buf += m_snprintf(buf, 256, "2105 (V1.3)|Обороты (об/м)|%d;", (int16_t)read_0x03_16(FC_RPM));
 				buf += m_snprintf(buf, 256, "2107 (V1.5)|Крутящий момент|%.1d%%;", (int16_t)read_0x03_16(FC_TORQUE));
 				i = read_0x03_32(FC_VOLTAGE); // +FC_VOLTATE_DC (low word)
 				buf += m_snprintf(buf, 256, "2109 (V1.7)|Выходное напряжение (В)|%.1d;2110 (V1.8)|Напряжение шины постоянного тока (В)|%d;", (int)(i >> 16), (int)(i & 0xFFFF));
+#endif
 				buf += m_snprintf(buf, 256, "0008 (V1.9)|Температура радиатора (°С)|%d;", read_tempFC());
 				i = read_0x03_32(FC_POWER_DAYS); // +FC_POWER_HOURS (low word)
 				buf += m_snprintf(buf, 256, "0828 (V3.3)|Время включения инвертора (дней:часов)|%d:%d;", (int)(i >> 16), (int)(i & 0xFFFF));
@@ -716,9 +768,15 @@ void devVaconFC::get_infoFC(char* buf)
 				buf += m_snprintf(buf, 256, "0840 (V3.5)|Время работы компрессора (дней:часов)|%d:%d;", (int)(i >> 16), (int)(i & 0xFFFF));
 				buf += m_snprintf(buf, 256, "0842 (V3.6)|Счетчик аварийных отключений|%d;", read_0x03_16(FC_NUM_FAULTS));
 
+#if VACON_MODEL == 20
+				if(!faultMapOk) {
+					m_snprintf(buf, 256, "2104|Активная ошибка|Код недоступен: проверьте ID 852;");
+					return;
+				}
+#endif
 				i = read_0x03_16(FC_ERROR);
 				if(err == OK) {
-					m_snprintf(buf, 256, "2111|Активная ошибка|%s (%d);", get_fault_str(i), (int)(i));
+					m_snprintf(buf, 256, "%d|Активная ошибка|%s (%d);", FC_ERROR, get_fault_str(i), (int)(i));
 				} else {
 					m_snprintf(buf, 256, "-|Ошибка Modbus|%d;", err);
 				}

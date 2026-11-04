@@ -30,7 +30,14 @@
 
 #define RECOVER_OIL_PERIOD_MUL		2  // Множитель периода
 
-// Регистры Vacon 10
+#ifndef VACON_MODEL
+#define VACON_MODEL 10             // Модель Vacon: 10 или 20
+#endif
+#if VACON_MODEL != 10 && VACON_MODEL != 20
+#error "VACON_MODEL must be 10 or 20"
+#endif
+
+// Общие параметры Vacon 10 и Vacon 20 (стандартное приложение).
 // Чтение
 #define FC_FREQ_OUT		1			// Выходная частота, поступающая на двигатель
 #define FC_FREQ_REF		2			// Опорная частота для управления двигателем
@@ -62,6 +69,19 @@
 // Чтение
 #define FC_STATUS		2101		// Слово состояния FB
 #define FC_SPEED		2103		// Фактическая скорость FB, 0.01 %
+#if VACON_MODEL == 20
+// Заводская карта P10.2–P10.8. Для кода ошибки установить P10.1 (ID 852) = 8:
+// тогда 2104 выдаёт активный отказ вместо опорной частоты. Настройку записывает владелец.
+#define FC_FAULT_MAP   852
+#define FC_ERROR       2104
+#define FC_FREQ        2105        // Выходная частота, 0.01 Гц
+#define FC_RPM         2106        // Скорость двигателя, об/мин
+#define FC_VOLTAGE     2107        // Напряжение двигателя, 0.1 В
+#define FC_TORQUE      2108        // Момент, 0.1 % номинального
+#define FC_CURRENT     2109        // Ток двигателя, 0.01 А
+#define FC_POWER       2110        // Мощность, 0.1 % номинальной
+#define FC_VOLTATE_DC  2111        // Напряжение DC, В
+#else
 #define FC_FREQ			2104		// Выходная частота, +/- 0.01 Гц
 #define FC_RPM			2105		// Скорость двигателя, +/- об/мин
 #define FC_CURRENT		2106		// Ток двигателя, 0.01 A
@@ -70,6 +90,7 @@
 #define FC_VOLTAGE		2109		// Напряжение двигателя, 0.1 В
 #define FC_VOLTATE_DC	2110		// Напряжение шины постоянного тока, 1 В
 #define FC_ERROR		2111		// Код активного отказа
+#endif
 
 // Запись
 #define FC_CONTROL		2001		// Слово управления FB
@@ -236,6 +257,10 @@ public:
   uint16_t nominal_power;							// Номинальная мощность двигателя Вт
 
  private:
+#if VACON_MODEL == 20 && !defined(FC_ANALOG_CONTROL)
+  int32_t faultMapLast; // -2: ещё не проверяли, -1: ошибка чтения, иначе значение ID 852
+  bool check_fault_map();
+#endif
   int8_t   err;										// ошибка инвертора (работа) при ошибке останов ТН
   uint16_t numErr;									// число ошибок чтение по Modbus
   uint8_t  number_err;								// Число ошибок связи при превышении FC_NUM_READ блокировка инвертора

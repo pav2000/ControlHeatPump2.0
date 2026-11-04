@@ -892,6 +892,8 @@ static int api_get_fc(uint8_t hook, uint8_t, ApiOut *o)
 {
 	if(hook < 1 || hook > sizeof(apiFcTab) / sizeof(apiFcTab[0])) return AE_FAIL;
 	const ApiParam *p = &apiFcTab[hook - 1];
+	// Старые геттеры Omron и Vacon используют разные единицы; API выдаёт ватты.
+	if(!strcmp(p->name, fc_cPOWER)) { api_put_int(o, HP.dFC.get_power()); return AE_OK; }
 	if(!strcmp(p->name, fc_INFO)) {                    // сырой текст дописывается в свободную часть выходного буфера и экранируется на месте
 		if(o->cap - o->len < 3000) return AE_TOO_BIG;
 		char *t = o->p + o->len + 1;
@@ -1127,7 +1129,7 @@ static int apiAct_sdm_link(ApiOut *o, const char *)
 }
 #endif
 #ifdef EEV_DEF
-static int apiAct_eev_zero(ApiOut *o, const char *) { api_put_int(o, HP.dEEV.set_zero()); return AE_OK; }   // закрыть ЭРВ с запасом, ответ - код ошибки (0 - успех)
+static int apiAct_eev_zero(ApiOut *o, const char *) { if(!HP.beginEEVService()) return AE_BUSY; int r = HP.dEEV.set_zero(); HP.endEEVService(); if(r != OK) return AE_FAIL; api_put_int(o, r); return AE_OK; }   // закрыть ЭРВ с запасом, ответ - код ошибки (0 - успех)
 #endif
 // Инвертор: действия идут через очередь команд или прямой вызов
 static int apiAct_fc_program(ApiOut *o, const char *)
@@ -1237,7 +1239,10 @@ static int apiAct_save_prepare_update(ApiOut *o, const char *)
 {
 	if(HP.is_compressor_on()) return AE_BUSY;
 #ifdef EEV_DEF
-	if(HP.dEEV.EEV != -1) HP.dEEV.set_EEV(HP.dEEV.get_maxEEV());      // ЭРВ в максимальное положение
+	if(!HP.beginEEVService()) return AE_BUSY;
+	int8_t eevResult = HP.dEEV.EEV != -1 ? HP.dEEV.set_EEV(HP.dEEV.get_maxEEV()) : OK;
+	HP.endEEVService();
+	if(eevResult != OK) return AE_FAIL;
 #endif
 	return api_save_stats(o);
 }
@@ -1379,7 +1384,7 @@ static const ApiAction apiActions[] = {
 	{ "dbg.default",    0, apiAct_dbg_default },
 	{ "onewire.scan",   0, apiAct_onewire_scan },
 #ifdef EEV_DEF
-	{ "eev.zero",       0, apiAct_eev_zero },
+	{ "eev.zero",       0, apiAct_eev_zero, 1 },
 #endif
 	{ "fc.program",     0, apiAct_fc_program },
 	{ "reset.fc_errors", 0, apiAct_reset_fc_errors },
@@ -1405,7 +1410,7 @@ static const ApiAction apiActions[] = {
 	{ "save.all",       0, apiAct_save_all },
 	{ "save.schedule",  0, apiAct_save_schedule },
 	{ "save.stats",     0, apiAct_save_stats },
-	{ "save.prepare_update", 0, apiAct_save_prepare_update },
+	{ "save.prepare_update", 0, apiAct_save_prepare_update, 1 },
 	{ "schedule.clear", 0, apiAct_schedule_clear },
 	{ "schedule.load",  0, apiAct_schedule_load },
 	{ "reset.settings", 0, apiAct_reset_settings },
