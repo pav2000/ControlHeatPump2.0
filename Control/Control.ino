@@ -843,7 +843,6 @@ x_I2C_init_std_message:
 #ifdef EEV_DEF
 	if (xTaskCreate(vUpdateStepperEEV,"StepperEEV",STACK_vUpdateStepperEEV,NULL,4,&HP.dEEV.stepperEEV.xHandleStepperEEV)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY)  set_Error(ERR_MEM_FREERTOS,(char*)nameFREERTOS);
 	Diag.mRTOS=Diag.mRTOS+64+4*STACK_vUpdateStepperEEV; // 50, 100, 150
-	HP.dEEV.stepperEEV.xCommandQueue = xQueueCreate( EEV_QUEUE, sizeof( int ) );  // Создать очередь комманд для ЭРВ
 #endif
 
 	// ПРИОРИТЕТ 3 Очень высокий приоритет Выполнение команд управления (разбор очереди комманд) - должен быть выше чем задачи обновления ТН и ЭРВ
@@ -1663,73 +1662,18 @@ void vUpdateEEV(void *)
 // Задача обеспечения движения шаговика EEV (StepperEEV)
 void vUpdateStepperEEV(void *)
 {
-  // Размер стека не позволяет использовать внутри jprintf.* !!!
-	static int cmd = 0;  // размер элемента очереди - sizeof(int): int16_t затирал бы соседние данные
 	for(;;) {
-		Watchdog_Beat(WDT_StepperEEV);   // отметка живости для наблюдателя
-		// Команд нет - ждём уведомление от StepMotor::step. Очередь проверяется до ожидания и после каждого
-		// пробуждения, поэтому команда не теряется, а таймаут в секунду держит отметку в наблюдателе.
-		if(xQueuePeek(HP.dEEV.stepperEEV.xCommandQueue, &cmd, 0) == errQUEUE_EMPTY) {
+		Watchdog_Beat(WDT_StepperEEV);
+		if(!HP.dEEV.stepperEEV.isBusy()) {
+			if(!HP.dEEV.get_HoldMotor()) HP.dEEV.stepperEEV.off();
+			// Уведомление, пришедшее между проверкой и ожиданием, сохраняется.
 			ulTaskNotifyTake(pdTRUE, 1000 / portTICK_PERIOD_MS);
 			continue;
 		}
-		// Полный цикл движения шаговика с разгребанием очереди команд,
-		// В очереди лежат АБСОЛЮТНЫЕ координаты
-		// При этом если очередь содержит более одной команды - просто суммируем все команды и двигаемся по итоговой сумме
-		// Это значит что шаговик не успевает за темпом выдачи команд программой. Экономим время
-
-		// 1. Чтение очереди команд, для выяснения все таки куда надо двигаться, переходим на относительные координаты
-		HP.dEEV.stepperEEV.onBusy(); // до извлечения из очереди: isBusy не видит пустого окна
-		int16_t steps_left, *step_number = &HP.dEEV.EEV; // получить текущее положение шаговика абсолютное в начале очереди
-		if(*step_number < 0) *step_number = 0;
-		while(xQueueReceive(HP.dEEV.stepperEEV.xCommandQueue,&cmd,0) == pdPASS) ;   // Читаем очередь пока есть чего читать
-		if(HP.dEEV.setZero) {
-			*step_number = (HP.dEEV.stepperEEV.number_of_steps + EEV_SET_ZERO_OVERRIDE + 7) / 8 * 8; // Если выполняется команда установки 0 то все остальные команды игнорируются до ее выполнения.
-			cmd = 0;
+		int16_t position;
+		if(HP.dEEV.stepperEEV.driveOne(position)) {
+			Watchdog_Sleep(WDT_StepperEEV, HP.dEEV.stepperEEV.step_delay);
 		}
-		steps_left = cmd - *step_number;
-		// 2. Движение
-		while(steps_left != 0) {
-			if(steps_left > 0) {// направление в увеличение
-				(*step_number)++;
-				steps_left--;
-			} else { 			// направление в уменьшение
-				(*step_number)--;
-				steps_left++;
-			}
-			if(*step_number < 0) {
-				HP.dEEV.set_error(ERR_MIN_EEV);
-				break;
-			}
-// Часовой: если StepMotorPhase.h не включён, препроцессор посчитает ВСЕ
-// имена PHASE_* нулями, сравнение ниже окажется истинным, и сборка молча
-// возьмёт не ту последовательность фаз ЭРВ. Неопределённые имена равны
-// друг другу - на этом их и ловим.
-#if PHASE_4 == PHASE_8s
-#error "PHASE_* не определены: нужен #include \"StepMotorPhase.h\" до сравнений с EEV_PHASE"
-#endif
-#if EEV_PHASE == PHASE_4  // 4 фазы движения
-			HP.dEEV.stepperEEV.stepOne(*step_number % 4);                  // Сделать один шаг //
-#else                     // остальные варианты  8 фаз движения
-			HP.dEEV.stepperEEV.stepOne(*step_number % 8);                   // Сделать один шаг //
-#endif
-			// Отметка на каждом шаге: цикл движения до конца витка for не доходит,
-			// а полный ход ЭРВ на медленной скорости длиннее предела молчания -
-			// 490 шагов при настраиваемом минимуме 5 шагов/с это почти 100 с
-			// против предела 60 с (при умолчании 80 шагов/с - всего 6 с).
-			Watchdog_Sleep(WDT_StepperEEV, HP.dEEV.stepperEEV.step_delay);      // Ожидать step_delay для следующего шага.
-		}
-		if(HP.dEEV.setZero) { // если стоит признак установки нуля, обнулить и сбросить признак
-			*step_number = 0;
-			HP.dEEV.setZero = false;
-		}
-
-		// 3. Остановить выполнение команд, если очередь пуста, но могли накидать пока двигались
-		if(xQueuePeek(HP.dEEV.stepperEEV.xCommandQueue,&cmd,0) == errQUEUE_EMPTY) {
-			if(!HP.dEEV.get_HoldMotor()) HP.dEEV.stepperEEV.off();                                   // выключить двигатель если нет удержания
-			HP.dEEV.stepperEEV.offBusy();                                                            // признак Мотор остановлен
-		}
-		// Дошли до сюда новая, очередь не пуста и новая итерация по разбору очереди
 	} // for
 	vTaskDelete( NULL);
 }

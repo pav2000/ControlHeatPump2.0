@@ -1240,7 +1240,7 @@ static int apiAct_save_prepare_update(ApiOut *o, const char *)
 	if(HP.is_compressor_on()) return AE_BUSY;
 #ifdef EEV_DEF
 	if(!HP.beginEEVService()) return AE_BUSY;
-	int8_t eevResult = HP.dEEV.EEV != -1 ? HP.dEEV.set_EEV(HP.dEEV.get_maxEEV()) : OK;
+	int8_t eevResult = HP.dEEV.get_EEV() != -1 ? HP.dEEV.set_EEV(HP.dEEV.get_maxEEV()) : OK;
 	HP.endEEVService();
 	if(eevResult != OK) return AE_FAIL;
 #endif

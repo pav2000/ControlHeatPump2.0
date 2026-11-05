@@ -291,7 +291,7 @@ class HeatPump
     void     resetPID();				// Инициализировать переменные ПИД регулятора
 
 #ifdef EEV_DEF
-    bool beginEEVService();
+    bool beginEEVService(bool retarget = false);
     void endEEVService();
     bool waitEEVService();
 #endif

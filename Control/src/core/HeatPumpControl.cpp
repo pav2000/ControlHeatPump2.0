@@ -48,11 +48,11 @@ static uint8_t commandFlags(TYPE_COMMAND c)
 
 #ifdef EEV_DEF
 // Допуск и очередь пуска защищены одним запретом переключения задач.
-bool HeatPump::beginEEVService()
+bool HeatPump::beginEEVService(bool retarget)
 {
 	taskENTER_CRITICAL();
 	bool ok = !IsWorkingNow() && command == pEMPTY && cmdq.count == 0 &&
-	          !eevServiceIssuing && !dEEV.stepperEEV.isBusy();
+	          !eevServiceIssuing && (retarget ? dEEV.stepperEEV.canRetarget() : !dEEV.stepperEEV.isBusy());
 	if(ok) eevServiceIssuing = true;
 	taskEXIT_CRITICAL();
 	return ok;
@@ -67,6 +67,10 @@ void HeatPump::endEEVService()
 // STOP/REPEAT/RESET не ждут окончания движения.
 bool HeatPump::waitEEVService()
 {
+	const TickType_t started = xTaskGetTickCount();
+	// Минимальная допустимая скорость 5 шаг/с. Запас учитывает полный ход с перебегом.
+	const uint32_t timeoutTicks = ((uint32_t)dEEV.get_maxEEV() + EEV_SET_ZERO_OVERRIDE + 16) *
+	                              (200 / portTICK_PERIOD_MS) + 30000 / portTICK_PERIOD_MS;
 	for(;;) {
 		taskENTER_CRITICAL();
 		bool active = eevServiceIssuing || dEEV.stepperEEV.isBusy();
@@ -74,6 +78,10 @@ bool HeatPump::waitEEVService()
 		taskEXIT_CRITICAL();
 		if(interrupt) return false;
 		if(!active) return true;
+		if((TickType_t)(xTaskGetTickCount() - started) > timeoutTicks) {
+			set_Error(ERR_CONFIG, (char*) "EEV motion timeout");
+			return false;
+		}
 		Watchdog_SleepHere(100);
 	}
 }

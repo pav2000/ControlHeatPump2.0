@@ -53,8 +53,7 @@ const char *nameEEV = {"EEV"} ;  //  Имя
 // Инициализация ЭРВ
 void devEEV::initEEV()
 {
-	EEV = -1;                               // шаговик в непонятном положении
-	setZero = false;                        // Признак процесса обнуления (шаговик ищет 0)
+	simulatedPosition = -1;                 // в SAFE_TEST ещё нет известной позиции
 	err = OK;                               // Ошибок нет
 	Resume(); 			                // Обнулить рабочие переменные
 	testMode = NORMAL;                      // Значение режима тестирования
@@ -196,7 +195,7 @@ int8_t devEEV::Start()
 		journal.jprintf(" EEV is not available\n");
 		return err;
 	}  // если ЭРВ нет то ничего не делаем
-	if((!GETBIT(_data.flags, fOneSeekZero)) || (GETBIT(_data.flags,fOneSeekZero) && (EEV < 0))) { // есть вариант однократного поиска "0" ЭРВ
+	if((!GETBIT(_data.flags, fOneSeekZero)) || (GETBIT(_data.flags,fOneSeekZero) && (get_EEV() < 0))) { // есть вариант однократного поиска "0" ЭРВ
 		int8_t r = set_zero();
 		if(r != OK) return r;
 	}                          // установить 0
@@ -205,12 +204,10 @@ int8_t devEEV::Start()
 // Гарантированно (шагов больше чем диапазон) закрыть ЭРВ возвращает код ошибки
 int8_t devEEV::set_zero()
 {
-	if(!setZero) {
-		journal.jprintf(" EEV: Set zero\n");
-		setZero = true;                                             // Признак ПРОЦЕССА обнуления счетчика шагов EEV  Ставить в начале!!
-		if(testMode != SAFE_TEST) { if(!stepperEEV.step(0)) { setZero = false; journal.jprintf("$ERROR - Step motor command queue is FULL!\n"); return ERR_CONFIG; } }  // не  SAFE_TEST - работаем
-		else { EEV = 0; setZero = false; }                          // SAFE_TEST не запускает задачу шаговика
-	}
+	journal.jprintf(" EEV: Set zero\n");
+	if(testMode != SAFE_TEST) {
+		if(!stepperEEV.home(EEV_SET_ZERO_OVERRIDE)) return ERR_CONFIG;
+	} else simulatedPosition = 0;
 	return OK;
 }
 
@@ -224,8 +221,8 @@ int8_t devEEV::set_EEV(int16_t x)
 		return err;
 	}
 	if(x < EEV_CLOSE_STEP) x = EEV_CLOSE_STEP; else if(x > _data.maxSteps) x = _data.maxSteps;
-	if(testMode != SAFE_TEST) { if(!stepperEEV.step(x)) { journal.jprintf("$ERROR - Step motor command queue is FULL!\n"); return ERR_CONFIG; } }                   // не  SAFE_TEST - работаем
-	else EEV = x;                                                    // SAFE_TEST только координаты меняем
+	if(testMode != SAFE_TEST) { if(!stepperEEV.step(x)) { journal.jprintf("$ERROR - Step motor command rejected\n"); return ERR_CONFIG; } }
+	else simulatedPosition = x; // SAFE_TEST не двигает обмотки
 	return err;
 }
 
@@ -396,6 +393,7 @@ int8_t devEEV::Update(void) //boolean fHeating)
 	if(!GETBIT(_data.flags, fPresent)) return err;  // если ЭРВ нет то ничего не делаем
 	if(fPause) return err;    // если пауза то выходим
 	int16_t newEEV = 0;
+	const int16_t currentEEV = get_EEV();
 	int32_t hybridRequested = 0;
 	bool hybridResult = false;
 	switch(_data.ruleEEV)     // В зависимости от правила вычисления перегрева
@@ -414,14 +412,14 @@ int8_t devEEV::Update(void) //boolean fHeating)
 			EevHybridParams hp;
 			hybParams(&hp);
 			const int16_t fq = HP.dFC.get_present() ? HP.dFC.get_frequency() : 0;
-			newEEV = eevhyb_step(&hybState, &hp, Overheat, fq, EEV, Uptime_s() - HP.get_startCompressor(), &hybridRequested);
+			newEEV = eevhyb_step(&hybState, &hp, Overheat, fq, currentEEV, Uptime_s() - HP.get_startCompressor(), &hybridRequested);
 			hybridResult = true;
-			if(DBG_ON(DBG_EEV)) journal.jprintf("EEV hyb: oh %d, f %d, x %d -> %d, acc %d\n", Overheat, fq, EEV, newEEV, (int) hybState.acc1000);   // перегрев и частота - сотые, acc - тысячные шага
+			if(DBG_ON(DBG_EEV)) journal.jprintf("EEV hyb: oh %d, f %d, x %d -> %d, acc %d\n", Overheat, fq, currentEEV, newEEV, (int) hybState.acc1000);
 		} else {                                   // ПИД
 			newEEV = _data.tOverheat - Overheat;   // Расчет ошибки для пида
 			pidw.Kp_dmin=_data.pid_zone;           // передать параметр - уменьшение пропорциональной при определенной ошибке
 			newEEV = updatePID(newEEV, _data.pid, pidw)/100; // Рассчитать итерацию: Перевод в шаги (выход ПИДА в сотых) + округление вниз
-			if ((abs(newEEV)>_data.pid_max)&&(_data.pid_max>0)) {if (newEEV>0) newEEV=EEV+_data.pid_max; else newEEV=EEV-_data.pid_max;} else newEEV+=EEV;   // Ограничение пида +  добавление предыдущего значения
+			if ((abs(newEEV)>_data.pid_max)&&(_data.pid_max>0)) {if (newEEV>0) newEEV=currentEEV+_data.pid_max; else newEEV=currentEEV-_data.pid_max;} else newEEV+=currentEEV;
 			// Проверка управляющего воздействия, возможно отказ ЭРВ
 		}
 		break;
@@ -463,7 +461,7 @@ int8_t devEEV::Update(void) //boolean fHeating)
 		newEEV = _data.maxSteps;            // ограничение
 	}
 	//  Передвинуть шаговик ЭРВ в позицию (абсолютную) EEV если есть изменения
-	if(newEEV != EEV) set_EEV(newEEV);
+	if(newEEV != currentEEV) set_EEV(newEEV);
 	return err;
 }
 
@@ -687,8 +685,8 @@ static int api_set_eev(uint8_t hook, uint8_t, const char *val)
 	float x = my_atof(val);
 	if(x == ATOF_ERROR) return AE_BAD_VALUE;
 	switch(hook) {
-	case E_POS: { if(x < d->minSteps || x > d->maxSteps) return AE_RANGE; if(!HP.beginEEVService()) return AE_BUSY; int8_t r = HP.dEEV.set_EEV(x); HP.endEEVService(); return r == OK ? AE_OK : AE_FAIL; }
-	case E_POSP: { x = x * d->maxSteps / 100; if(x < d->minSteps || x > d->maxSteps) return AE_RANGE; if(!HP.beginEEVService()) return AE_BUSY; int8_t r = HP.dEEV.set_EEV(x); HP.endEEVService(); return r == OK ? AE_OK : AE_FAIL; }
+	case E_POS: { if(x < d->minSteps || x > d->maxSteps) return AE_RANGE; if(!HP.beginEEVService(true)) return AE_BUSY; int8_t r = HP.dEEV.set_EEV(x); HP.endEEVService(); return r == OK ? AE_OK : AE_FAIL; }
+	case E_POSP: { x = x * d->maxSteps / 100; if(x < d->minSteps || x > d->maxSteps) return AE_RANGE; if(!HP.beginEEVService(true)) return AE_BUSY; int8_t r = HP.dEEV.set_EEV(x); HP.endEEVService(); return r == OK ? AE_OK : AE_FAIL; }
 	case E_MIN:  if(!eev_bounds_valid((uint8_t)x, d->maxSteps, EEV_CLOSE_STEP)) return AE_RANGE; d->minSteps = x; return AE_OK;
 	case E_MAX: {
 		int16_t xx = x;
@@ -706,12 +704,12 @@ static int api_set_eev(uint8_t hook, uint8_t, const char *val)
 	case E_KI: d->pid.Ki = -rd(x, 1000); return AE_OK;
 	case E_KD: d->pid.Kd = -rd(x, 1000); return AE_OK;
 #ifdef EEV_PREFER_PERCENT
-	case E_MANUAL: { if(!HP.beginEEVService()) return AE_BUSY; int16_t next = HP.dEEV.calc_pos(rd(x, 100)); int8_t r = d->ruleEEV == MANUAL ? HP.dEEV.set_EEV(next) : OK; if(r == OK) d->manualStep = next; HP.endEEVService(); return r == OK ? AE_OK : AE_FAIL; }
+	case E_MANUAL: { if(!HP.beginEEVService(true)) return AE_BUSY; int16_t next = HP.dEEV.calc_pos(rd(x, 100)); int8_t r = d->ruleEEV == MANUAL ? HP.dEEV.set_EEV(next) : OK; if(r == OK) d->manualStep = next; HP.endEEVService(); return r == OK ? AE_OK : AE_FAIL; }
 	case E_PSP:    d->preStartPos = HP.dEEV.calc_pos(rd(x, 100)); return AE_OK;
 	case E_SP:     d->StartPos = HP.dEEV.calc_pos(rd(x, 100)); return AE_OK;
 	case E_PHT:    d->PosAtHighTemp = HP.dEEV.calc_pos(rd(x, 100)); return AE_OK;
 #else
-	case E_MANUAL: { if(x < d->minSteps || x > d->maxSteps) return AE_RANGE; if(!HP.beginEEVService()) return AE_BUSY; int8_t r = d->ruleEEV == MANUAL ? HP.dEEV.set_EEV(x) : OK; if(r == OK) d->manualStep = x; HP.endEEVService(); return r == OK ? AE_OK : AE_FAIL; }
+	case E_MANUAL: { if(x < d->minSteps || x > d->maxSteps) return AE_RANGE; if(!HP.beginEEVService(true)) return AE_BUSY; int8_t r = d->ruleEEV == MANUAL ? HP.dEEV.set_EEV(x) : OK; if(r == OK) d->manualStep = x; HP.endEEVService(); return r == OK ? AE_OK : AE_FAIL; }
 	case E_PSP:    if(x < d->minSteps || x > d->maxSteps) return AE_RANGE; d->preStartPos = x; return AE_OK;
 	case E_SP:     if(x < d->minSteps || x > d->maxSteps) return AE_RANGE; d->StartPos = x; return AE_OK;
 	case E_PHT:    d->PosAtHighTemp = x; return AE_OK;

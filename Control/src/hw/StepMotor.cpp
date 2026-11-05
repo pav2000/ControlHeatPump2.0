@@ -24,7 +24,6 @@ void StepMotor::initStepMotor(int number_of_steps, int motor_pin_1, int motor_pi
 	this->pin_count = 4;
 	this->phase_variant = phase_variant;       // из Config.h через вызывающего
 	this->invert = invert;                     // инверсия выходов драйвера L9333
-	busy = false; pendingSend = 0;             // мотор не двигается
 
 	// Arduino pins for the motor control connection:
 	this->motor_pin_1 = motor_pin_1;
@@ -47,20 +46,21 @@ void StepMotor::setSpeed(long whatSpeed)
 }
 
 
-// Движение до steps_to_move 
-// На входе АБСОЛЮТНАЯ координата, в очередь уходит АБСОЛЮТНАЯ координата
-// false - очередь команд полна, движение не начато. Сообщение в журнал
-// печатает вызывающий: журнала модуль не знает и знать не должен.
+// Новая цель заменяет предыдущую. Короткая секция согласует запрос со шагом.
 bool StepMotor::step(int steps_to_move)
 {
-	// Резервируем постановку до обращения к очереди; завершение предыдущего
-	// движения не должно сделать новую команду невидимой для isBusy().
 	taskENTER_CRITICAL();
-	++pendingSend;
+	if(motion.snapshot().position < 0) motion.reset(0);
+	bool ok = motion.moveTo(steps_to_move, 0, number_of_steps) == EevMotion::ACCEPTED;
 	taskEXIT_CRITICAL();
-	bool ok = xQueueSend(xCommandQueue, &steps_to_move, 20 / portTICK_PERIOD_MS) == pdPASS;
+	if(ok && xHandleStepperEEV != NULL) xTaskNotifyGive(xHandleStepperEEV);
+	return ok;
+}
+
+bool StepMotor::home(int overrun)
+{
 	taskENTER_CRITICAL();
-	--pendingSend;
+	bool ok = motion.home(number_of_steps, overrun) == EevMotion::ACCEPTED;
 	taskEXIT_CRITICAL();
 	if(ok && xHandleStepperEEV != NULL) xTaskNotifyGive(xHandleStepperEEV);
 	return ok;
@@ -69,9 +69,38 @@ bool StepMotor::step(int steps_to_move)
 bool StepMotor::isBusy()
 {
 	taskENTER_CRITICAL();
-	bool active = busy || pendingSend || (xCommandQueue && uxQueueMessagesWaiting(xCommandQueue));
+	bool active = motion.snapshot().mode != EevMotion::IDLE;
 	taskEXIT_CRITICAL();
 	return active;
+}
+
+bool StepMotor::canRetarget()
+{
+	taskENTER_CRITICAL();
+	EevMotion::Mode mode = motion.snapshot().mode;
+	taskEXIT_CRITICAL();
+	return mode == EevMotion::IDLE || mode == EevMotion::MOVING;
+}
+
+int16_t StepMotor::currentPosition()
+{
+	taskENTER_CRITICAL();
+	int16_t position = motion.snapshot().position;
+	taskEXIT_CRITICAL();
+	return position;
+}
+
+bool StepMotor::driveOne(int16_t &position)
+{
+	taskENTER_CRITICAL();
+	bool move = motion.prepareStep(position);
+	taskEXIT_CRITICAL();
+	if(!move) return false;
+	stepOne(position % StepMotor_PhaseCount(phase_variant));
+	taskENTER_CRITICAL();
+	motion.commitStep();
+	taskEXIT_CRITICAL();
+	return true;
 }
 
 // выставить один пин

@@ -35,6 +35,7 @@
 #include "FreeRTOS_ARM.h"
 #include "GpioDirect.h"
 #include "StepMotorPhase.h"
+#include "EevMotion.h"
 
 // library interface description
 class StepMotor {
@@ -44,19 +45,19 @@ class StepMotor {
    void  initStepMotor(int number_of_steps, int motor_pin_1, int motor_pin_2,int motor_pin_3, int motor_pin_4,
                        uint8_t phase_variant, bool invert);                                                     // Инициализация
    void setSpeed(long whatSpeed);                                                                               // Установка скорости шагов в секунду
-   bool step(int number_of_steps);                                                                              // Движение; false - очередь команд полна
-   bool isBusy();                       // постановка, очередь или выполняемое движение                                                                      // True если мотор шагает
-   inline void offBusy()    {busy=false;}
-   inline void onBusy()     {busy=true;}  // задача начала движение
+   bool step(int number_of_steps); // Заменить цель движения
+   bool home(int overrun);         // Поиск нуля с перебегом; только из покоя
+   bool isBusy();                 // Цель выполняется или идёт обнуление
+   bool canRetarget();            // Обычное движение допускает замену цели
+   bool driveOne(int16_t &position); // Вызов только из задачи шаговика
+   int16_t currentPosition();
    void off();                                                                                                  // выключить двигатель
    TaskHandle_t xHandleStepperEEV;                                                                              // Заголовок задачи шаговый двигатель двигается 
-   QueueHandle_t xCommandQueue;                                                                                 // очередь комманд на управление двигателем
   private:
     void stepOne(int this_step);
     inline void setPinMotor(int pin, boolean val);
     inline void applyMask(uint8_t mask);   // выставить все четыре обмотки разом
-    volatile boolean busy;
-    volatile uint16_t pendingSend;
+    EevMotion motion;
     uint8_t phase_variant;                 // PHASE_4/PHASE_8/PHASE_8s, задан в initStepMotor
     bool    invert;                        // инверсия выходов для драйвера L9333
     unsigned long step_delay;              // delay between steps, in ms, based on speed

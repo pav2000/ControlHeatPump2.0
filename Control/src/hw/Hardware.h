@@ -306,7 +306,7 @@ public:
 	void   CorrectOverheatInit(void);						 // Перед стартом компрессора
 
 	// Движение ЭРВ
-	inline int16_t get_EEV() {return  EEV;} // Прочитать МГНОВЕННУЮ!! позицию шагового двигателя ЭРВ двигатель может двигаться
+	inline int16_t get_EEV() {return testMode == SAFE_TEST ? simulatedPosition : stepperEEV.currentPosition();} // Мгновенная программная позиция
 	inline int16_t calc_pos(int16_t percent) { return (int32_t)_data.maxSteps * percent / 10000; } // пересчитать % -> шаги, сотые
 	inline int16_t calc_percent(int16_t pos) { return eev_calc_percent(pos, _data.maxSteps); } // пересчитать % -> шаги, сотые
 	int8_t  set_EEV(int16_t x);                             // Перейти на позицию абсолютную  возвращает код ошибки
@@ -347,7 +347,7 @@ public:
 	inline boolean get_present(){return GETBIT(_data.flags,fPresent);} // Наличие EEV в текущей конфигурации
 
 	TEST_MODE get_testMode(){return testMode;}             // Получить текущий режим работы
-	void set_testMode(TEST_MODE t){testMode=t;}            // Установить значение текущий режим работы
+	void set_testMode(TEST_MODE t){ if(t == SAFE_TEST && testMode != SAFE_TEST) simulatedPosition = stepperEEV.currentPosition(); testMode=t; }
 
 	// Сохранение
 	uint8_t *get_save_addr(void) { return (uint8_t *)&_data; } // Адрес структуры сохранения
@@ -356,15 +356,11 @@ public:
 	void resetPID();                                       // Сброс пид регулятора
 
 	StepMotor stepperEEV;                                  // Шаговый двигатель ЭРВ
-	boolean setZero;                                       // признак ПРОЦЕССА обнуления EEV;
-	int16_t EEV;                                           // Текущая  АБСОЛЮТНАЯ позиция
 	int16_t OverheatTCOMP;								// перегрев TCOMPIN-T[PEVA]
 
 private:
+	int16_t simulatedPosition;                             // Только SAFE_TEST, без движения обмоток
 	boolean fPause;                                        // пауза алгоритма отслеживания true
-	inline int8_t jump(int x){return set_EEV(EEV+x);} // Перейти на позицию относительную возвращает код ошибки
-	int8_t stepDown();                                     // 1 Шаг в минус возвращает код ошибки
-	int8_t stepUp();                                       // 1 Шаг в плюс возвращает код ошибки
 
 	PID_WORK_STRUCT pidw;  								// переменные пид регулятора
 	EevHybridState hybState;                             // переменные гибрида (накопитель дробных шагов, прошлые значения)

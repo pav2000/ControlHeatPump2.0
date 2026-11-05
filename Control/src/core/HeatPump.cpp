@@ -795,6 +795,7 @@ xGoWait:
 #ifdef EEV_DEF
 		if(get_State() != pSTARTING_HP) return;            // Могли нажать кнопку стоп, выход из процесса запуска
 		else { int8_t r = dEEV.Start(); if(r != OK) { setState(pOFF_HP); set_Error(r, (char*) "EEV"); return; } }
+		if(!waitEEVService()) return; // поиск нуля должен закончиться до стартовой позиции
 #endif
 
 #ifdef CLEAR_CHART_HP_ON
@@ -1884,8 +1885,8 @@ void HeatPump::compressorOFF()
 	{
 		journal.jprintf(" Pause before closing EEV %d sec . . .\n", dEEV.get_delayOff());
 		Watchdog_SleepHere(dEEV.get_delayOff() * 1000);                                // пауза перед закрытием ЭРВ  на инверторе компрессор останавливается до 2 минут
-		dEEV.set_EEV(EEV_CLOSE_STEP);                                    // Если нужно, то закрыть ЭРВ
-		journal.jprintf(" EEV closed\n");
+		if(dEEV.set_EEV(EEV_CLOSE_STEP) == OK) journal.jprintf(" EEV close requested\n");
+		else journal.jprintf(" EEV close request failed\n");
 	}
 #endif
 }
