@@ -10,7 +10,7 @@
 #ifndef	W5500_H_INCLUDED
 #define	W5500_H_INCLUDED
 
-#include "../../../Control/src/net/NetLayout.h"   // раскладка буферов передачи сокетов (NL_MODE_*)
+#include "NetLayout.h"   // раскладка буферов передачи сокетов (NL_MODE_*)
 
 /*
 class MR {
