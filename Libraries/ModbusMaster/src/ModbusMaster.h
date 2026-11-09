@@ -48,7 +48,7 @@ Arduino library for communicating with Modbus slaves over RS232/485 (via RTU pro
 #include "util/crc16.h"                  // functions to calculate Modbus Application Data Unit CRC
 #include "util/word.h"                   // functions to manipulate words
 
-#ifdef MODBUS_FREERTOS
+#if defined(MODBUS_FREERTOS) && !defined(MODBUSMASTER_HOST_TEST)
 #include "FreeRTOS_ARM.h"                // поддержка многозадачности
 #endif
 
@@ -199,6 +199,9 @@ class ModbusMaster
     */
     static const uint8_t ku8MBInvalidCRC                 = 0xE3;
 
+    /** Response byte count is inconsistent with the request or buffer. */
+    static const uint8_t ku8MBInvalidResponse            = 0xE4;
+
 
     // Обнаружена спицефическая ошибка Omron MX2, счетчика PZEM-004T
     // В случае обнаружения ошибки в запросе (кроме ошибки связи)
@@ -260,7 +263,10 @@ class ModbusMaster
     uint32_t last_transaction_time;
 
     // Modbus timeout [milliseconds] Depend on serial speed
-    static const uint16_t ku16MBResponseTimeout          = 100;   ///< Modbus timeout, every byte [milliseconds]
+#ifndef MODBUSMASTER_RESPONSE_TIMEOUT
+#define MODBUSMASTER_RESPONSE_TIMEOUT 100
+#endif
+    static const uint16_t ku16MBResponseTimeout          = MODBUSMASTER_RESPONSE_TIMEOUT; ///< response timeout [ms]
     
     // idle callback function; gets called during idle time between TX and RX
     void (*_idle)();

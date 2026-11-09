@@ -588,20 +588,49 @@ Sequence:  Последовательность:
 // @return 0 on success; exception number on failure
 uint8_t ModbusMaster::ModbusMasterTransaction(uint8_t u8MBFunction)
 {
-  static uint8_t u8ModbusADU[128];      // буфер
+  // Максимальный ответ: адрес, функция, byte count, 125 регистров (250 байт), CRC.
+  // 128 байт было недостаточно даже для штатного предела Modbus в 125 регистров.
+  static uint8_t u8ModbusADU[256];      // буфер
   uint8_t u8ModbusADUSize = 0;          // текущее положение в буфере (длина данных)
   uint8_t i, u8Qty;
   uint16_t u16CRC;
   uint32_t u32StartTime;
   uint8_t u8BytesLeft = 8;             // число оставшихся байт для чтения (минимальна длина ответа??)
   uint8_t u8MBStatus = ku8MBSuccess;   // текущий статус
+
+  // Проверяем количество элементов до сборки ADU. Это одновременно защищает
+  // передающий буфер и гарантирует, что длина кадра помещается в uint8_t/ADU.
+  switch (u8MBFunction) {
+    case ku8MBReadCoils:
+    case ku8MBReadDiscreteInputs:
+      if (_u16ReadQty == 0 || _u16ReadQty > 2000) return ku8MBIllegalDataValue;
+      break;
+    case ku8MBReadInputRegisters:
+    case ku8MBReadHoldingRegisters:
+      if (_u16ReadQty == 0 || _u16ReadQty > 125) return ku8MBIllegalDataValue;
+      break;
+    case ku8MBWriteMultipleCoils:
+      if (_u16WriteQty == 0 || _u16WriteQty > 2000 ||
+          ((_u16WriteQty + 7) / 8) > ku8MaxBufferSize) return ku8MBIllegalDataValue;
+      break;
+    case ku8MBWriteMultipleRegisters:
+      if (_u16WriteQty == 0 || _u16WriteQty > 123 ||
+          _u16WriteQty > ku8MaxBufferSize) return ku8MBIllegalDataValue;
+      break;
+    case ku8MBReadWriteMultipleRegisters:
+      if (_u16ReadQty == 0 || _u16ReadQty > 125 || _u16WriteQty == 0 ||
+          _u16WriteQty > 121 || _u16WriteQty > ku8MaxBufferSize) return ku8MBIllegalDataValue;
+      break;
+    default:
+      break;
+  }
   
   if((u32StartTime = millis() - last_transaction_time) < MIN_TIME_BETWEEN_TRANSACTION) {
 #ifdef MODBUSMASTER_DEBUG
 	  Serial.print("#");
 #endif
 	  u32StartTime = MIN_TIME_BETWEEN_TRANSACTION - u32StartTime;
-#ifdef MODBUS_FREERTOS
+#if defined(MODBUS_FREERTOS) && !defined(MODBUSMASTER_HOST_TEST)
 	  while(u32StartTime--) if(xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) vTaskDelay(1); else delay(1);
 #else
 	  while(u32StartTime--) delay(1);
@@ -684,7 +713,7 @@ uint8_t ModbusMaster::ModbusMasterTransaction(uint8_t u8MBFunction)
       u8ModbusADU[u8ModbusADUSize++] = lowByte(_u16WriteQty);
       u8ModbusADU[u8ModbusADUSize++] = lowByte(_u16WriteQty << 1);
       
-      for (i = 0; i < lowByte(_u16WriteQty); i++)
+      for (i = 0; i < _u16WriteQty; i++)
       {
         u8ModbusADU[u8ModbusADUSize++] = highByte(_u16TransmitBuffer[i]);
         u8ModbusADU[u8ModbusADUSize++] = lowByte(_u16TransmitBuffer[i]);
@@ -735,6 +764,9 @@ uint8_t ModbusMaster::ModbusMasterTransaction(uint8_t u8MBFunction)
 
   // -------------------- ЧТЕНИЕ ОТВЕТА --------------------------------------
    u8ModbusADUSize = 0;       // Сбросить длину буфера
+   // Нельзя оставлять длину предыдущего ответа: при ошибке нового обмена
+   // вызывающий код не должен видеть устаревшие слова.
+   _u8ResponseBufferLength = 0;
 
 #ifdef MODBUSMASTER_DEBUG
    Serial.print("St: "); Serial.print(millis()); Serial.print(" ");
@@ -786,13 +818,31 @@ uint8_t ModbusMaster::ModbusMasterTransaction(uint8_t u8MBFunction)
 		   // Оценить в зависимости от функции требуемое число байт
 		   switch(u8ModbusADU[1])   // код функции
 		   {
-		   case ku8MBReadCoils:
-		   case ku8MBReadDiscreteInputs:
-		   case ku8MBReadInputRegisters:
-		   case ku8MBReadHoldingRegisters:
-		   case ku8MBReadWriteMultipleRegisters:
-			   u8BytesLeft = u8ModbusADU[2];
-			   break;
+           case ku8MBReadCoils:
+           case ku8MBReadDiscreteInputs:
+           case ku8MBReadInputRegisters:
+           case ku8MBReadHoldingRegisters:
+           case ku8MBReadWriteMultipleRegisters: {
+               uint16_t expectedBytes = 0;
+               if (u8ModbusADU[1] == ku8MBReadCoils ||
+                   u8ModbusADU[1] == ku8MBReadDiscreteInputs) {
+                 expectedBytes = (uint16_t)(_u16ReadQty + 7) / 8;
+               } else {
+                 expectedBytes = (uint16_t)_u16ReadQty * 2;
+               }
+               // byte count должен совпадать с запросом и помещаться в ADU.
+               // Иначе нельзя безопасно продолжать чтение и разбор ответа.
+               if (expectedBytes > 255 || u8ModbusADU[2] != expectedBytes ||
+                   (uint16_t)u8ModbusADUSize + u8ModbusADU[2] + 2 > (uint16_t)sizeof(u8ModbusADU)) {
+                 u8MBStatus = ku8MBInvalidResponse;
+                 break;
+               }
+               // Два первых байта данных уже входят в пятибайтовый заголовок;
+               // поэтому после него остаётся ровно byte count байт (остаток
+               // данных плюс два байта CRC).
+               u8BytesLeft = u8ModbusADU[2];
+               break;
+           }
 		   case ku8MBWriteSingleCoil:
 		   case ku8MBWriteMultipleCoils:
 		   case ku8MBWriteSingleRegister:
@@ -855,7 +905,7 @@ uint8_t ModbusMaster::ModbusMasterTransaction(uint8_t u8MBFunction)
             _u16ResponseBuffer[i] = word(u8ModbusADU[2 * i + 4], u8ModbusADU[2 * i + 3]);
           }
           
-          _u8ResponseBufferLength = i;
+          _u8ResponseBufferLength = i + 1;
         }
         
         // in the event of an odd number of bytes, load last byte into zero-padded word
@@ -882,7 +932,7 @@ uint8_t ModbusMaster::ModbusMasterTransaction(uint8_t u8MBFunction)
             _u16ResponseBuffer[i] = word(u8ModbusADU[2 * i + 3], u8ModbusADU[2 * i + 4]);
           }
           
-          _u8ResponseBufferLength = i;
+          _u8ResponseBufferLength = i + 1;
         }
         break;
       case ku8MBLinkTestOmronMX2Only: // Сохранение кода возврата

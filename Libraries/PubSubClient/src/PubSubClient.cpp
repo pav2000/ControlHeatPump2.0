@@ -252,32 +252,43 @@ uint16_t PubSubClient::readPacket(uint8_t* lengthLength) {
     if(!readByte(buffer, &len)) return 0;
     bool isPublish = (buffer[0]&0xF0) == MQTTPUBLISH;
     uint32_t multiplier = 1;
-    uint16_t length = 0;
+    uint32_t length = 0;
     uint8_t digit = 0;
     uint16_t skip = 0;
     uint8_t start = 0;
 
-    do {
+    // MQTT Remaining Length is encoded in at most four bytes.  Check the
+    // limit before writing the digit and before multiplying the accumulator.
+    for (uint8_t count = 0; count < 4; ++count) {
         if(!readByte(&digit)) return 0;
+        if (len >= MQTT_MAX_PACKET_SIZE) return 0;
         buffer[len++] = digit;
-        length += (digit & 127) * multiplier;
+        length += (uint32_t)(digit & 127) * multiplier;
+        if ((digit & 128) == 0) {
+            *lengthLength = len - 1;
+            break;
+        }
+        if (count == 3) return 0;
         multiplier *= 128;
-    } while ((digit & 128) != 0);
-    *lengthLength = len-1;
+    }
+    if (length > MQTT_MAX_PACKET_SIZE) return 0;
 
     if (isPublish) {
         // Read in topic length to calculate bytes to skip over for Stream writing
+        if (length < 2 || len + 2 > MQTT_MAX_PACKET_SIZE) return 0;
         if(!readByte(buffer, &len)) return 0;
         if(!readByte(buffer, &len)) return 0;
         skip = (buffer[*lengthLength+1]<<8)+buffer[*lengthLength+2];
+        if (skip > length - 2) return 0;
         start = 2;
         if (buffer[0]&MQTTQOS1) {
             // skip message id
+            if (skip > length - 4) return 0;
             skip += 2;
         }
     }
 
-    for (uint16_t i = start;i<length;i++) {
+    for (uint32_t i = start;i<length;i++) {
         if(!readByte(&digit)) return 0;
         if (this->stream) {
             if (isPublish && len-*lengthLength-2>skip) {
