@@ -862,7 +862,11 @@ void get_csvChart(uint8_t thread)
 					break;
 #endif
 				case STATS_OBJ_TCOMP_TCON:
-					value = HP.Charts[HP.Chart_Temp_TCOMP].get_Point(point) - HP.Charts[HP.Chart_PressTemp_PCON].get_Point(point);
+					if(HP.Chart_Temp_TCOMP) {
+						const CondensingChartSource source = HP.get_condensingChartSource();
+						if(source.index) value = HP.Charts[HP.Chart_Temp_TCOMP].get_Point(point) -
+							HP.Charts[source.index].get_Point(point) - source.offset;
+					}
 					break;
 				case STATS_OBJ_Delta_GEO:
 					value = HP.Charts[HP.Chart_Temp_TEVAING].get_Point(point) - HP.Charts[HP.Chart_Temp_TEVAOUTG].get_Point(point);

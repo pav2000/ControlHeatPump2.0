@@ -138,14 +138,14 @@ void statChart::get_PointsStr(char *&b)
 	}
 }
 
-void statChart::get_PointsStrSubDiv100(char *&b, statChart *sChart)
+void statChart::get_PointsStrSubDiv100(char *&b, statChart *sChart, int16_t add)
 {
 	if(num == 0 || sChart->get_num() == 0) {
 		return;
 	}
 	b += m_strlen(b);
 	for(uint16_t i = 0; i < num; i++) {
-		b = dptoa(b, get_Point(i) - sChart->get_Point(i), 2);
+		b = dptoa(b, get_Point(i) - sChart->get_Point(i) + add, 2);
 		*b++ = ';';
 		*b = '\0';
 	}

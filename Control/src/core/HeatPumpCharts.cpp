@@ -112,6 +112,17 @@ void  HeatPump::updateChart()
 	}
 }
 
+CondensingChartSource HeatPump::get_condensingChartSource()
+{
+#ifdef EEV_DEF
+	const bool pressure_present = sADC[PCON].get_present();
+#else
+	const bool pressure_present = false;
+#endif
+	return chart_condensing_source(pressure_present, is_heating(), Chart_PressTemp_PCON,
+		Chart_Temp_TCONOUTG, Chart_Temp_TEVAOUTG);
+}
+
 // получить данные графика  в виде строки, данные ДОБАВЛЯЮТСЯ к str
 void HeatPump::get_Chart(int index, char *str)
 {
@@ -139,7 +150,10 @@ void HeatPump::get_Chart(int index, char *str)
 		break;
 #endif
 	case STATS_OBJ_TCOMP_TCON:
-		if(Chart_Temp_TCOMP && Chart_PressTemp_PCON) Charts[Chart_Temp_TCOMP].get_PointsStrSubDiv100(str, &Charts[Chart_PressTemp_PCON]);
+		if(Chart_Temp_TCOMP) {
+			const CondensingChartSource source = get_condensingChartSource();
+			if(source.index) Charts[Chart_Temp_TCOMP].get_PointsStrSubDiv100(str, &Charts[source.index], -source.offset);
+		}
 		break;
 	case STATS_OBJ_Delta_GEO:
 		if(Chart_Temp_TEVAING && Chart_Temp_TEVAOUTG) Charts[Chart_Temp_TEVAING].get_PointsStrSubDiv100(str, &Charts[Chart_Temp_TEVAOUTG]);

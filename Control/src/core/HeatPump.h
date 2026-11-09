@@ -518,6 +518,7 @@ class HeatPump
     void clearChart();                                     // Очистить графики в памяти
     void get_listChart(char* ret, const char *delimiter);	       // получить список доступных графиков
     void get_Chart(int index, char *str);                  // получить данные графика
+    CondensingChartSource get_condensingChartSource();    // тот же выбор датчика, что в get_temp_condensing()
     statChart Charts[sizeof(ChartsModSetup) / sizeof(ChartsModSetup[0]) + sizeof(ChartsConstSetup) / sizeof(ChartsConstSetup[0])];
     uint8_t Chart_PressTemp_PCON;
     uint8_t Chart_Temp_TCONOUT;

@@ -134,7 +134,7 @@ int8_t devVaconFC::initFC()
 	if(err != OK || minFreqVacon < 0) { journal.jprintf("%s: cannot read min frequency\n", name); return err == OK ? ERR_MODBUS_STATE : err; }
 	maxFreqVacon = read_0x03_16(FC_FREQ_MAX);
 	if(err != OK || maxFreqVacon <= minFreqVacon || maxFreqVacon > 20000) { journal.jprintf("%s: cannot read max frequency\n", name); return err == OK ? ERR_MODBUS_STATE : err; }
-	journal.jprintf(" Max freq Vacon: %d (0.01 Hz)\n", maxFreqVacon);
+	journal.jprintf(" Max freq Vacon: %d (0.01 Hz)\n", (int)maxFreqVacon);
 
 	uint8_t i = 3;
 	while((state & FC_S_RUN))// Если инвертор работает то остановить его

@@ -129,6 +129,23 @@ struct Charts_Const_setup {
  */
 #define CHART_NOT_FOUND 0
 
+// Источник температуры конденсации для производных рядов. При наличии PCON
+// используем только его: отсутствие ряда давления не означает отсутствия датчика.
+// Без PCON повторяем get_temp_condensing(): выход конденсатора при нагреве,
+// выход испарителя при охлаждении, с поправкой +2 °C (200 сотых).
+struct CondensingChartSource {
+	uint8_t index;
+	int16_t offset;
+};
+
+static inline CondensingChartSource chart_condensing_source(bool pressure_present, bool heating,
+		uint8_t pressure_chart, uint8_t heat_chart, uint8_t cool_chart)
+{
+	CondensingChartSource source = { pressure_present ? pressure_chart : (heating ? heat_chart : cool_chart),
+		pressure_present ? int16_t(0) : int16_t(200) };
+	return source;
+}
+
 uint8_t chart_find(const Charts_Mod_setup *setup, uint8_t count, uint8_t object, uint8_t number);
 
 typedef int16_t CHART_DATA_TYPE;
@@ -158,7 +175,7 @@ public:
 
 	void get_PointsStrDiv100(char *&b);             		// получить строку в которой перечислены все точки в строковом виде через ";" при этом значения делятся на 100
 	void get_PointsStr(char *&b);							// получить строку в которой перечислены все точки в строковом виде через ";"
-	void get_PointsStrSubDiv100(char *&b, statChart *sChart); // получить строку, вычесть точки sChart
+	void get_PointsStrSubDiv100(char *&b, statChart *sChart, int16_t add = 0); // получить разность графиков с поправкой в сотых
 	void get_PointsStrPower(char *&b, statChart *inChart, statChart *outChart, uint16_t Capacity); // Расчитать мощность на лету используется для графика потока, передаются указатели на температуры
 
 	inline uint16_t get_num()  {return num;}              // Получить число накопленных точек
