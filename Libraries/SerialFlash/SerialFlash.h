@@ -45,7 +45,7 @@ public:
 	static bool read(uint32_t addr, void *buf, uint32_t len);
 	static uint8_t readHeader(uint8_t *h, uint32_t addr, bool addr32);   // заголовок Fast Read в h (до 6 байт), возвращает длину
 	static bool ready();
-	static void wait();
+  static bool wait();
 	static void write(uint32_t addr, const void *buf, uint32_t len);
 	static void eraseAll();
 	static void eraseBlock(uint32_t addr);

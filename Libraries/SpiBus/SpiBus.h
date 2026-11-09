@@ -40,6 +40,7 @@ struct SpiBusStat {
 	volatile uint32_t dmaTimeouts;   // порций, принятых по DMA с таймаутом
 	volatile uint32_t dmaOverruns;   // переполнений приёмника при чтении по DMA
 	volatile uint32_t dmaLate;       // приём по DMA закончился, пока поток был вытеснен дольше таймаута (не ошибка, данные целы)
+	volatile uint32_t busTimeouts;   // ожидание SPI/DMAC превысило SPIBUS_DMA_TIMEOUT мс
 };
 extern SpiBusStat spiBusStat;
 

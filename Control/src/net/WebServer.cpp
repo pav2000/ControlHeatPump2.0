@@ -89,6 +89,7 @@ SdFile wFile;
 fname_t wfname;
 static uint8_t webScanRR = 1;           // указатель круга веб-сокетов, общий для потоков (меняется под замком сети)
 WebStat webStat;                          // метрики веб-сервера, см. WebShared.h
+volatile uint32_t networkGeneration = 1;
 
 // Выборка состояний веб-сокетов (0...NetLayout_WebCount-1) не чаще раза в WEBSTAT_PERIOD_MS: семь чтений Sn_SR, около 25 мкс. Замок сети держит вызывающий.
 // SEM-BORROW: xWebThreadSemaphore - читает регистры чипа, замок у web_server
@@ -110,6 +111,7 @@ static void webStatSample()
 static bool closeSocketRTOS(uint8_t thread)
 {
 	EthernetClient &c = Socket[thread].client;
+	const uint32_t generation = networkGeneration;
 	c.stopBegin();
 	const uint32_t t0 = GetTickCount();
 	while(Close_WaitStep(c.status() == SnSR::CLOSED, GetTickCount() - t0, 1000) == CW_WAIT) {
@@ -118,6 +120,12 @@ static bool closeSocketRTOS(uint8_t thread)
 		if(SemaphoreTake(xWebThreadSemaphore, (W5200_TIME_WAIT / portTICK_PERIOD_MS)) == pdFALSE) {
 			SETBIT1(Socket[thread].flags, fLOCK_LOST);
 			journal.jprintf("Socket: %d %s\n", Socket[thread].sock, MutexWebThreadBusy);
+			return false;
+		}
+		if(networkGeneration != generation || GETBIT(Socket[thread].flags, fABORT_SOCK)) {
+			// W5500 был сброшен, пока замок был отпущен. Номер сокета мог уже
+			// достаться новому соединению: старый поток не должен его закрывать.
+			SETBIT1(Socket[thread].flags, fABORT_SOCK);
 			return false;
 		}
 	}

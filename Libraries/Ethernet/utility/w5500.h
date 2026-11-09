@@ -184,7 +184,7 @@ public:
   inline void setPHYCFGR(uint8_t _val);
   inline uint8_t getPHYCFGR();
 
-  void execCmdSn(SOCKET s, SockCMD _cmd);
+  bool execCmdSn(SOCKET s, SockCMD _cmd);
   
   uint16_t getTXFreeSize(SOCKET s);
   uint16_t getRXReceivedSize(SOCKET s);

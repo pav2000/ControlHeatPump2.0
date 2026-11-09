@@ -20,7 +20,7 @@ uint8_t socket(SOCKET s, uint8_t protocol, uint16_t port, uint8_t flag)
       local_port++; // if don't set the source port, set local_port number.
       W5100.writeSnPORT(s, local_port);
     }
-    W5100.execCmdSn(s, Sock_OPEN);
+    if (!W5100.execCmdSn(s, Sock_OPEN)) return 0;
 
    switch (protocol)  // pav2000 дополнительная проверка состояния после открытия сокета
    {
@@ -55,8 +55,7 @@ uint8_t listen(SOCKET s)
 {
   if (W5100.readSnSR(s) != SnSR::INIT)
     return 0;
-  W5100.execCmdSn(s, Sock_LISTEN);
-  return 1;
+  return W5100.execCmdSn(s, Sock_LISTEN) ? 1 : 0;
 }
 
 
@@ -76,14 +75,15 @@ uint8_t connect(SOCKET s, uint8_t * addr, uint16_t port)
     )
      return 0;
 
-   while(W5100.readSnCR(s));// pav2000 ждем выполнение предыдущей команды и только после это начинаем выставлять параметры (лишнее)
+   const uint32_t commandStarted = millis();
+   while(W5100.readSnCR(s)) {
+     if(millis() - commandStarted > W5500_EXEC_CMD_TIMEOUT) return 0;
+   }
 
   // set destination IP
   W5100.writeSnDIPR(s, addr);
   W5100.writeSnDPORT(s, port);
-  W5100.execCmdSn(s, Sock_CONNECT);
-
-  return 1;
+  return W5100.execCmdSn(s, Sock_CONNECT) ? 1 : 0;
 }
 
 
@@ -117,6 +117,7 @@ uint16_t send(SOCKET s, const uint8_t * buf, uint16_t len)
 	  ret = 1;
   } else {
 	  // if freebuf is available, start.
+	  const uint32_t sendStarted = millis();
 	  do
 	  {
 		freesize = W5100.getTXFreeSize(s);
@@ -126,14 +127,16 @@ uint16_t send(SOCKET s, const uint8_t * buf, uint16_t len)
 		  ret = 0;
 		  break;
 		}
-	  } while (freesize < ret);
+	  } while (freesize < ret && millis() - sendStarted <= W5500_EXEC_CMD_TIMEOUT);
+	  if (freesize < ret) return 0;
 	  // copy data
 	  W5100.send_data_processing(s, (uint8_t *)buf, ret);
   }
-  W5100.execCmdSn(s, Sock_SEND);
+  if (!W5100.execCmdSn(s, Sock_SEND)) return 0;
 
   /* +2008.01 bj */
-  while ( (W5100.readSnIR(s) & SnIR::SEND_OK) != SnIR::SEND_OK ) 
+  const uint32_t sendAckStarted = millis();
+  while ( (W5100.readSnIR(s) & SnIR::SEND_OK) != SnIR::SEND_OK )
   {
     /* m2008.01 [bj] : reduce code */
     if ( W5100.readSnSR(s) == SnSR::CLOSED )
@@ -141,6 +144,7 @@ uint16_t send(SOCKET s, const uint8_t * buf, uint16_t len)
       close(s);
       return 0;
     }
+    if (millis() - sendAckStarted > W5500_EXEC_CMD_TIMEOUT) return 0;
   }
   /* +2008.01 bj */
   W5100.writeSnIR(s, SnIR::SEND_OK);
@@ -181,7 +185,7 @@ int16_t recv(SOCKET s, uint8_t *buf, int16_t len)
   if ( ret > 0 )
   {
     W5100.recv_data_processing(s, buf, ret);
-    W5100.execCmdSn(s, Sock_RECV);
+    if (!W5100.execCmdSn(s, Sock_RECV)) return 0;
   }
   return ret;
 }
@@ -229,9 +233,10 @@ uint16_t sendto(SOCKET s, const uint8_t *buf, uint16_t len, uint8_t *addr, uint1
 
     // copy data
     W5100.send_data_processing(s, (uint8_t *)buf, ret);
-    W5100.execCmdSn(s, Sock_SEND);
+    if (!W5100.execCmdSn(s, Sock_SEND)) return 0;
 
     /* +2008.01 bj */
+    const uint32_t sendStarted = millis();
     while ( (W5100.readSnIR(s) & SnIR::SEND_OK) != SnIR::SEND_OK ) 
     {
       if (W5100.readSnIR(s) & SnIR::TIMEOUT)
@@ -240,6 +245,7 @@ uint16_t sendto(SOCKET s, const uint8_t *buf, uint16_t len, uint8_t *addr, uint1
         W5100.writeSnIR(s, (SnIR::SEND_OK | SnIR::TIMEOUT)); /* clear SEND_OK & TIMEOUT */
         return 0;
       }
+      if (millis() - sendStarted > W5500_EXEC_CMD_TIMEOUT) return 0;
     }
 
     /* +2008.01 bj */
@@ -342,8 +348,9 @@ uint16_t igmpsend(SOCKET s, const uint8_t * buf, uint16_t len)
     return 0;
 
   W5100.send_data_processing(s, (uint8_t *)buf, ret);
-  W5100.execCmdSn(s, Sock_SEND);
+  if (!W5100.execCmdSn(s, Sock_SEND)) return 0;
 
+  const uint32_t sendStarted = millis();
   while ( (W5100.readSnIR(s) & SnIR::SEND_OK) != SnIR::SEND_OK ) 
   {
     status = W5100.readSnSR(s);
@@ -354,6 +361,7 @@ uint16_t igmpsend(SOCKET s, const uint8_t * buf, uint16_t len)
       close(s);
       return 0;
     }
+    if (millis() - sendStarted > W5500_EXEC_CMD_TIMEOUT) return 0;
   }
 
   W5100.writeSnIR(s, SnIR::SEND_OK);
@@ -395,9 +403,10 @@ int startUDP(SOCKET s, uint8_t* addr, uint16_t port)
 
 int sendUDP(SOCKET s)
 {
-  W5100.execCmdSn(s, Sock_SEND);
+  if (!W5100.execCmdSn(s, Sock_SEND)) return 0;
 		
   /* +2008.01 bj */
+  const uint32_t sendStarted = millis();
   while ( (W5100.readSnIR(s) & SnIR::SEND_OK) != SnIR::SEND_OK ) 
   {
     if (W5100.readSnIR(s) & SnIR::TIMEOUT)
@@ -406,6 +415,7 @@ int sendUDP(SOCKET s)
       W5100.writeSnIR(s, (SnIR::SEND_OK|SnIR::TIMEOUT));
       return 0;
     }
+    if (millis() - sendStarted > W5500_EXEC_CMD_TIMEOUT) return 0;
   }
 
   /* +2008.01 bj */	

@@ -35,6 +35,7 @@
 #define CSRELEASE() spiBusDeselect(SPIDEV_FLASH)
 #define FLASH_SCBR  2      // 84/2 = 42 МГц: у W25Q32 предел Fast Read 104/133 МГц, у прежнего чтения 03h - 50 МГц
 #define FLASH_READ_TRIES 3 // попыток чтения при сбое DMA
+#define FLASH_WAIT_TIMEOUT 60000 // мс: допустимое стирание всего чипа
 
 static inline void xfer16(uint16_t w) { spiBusXfer(w >> 8); spiBusXfer(w); }
 
@@ -50,9 +51,10 @@ uint32_t SerialFlashChip::Capacity = 0;
 #define FLAG_256K_BLOCKS	0x10	// has 256K erase blocks
 #define FLAG_DIE_MASK		0xC0	// top 2 bits count during multi-die erase
 
-void SerialFlashChip::wait(void)
+bool SerialFlashChip::wait(void)
 {
 	uint32_t status;
+	const uint32_t started = millis();
 	//Serial.print("wait-");
 	while (1) {
 		CSASSERT();
@@ -72,9 +74,11 @@ void SerialFlashChip::wait(void)
 			//Serial.printf("b=%02x.", status & 0xFF);
 			if (!(status & 1)) break;
 		}
+		if (millis() - started > FLASH_WAIT_TIMEOUT) return false;
 	}
 	busy = 0;
 	//Serial.println();
+	return true;
 }
 
 // Заголовок чтения Fast Read 0Bh: команда, адрес (3 байта или 4 в режиме 32-битных адресов), пустой байт. Прежняя
@@ -128,25 +132,28 @@ bool SerialFlashChip::read(uint32_t addr, void *buf, uint32_t len)
 			CSASSERT();
 			spiBusXfer(cmd); // Suspend command
 			CSRELEASE();
+			const uint32_t suspendStarted = millis();
 			if (f & FLAG_STATUS_CMD70) {
 				// Micron chips don't actually suspend until flags read
 				CSASSERT();
 				spiBusXfer(0x70);
 				do {
 					status = spiBusXfer(0);
-				} while (!(status & 0x80));
+				} while (!(status & 0x80) && millis() - suspendStarted <= SPIBUS_DMA_TIMEOUT);
 				CSRELEASE();
+				if (!(status & 0x80)) return false;
 			} else {
 				CSASSERT();
 				spiBusXfer(0x05);
 				do {
 					status = spiBusXfer(0);
-				} while ((status & 0x01));
+				} while ((status & 0x01) && millis() - suspendStarted <= SPIBUS_DMA_TIMEOUT);
 				CSRELEASE();
+				if (status & 0x01) return false;
 			}
 		} else {
 			// chip is busy with an operation that can not suspend
-			wait();			// ждать конца (стирание всего чипа - до десятков секунд)
+			if (!wait()) return false;			// ждать конца (стирание всего чипа - до десятков секунд)
 			b = 0;
 		}
 	}

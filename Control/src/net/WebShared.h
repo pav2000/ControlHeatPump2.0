@@ -47,6 +47,9 @@ struct type_socketData
     uint16_t http_req_type;                 // Тип запроса
   };
 extern type_socketData Socket[W5200_THREAD];
+// Увеличивается при переинициализации W5500. Поток, который отпустил сетевой
+// замок на ожидание, обязан проверить поколение перед продолжением работы.
+extern volatile uint32_t networkGeneration;
 // Метрики веб-сервера (F5). Меняются и читаются под замком сети; читает их sys.webstat, обнуляет reset.webstat.
 struct WebStat {
 	StatAcc  req;           // запрос целиком: от выбора клиента до закрытия сокета, мкс (включая ожидание замка при отдаче данных)

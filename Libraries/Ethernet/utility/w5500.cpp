@@ -12,6 +12,8 @@
 #include "utility/w5100.h"
 #include <SpiBus.h>         // общая шина SPI0 с DMA (Libraries/SpiBus)
 
+#define W5500_REG_READ_TIMEOUT 50
+
 #if defined(W5500_ETHERNET_SHIELD)
 // W5500 controller instance
 W5500Class W5100;
@@ -42,24 +44,26 @@ void W5500Class::init(void)
 uint16_t W5500Class::getTXFreeSize(SOCKET s)
 {
   uint16_t val=0, val1=0;
+  const uint32_t started = millis();
   do {
     val1 = readSnTX_FSR(s);
     if (val1 != 0)
       val = readSnTX_FSR(s);
   }
-  while (val != val1);
+  while (val != val1 && millis() - started <= W5500_REG_READ_TIMEOUT);
   return val;
 }
 
 uint16_t W5500Class::getRXReceivedSize(SOCKET s)
 {
   uint16_t val=0,val1=0;
+  const uint32_t started = millis();
   do {
     val1 = readSnRX_RSR(s);
     if (val1 != 0)
       val = readSnRX_RSR(s);
   }
-  while (val != val1);
+  while (val != val1 && millis() - started <= W5500_REG_READ_TIMEOUT);
   return val;
 }
 
@@ -148,9 +152,13 @@ uint16_t W5500Class::read(uint16_t _addr, uint8_t _cb, uint8_t *_buf, uint16_t _
     return status == SPIBUS_OK ? _len : 0;
 }
 
-void W5500Class::execCmdSn(SOCKET s, SockCMD _cmd) {
+bool W5500Class::execCmdSn(SOCKET s, SockCMD _cmd) {
     writeSnCR(s, _cmd);     // Send command to socket
 //    uint32_t t = GetTickCount();
-    while(readSnCR(s)) ; //if(GetTickCount() - t > W5500_EXEC_CMD_TIMEOUT) break;   // Wait for command to complete
+    const uint32_t started = millis();
+    while(readSnCR(s)) {
+      if(millis() - started > W5500_EXEC_CMD_TIMEOUT) return false;
+    }
+    return true;
 }
 #endif

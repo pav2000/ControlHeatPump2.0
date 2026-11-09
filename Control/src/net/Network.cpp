@@ -458,6 +458,9 @@ void netChipPingFailed() { HP.sendCommand(pNETWORK); }
 boolean netChipReinit(boolean verbose)
 {
 	if(SemaphoreTake(xWebThreadSemaphore, (W5200_TIME_WAIT / portTICK_PERIOD_MS)) == pdFALSE) { journal.jprintf((char*) cErrorMutex, __FUNCTION__, MutexWebThreadBusy); return false; }
+	// Инвалидируем все операции, которые могли отпустить замок до сброса
+	// чипа. Проверка поколения защищает новый сеанс с тем же номером сокета.
+	networkGeneration++;
 	boolean ok = initW5200(verbose);
 	for(uint8_t i = 0; i < W5200_THREAD; i++) SETBIT1(Socket[i].flags, fABORT_SOCK);   // признак инициализации сокета, надо прерывать передачу в сервере
 	SemaphoreGive(xWebThreadSemaphore);

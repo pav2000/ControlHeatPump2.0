@@ -64,6 +64,18 @@ static inline void dmac_channel_disable(uint32_t ch) { DMAC->DMAC_CHDR = DMAC_CH
 static inline void dmac_channel_enable(uint32_t ch) { DMAC->DMAC_CHER = DMAC_CHER_ENA0 << ch; }
 static inline bool dmac_channel_transfer_done(uint32_t ch) { return (DMAC->DMAC_CHSR & (DMAC_CHSR_ENA0 << ch)) ? false : true; }
 
+static bool spi_wait_status(uint32_t mask)
+{
+	const uint32_t started = millis();
+	while((SPI0->SPI_SR & mask) == 0) {
+		if(millis() - started > SPIBUS_DMA_TIMEOUT) {
+			spiBusStat.busTimeouts++;
+			return false;
+		}
+	}
+	return true;
+}
+
 // Запуск приёма SPI -> память
 static void spiDmaRX(uint8_t *dst, uint16_t count)
 {
@@ -172,8 +184,7 @@ uint8_t spiBusXfer(uint8_t b)
 {
 	Spi *pSpi = SPI0;
 	pSpi->SPI_TDR = b;
-	while((pSpi->SPI_SR & SPI_SR_RDRF) == 0) {}
-	return pSpi->SPI_RDR;
+	return spi_wait_status(SPI_SR_RDRF) ? pSpi->SPI_RDR : 0;
 }
 
 void spiBusSend(const uint8_t *buf, size_t n)
@@ -183,18 +194,28 @@ void spiBusSend(const uint8_t *buf, size_t n)
 		while(n) {
 			const uint16_t k = n > SPIBUS_DMA_MAX ? SPIBUS_DMA_MAX : n;
 			spiDmaTX(buf, k);
-			while(!dmac_channel_transfer_done(SPI_DMAC_TX_CH)) {}
+			const uint32_t started = millis();
+			bool timedOut = false;
+			while(!dmac_channel_transfer_done(SPI_DMAC_TX_CH)) {
+				if(millis() - started > SPIBUS_DMA_TIMEOUT) {
+					dmac_channel_disable(SPI_DMAC_TX_CH);
+					spiBusStat.dmaTimeouts++;
+					timedOut = true;
+					break;
+				}
+			}
+			if(timedOut) break;
 			buf += k;
 			n -= k;
 		}
 	} else {   // короткий блок или константа во флеш-памяти МК (DMAC её не читает)
-		while((pSpi->SPI_SR & SPI_SR_TXEMPTY) == 0) {}
+		if(!spi_wait_status(SPI_SR_TXEMPTY)) return;
 		for(size_t i = 0; i < n; i++) {
 			pSpi->SPI_TDR = buf[i];
-			while((pSpi->SPI_SR & SPI_SR_TDRE) == 0) {}
+			if(!spi_wait_status(SPI_SR_TDRE)) return;
 		}
 	}
-	while((pSpi->SPI_SR & SPI_SR_TXEMPTY) == 0) {}
+	if(!spi_wait_status(SPI_SR_TXEMPTY)) return;
 	(void) pSpi->SPI_RDR;    // приёмник оставить пустым: следующий обмен читает только своё
 }
 
@@ -204,7 +225,7 @@ uint8_t spiBusRec(uint8_t *buf, size_t n)
 	if(!spiBusUseDma(buf, n)) {
 		for(size_t i = 0; i < n; i++) {
 			pSpi->SPI_TDR = 0xFF;
-			while((pSpi->SPI_SR & SPI_SR_RDRF) == 0) {}
+			if(!spi_wait_status(SPI_SR_RDRF)) return SPIBUS_TIMEOUT;
 			buf[i] = pSpi->SPI_RDR;
 		}
 		return SPIBUS_OK;
