@@ -42,7 +42,7 @@ public:
 	static void wakeup();
 	static void readID(uint8_t *buf);
 	static void readSerialNumber(uint8_t *buf);
-	static void read(uint32_t addr, void *buf, uint32_t len);
+	static bool read(uint32_t addr, void *buf, uint32_t len);
 	static uint8_t readHeader(uint8_t *h, uint32_t addr, bool addr32);   // заголовок Fast Read в h (до 6 байт), возвращает длину
 	static bool ready();
 	static void wait();
@@ -87,7 +87,7 @@ public:
 			if (offset >= length) return 0;
 			rdlen = length - offset;
 		}
-		SerialFlash.read(address + offset, buf, rdlen);
+		if (!SerialFlash.read(address + offset, buf, rdlen)) return 0;
 		offset += rdlen;
 		return rdlen;
 	}

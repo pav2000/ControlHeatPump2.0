@@ -142,9 +142,10 @@ uint16_t W5500Class::read(uint16_t _addr, uint8_t _cb, uint8_t *_buf, uint16_t _
     spiBusXfer( _cb);
   //  spiSend((0x00 | ((_len & 0x7F00) >> 8)));  // для w5500 длина не передается
   //  spiSend(_len & 0x00FF);
-    spiBusRec(_buf,_len);
+    // Ошибка DMA не должна выглядеть как успешное чтение полного буфера.
+    const uint8_t status = spiBusRec(_buf, _len);
     spiBusDeselect(SPIDEV_NET);
-  return _len;
+    return status == SPIBUS_OK ? _len : 0;
 }
 
 void W5500Class::execCmdSn(SOCKET s, SockCMD _cmd) {

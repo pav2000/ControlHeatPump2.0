@@ -91,7 +91,7 @@ uint8_t SerialFlashChip::readHeader(uint8_t *h, uint32_t addr, bool addr32)
 	return n;
 }
 
-void SerialFlashChip::read(uint32_t addr, void *buf, uint32_t len)
+bool SerialFlashChip::read(uint32_t addr, void *buf, uint32_t len)
 {
 	uint8_t *p = (uint8_t *)buf;
 	uint8_t b, f, status, cmd;
@@ -150,6 +150,7 @@ void SerialFlashChip::read(uint32_t addr, void *buf, uint32_t len)
 			b = 0;
 		}
 	}
+	bool ok = true;
 	do {
 		uint32_t rdlen = len;
 		if (f & FLAG_MULTI_DIE) {
@@ -161,13 +162,15 @@ void SerialFlashChip::read(uint32_t addr, void *buf, uint32_t len)
 		const uint8_t hl = readHeader(h, addr, f & FLAG_32BIT_ADDR);
 		// Сбой DMA (переполнение приёмника или таймаут) оставляет в буфере мусор, а он ушёл бы клиенту как файл морды.
 		// Чтение побочных эффектов не имеет - повторяем; каждый сбой виден в счётчиках spiBusStat и журнале ($SPI DMA).
+		uint8_t e = SPIBUS_OK;
 		for (uint8_t t = 1; ; t++) {
 			CSASSERT();
 			spiBusSend(h, hl);         // заголовок короче порога DMA - опросом
-			const uint8_t e = spiBusRec(p, rdlen);   // данные: DMA порциями по 2048 (короткие - опросом)
+			e = spiBusRec(p, rdlen);   // данные: DMA порциями по 2048 (короткие - опросом)
 			CSRELEASE();
 			if (e == SPIBUS_OK || t >= FLASH_READ_TRIES) break;
 		}
+		if (e != SPIBUS_OK) { ok = false; break; }
 		p += rdlen;
 		addr += rdlen;
 		len -= rdlen;
@@ -183,6 +186,7 @@ void SerialFlashChip::read(uint32_t addr, void *buf, uint32_t len)
 		spiBusXfer(cmd); // Resume program/erase
 		CSRELEASE();
 	}
+	return ok;
 }
 
 void SerialFlashChip::write(uint32_t addr, const void *buf, uint32_t len)

@@ -24,6 +24,7 @@
  * единице трансляции. Проверено сверкой размеров методов.
  */
 #include "Statistics.h"
+#include "HistoryTail.h"
 #include "../core/HeatPump.h"     // HP, датчики, PressToTemp
 #include "../hw/Hardware.h"     // eepromI2C, I2C-обёртки
 #include "Journal.h"      // journal
@@ -735,6 +736,7 @@ void Statistics::SendFileData(uint8_t thread, SdFile *File, char *filename, bool
 	}
 	readed = 0;
 	bool eod = false;
+	bool failed = false;
 	for(uint32_t i = bst; i <= bend && !eod; ) {
 		spiBusDeselectAll();
 		// Серия блоков одной командой CMD18 (настройка «Многоблочное чтение SD»): сколько влезает в пакет, до блока из ОЗУ или конца файла.
@@ -745,6 +747,7 @@ void Statistics::SendFileData(uint8_t thread, SdFile *File, char *filename, bool
 			if(i == CurrentBlock) memcpy(_buffer_ + readed, stats_buffer, SD_BLOCK);
 			else if(!HistoryCopyBlock(i, _buffer_ + readed) && !card.card()->readBlock(i, _buffer_ + readed)) {   // блок истории успел уйти на карту
 				Error("read data", ID_STATS);
+				failed = true;
 				break;
 			}
 			nb = 1;
@@ -752,9 +755,10 @@ void Statistics::SendFileData(uint8_t thread, SdFile *File, char *filename, bool
 			sdMultiBlockRead = 0;                      // отказ CMD18: дальше поблочно (SD_ReadMode напишет в журнал)
 			sdMultiBlockFails++;
 			nb = 1;
-			if(!card.card()->readBlock(i, _buffer_ + readed)) { Error("read data", ID_STATS); break; }
+			if(!card.card()->readBlock(i, _buffer_ + readed)) { Error("read data", ID_STATS); failed = true; break; }
 		} else if(nb == 1 && !card.card()->readBlock(i, _buffer_ + readed)) {
 			Error("read data", ID_STATS);
+			failed = true;
 			break;
 		}
 		i += nb;
@@ -771,8 +775,15 @@ void Statistics::SendFileData(uint8_t thread, SdFile *File, char *filename, bool
 		if(!send && readed <= W5200_MAX_LEN - SD_BLOCK) continue;   // как прежде: без маркера конца хвост после последнего блока не досылается
 		if(!SendFileChunk(thread, &readed, noMarkers, eod)) {
 			journal.jprintf(" Error send %s\n", filename);
+			failed = true;
 			break;
 		}
+	}
+	// Диапазон SD закончился без нулевого маркера: последний неполный буфер
+	// всё равно является частью файла и должен уйти с признаком последнего.
+	// После ошибки чтения или сети недостоверный хвост отправлять нельзя.
+	if(HistoryTailShouldSend(readed, failed) && !SendFileChunk(thread, &readed, noMarkers, true)) {
+		journal.jprintf(" Error send tail %s\n", filename);
 	}
 }
 
