@@ -7,18 +7,27 @@
 	<link rel="stylesheet" type="text/css" href="style.css">
 	<script type='text/javascript' src='scripts.js'></script>
 	<script type="text/javascript">
-		// Справочник кодов ошибок: ключи sys.errors и sys.errors1 (массивы строк, индекс = -код), по одному запросу
+		// Читает части справочника и выводит строки с номерами и способом регистрации.
 		window.onload = function() {
-			var list = [], rows = '';
-			function show() {
-				list.forEach(function(t, i) { rows += '<tr><td>' + (i ? -i : 0) + '</td><td>' + String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</td></tr>'; });
-				document.getElementById('get_syserr').innerHTML = rows;
+			var table = document.getElementById('get_syserr');
+			// Добавляет строку, вставляя значения через textContent.
+			function row(values) {
+				var tr = table.insertRow();
+				values.forEach(function(value) { tr.insertCell().textContent = value; });
 			}
-			api.get({k: ['sys.errors']}, function(D, E, err) {
-				if(err || !D['sys.errors']) { document.getElementById('get_syserr').innerHTML = '<tr><td colspan="2">Нет связи с контроллером</td></tr>'; return; }
-				list = D['sys.errors'];
-				api.get({k: ['sys.errors1']}, function(D2) { list = list.concat(D2['sys.errors1'] || []); show(); });
-			});
+			// Загружает часть с заданным индексом и продолжает со следующей.
+			function loadPart(index) {
+				if(index === 3) return;
+				var key = 'sys.errors' + (index || '');
+				api.get({k: [key]}, function(D, E, err) {
+					if(err || !D[key]) row(['Часть справочника недоступна']);
+					else D[key].forEach(function(item) {
+						row([item.code, item.group, item.registration, item.description]);
+					});
+					loadPart(index + 1);
+				});
+			}
+			loadPart(0);
 		};
 	</script>
 </head>
@@ -28,7 +37,7 @@
 <h1>Ошибки <input style="float:none;" type="submit" value="Назад" onclick="location.href='log.html'"></h1>
 <div class="row1">
 <table style="font-size: small">
-	<thead><tr><th width="10">Номер</th><th>Описание</th></tr></thead>
+	<thead><tr><th width="10">Номер</th><th>Группа</th><th>Регистрация</th><th>Описание</th></tr></thead>
 	<tbody id="get_syserr">
 	</tbody>
 </table>

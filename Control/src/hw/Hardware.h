@@ -26,6 +26,7 @@
 #include <extEEPROM.h>                      // тип объекта eepromI2C
 #include <DS3232.h>                         // tmElements_t, часы реального времени по I2C
 #include <rtc_clock.h>                      // работа со встроенными часами  Это основные часы!!!
+#include "../core/DriveError.h"
 #include <ModbusMaster.h>                   // Используется МОДИФИЦИРОВАННАЯ либа ModbusMaster https://github.com/4-20ma/ModbusMaster
 #include "StepMotor.h" 
 #include "../core/Profile.h"
@@ -501,6 +502,9 @@ class devSDM
        // Управление по 485
       float AcPower;                                   // активная мощность, Вт
       float Voltage;                                   // Напряжение в вольтах
+#ifdef SDM_MIN_VOLTAGE
+      bool lowVoltage = false;                         // Предупреждение уже зарегистрировано для текущего провала
+#endif
       type_settingSDM  settingSDM;                     // Настройки
       char *note;                                      // Описание
       char *name;                                      // Имя
@@ -514,43 +518,40 @@ class devModbus
   public:  
     int8_t initModbus();                                                                // Инициализация Modbus и проверка связи возвращает ошибку
      inline boolean get_present(){return GETBIT(flags,fModbus);} // Наличие Modbus в текущей конфигурации
-    int8_t readInputRegisters16(uint8_t id, uint16_t cmd, uint16_t *ret);
-    int8_t readInputRegisters32(uint8_t id, uint16_t cmd, uint32_t *ret);				   // LITTLE-ENDIAN!
-    int8_t readInputRegistersFloat(uint8_t id, uint16_t cmd, float *ret);                  // Получить значение 2-x (Modbus function 0x04 Read Input Registers) регистров (4 байта) в виде float возвращает код ошибки данные кладутся в ret
-    int8_t readHoldingRegisters16(uint8_t id, uint16_t cmd, uint16_t *ret);                 // Получить значение регистра (2 байта) МХ2 в виде целого  числа возвращает код ошибки данные кладутся в ret
-    int8_t readHoldingRegisters32(uint8_t id, uint16_t cmd, uint32_t *ret);                // Получить значение 2-x регистров (4 байта) МХ2 в виде целого числа возвращает код ошибки данные кладутся в ret
-    int8_t readHoldingRegistersFloat(uint8_t id, uint16_t cmd, float *ret);                // Получить значение 2-x регистров (4 байта) в виде float возвращает код ошибки данные кладутся в ret
-    int8_t readHoldingRegistersNN(uint8_t id, uint16_t cmd, uint16_t num,uint16_t *buf);   // Получить значение N регистров (2*N байта) МХ2 (положить в buf) возвращает код ошибки
-    int8_t writeSingleCoil(uint8_t id,uint16_t cmd, uint8_t u8State);                      // установить битовый вход, возвращает код ошибки Modbus function 0x05 Write Single Coil.
-    int8_t readCoil(uint8_t id,uint16_t cmd, boolean *ret);                                // прочитать отдельный бит, возвращает ошибку Modbus function 0x01 Read Coils.
-    int8_t writeHoldingRegisters16(uint8_t id, uint16_t cmd, uint16_t data);               // Установить значение регистра (2 байта) МХ2 в виде целого  числа возвращает код ошибки данные data
-    int8_t writeHoldingRegistersFloat(uint8_t id, uint16_t cmd, float dat);                // Записать float как 2 регистра числа возвращает код ошибки данные data
+    ModbusResult readInputRegisters16(uint8_t id, uint16_t cmd, uint16_t *ret);
+    ModbusResult readInputRegisters32(uint8_t id, uint16_t cmd, uint32_t *ret);				   // LITTLE-ENDIAN!
+    ModbusResult readInputRegistersFloat(uint8_t id, uint16_t cmd, float *ret);                  // Получить значение 2-x (Modbus function 0x04 Read Input Registers) регистров (4 байта) в виде float возвращает код ошибки данные кладутся в ret
+    ModbusResult readHoldingRegisters16(uint8_t id, uint16_t cmd, uint16_t *ret);                 // Получить значение регистра (2 байта) МХ2 в виде целого  числа возвращает код ошибки данные кладутся в ret
+    ModbusResult readHoldingRegisters32(uint8_t id, uint16_t cmd, uint32_t *ret);                // Получить значение 2-x регистров (4 байта) МХ2 в виде целого числа возвращает код ошибки данные кладутся в ret
+    ModbusResult readHoldingRegistersFloat(uint8_t id, uint16_t cmd, float *ret);                // Получить значение 2-x регистров (4 байта) в виде float возвращает код ошибки данные кладутся в ret
+    ModbusResult readHoldingRegistersNN(uint8_t id, uint16_t cmd, uint16_t num,uint16_t *buf);   // Получить значение N регистров (2*N байта) МХ2 (положить в buf) возвращает код ошибки
+    ModbusResult writeSingleCoil(uint8_t id,uint16_t cmd, uint8_t u8State);                      // установить битовый вход, возвращает код ошибки Modbus function 0x05 Write Single Coil.
+    ModbusResult readCoil(uint8_t id,uint16_t cmd, boolean *ret);                                // прочитать отдельный бит, возвращает ошибку Modbus function 0x01 Read Coils.
+    ModbusResult writeHoldingRegisters16(uint8_t id, uint16_t cmd, uint16_t data);               // Установить значение регистра (2 байта) МХ2 в виде целого  числа возвращает код ошибки данные data
+    ModbusResult writeHoldingRegistersFloat(uint8_t id, uint16_t cmd, float dat);                // Записать float как 2 регистра числа возвращает код ошибки данные data
     #ifndef FC_VACON
-    int8_t LinkTestOmronMX2();                                                             // Тестирование связи c МХ2 (актуально только с omronom) возвращает код ошибки
+    ModbusResult LinkTestOmronMX2();                                                             // Тестирование связи c МХ2 (актуально только с omronom) возвращает код ошибки
     #endif
-    int8_t writeHoldingRegisters32(uint8_t id,uint16_t cmd, uint32_t data); // Записать 2 регистра подряд возвращает код ошибки
-    int8_t get_err() {return err;}                                                         // Получить код ошибки
+    ModbusResult writeHoldingRegisters32(uint8_t id,uint16_t cmd, uint32_t data); // Записать 2 регистра подряд возвращает код ошибки
     bool   link_lost(bool running);                                                        // Связь с инвертором потеряна (критерий в Error_LinkLost)
 private:
     // Функция Modbus. Задаёт, какой метод ModbusMaster вызвать в transact().
     enum MB_FUNC { MB_READ_INPUT, MB_READ_HOLDING, MB_READ_COILS,
-                   MB_WRITE_COIL, MB_WRITE_SINGLE, MB_WRITE_MULTI };
+                   MB_WRITE_COIL, MB_WRITE_SINGLE, MB_WRITE_MULTI, MB_LINK_TEST };
     // Единственное место, где берётся и отдаётся замок шины Modbus.
     // who   - имя вызвавшего метода, идёт в журнал при занятой шине;
     // num   - для чтения число регистров, для записи само записываемое значение;
     // rx    - куда скопировать num слов ответа (копирование идёт ещё под замком,
     //         иначе соседняя задача успеет перетереть буфер ответа);
     // tx    - num слов для передачи, заполняются до запроса, тоже под замком.
-    // Возвращает err: OK либо код ошибки, уже переведённый translateErr().
-    int8_t transact(const char *who, uint8_t id, MB_FUNC func, uint16_t cmd,
+    // Результат и исходный байт возвращаются вместе с ответом.
+    ModbusResult transact(const char *who, uint8_t id, MB_FUNC func, uint16_t cmd,
                     uint16_t num, uint16_t *rx = NULL, const uint16_t *tx = NULL);
     // Переменные
     int8_t flags;                           // Флаги
-    int8_t err;                             // Ошибки Modbus
-    uint8_t  linkFails;                     // Транспортных сбоев подряд при обмене с инвертором
-    uint32_t linkLastOk;                    // Время последнего ответа инвертора (в том числе с исключением), мс
+    InverterLink link;                      // Транспортные сбои и время последнего ответа инвертора
     ModbusMaster RS485;                     // Класс Modbus 485
-    int8_t translateErr(uint8_t result);    // Перевод ошибки протокола Modbus в ошибки ТН
+    static ModbusResult translateErr(ModbusMaster::Result result, bool inverter);    // Перевод ошибки протокола Modbus в ошибки ТН
   }; // End class
 
 

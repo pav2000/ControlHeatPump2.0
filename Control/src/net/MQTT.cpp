@@ -245,13 +245,13 @@ void clientMQTT::recoverNARMON()
        break;
   case pMQTT_SOCK:                                   // Попытка реанимировать системный сокет
        Diag.num_resMQTT++;
-       if(closeSockSys(true)) journal.jprintf((char*)ResSock);
+       if(closeSockSys(true)) journal.jprintf_time((char*)ResSock);
        break;
   case pMQTT_DNS:                                    // Сокет не помог, возможно сервер сменил адрес
        Diag.num_resMQTT++;
        if(closeSockSys(true))
          {
-          journal.jprintf((char*)ResDHCP);
+          journal.jprintf_time((char*)ResDHCP);
           _delay(50);
           check_address(mqttSettintg.narodMon_server,tempIP);      // Адрес НЕ сохраняем в настройках, только в ОЗУ
           if((tempIP!=zeroIP)&&(tempIP!=mqttSettintg.narodMon_serverIP))
@@ -264,7 +264,7 @@ void clientMQTT::recoverNARMON()
        break;
   case pMQTT_RES:                                    // Ничего не помогло - сброс сетевого чипа
        Diag.num_resMQTT++;
-       journal.jprintf((char*)ResChip);
+       journal.jprintf_time((char*)ResChip);
        initW5200(false);                                           // Инициализация сети без вывода инфы в консоль
        for(i=0;i<W5200_THREAD;i++) SETBIT1(Socket[i].flags,fABORT_SOCK); // Признак инициализации сокета, надо прерывать передачу в сервере
        _delay(50);
@@ -289,7 +289,7 @@ void clientMQTT::nextStateNARMON()
 // NM - true народный мониторинг, false обычный сервер
 // debug - выводить отладочные сообщения
 // link_close  = true - по завершению закрывать связь  false по завершению не закрывать связь (отсылка нескольких топиков)
-boolean clientMQTT::sendTopic(boolean NM, boolean debug, boolean link_close)
+boolean clientMQTT::sendTopic(boolean NM, boolean debug, boolean link_close, const char *payload)
 {
   TYPE_STATE_MQTT state;
   IPAddress tempIP;
@@ -306,13 +306,13 @@ boolean clientMQTT::sendTopic(boolean NM, boolean debug, boolean link_close)
           case pMQTT_OK:  break;  // Предыдущая отправка была удачна
           case pMQTT_SOCK:  // Попытка реанимировать сокет
                           Diag.num_resMQTT++;
-                          if(closeSockSys(true))  journal.jprintf((char*)ResSock);
+                          if(closeSockSys(true))  journal.jprintf_time((char*)ResSock);
                           break;
           case pMQTT_DNS: // Предыдущая отправка была НЕ удачна
                           Diag.num_resMQTT++;
                           if(closeSockSys(true))   // НЕУДАЧА Пытаемся реанимировать сокет
                           {
-                           journal.jprintf((char*)ResDHCP);
+                           journal.jprintf_time((char*)ResDHCP);
                           _delay(50);
                           // Пытаемся еще раз узнать адрес через ДНС, возможно он поменялось, если поменялся то меняем не сохраняем настройки
                           if (NM) {check_address(get_narodMon_server(),tempIP);if (tempIP!=get_narodMon_serverIP()){ set_narodMon_serverIP(tempIP);journal.jprintf((char*)ChangeIP,get_narodMon_server());}}
@@ -322,7 +322,7 @@ boolean clientMQTT::sendTopic(boolean NM, boolean debug, boolean link_close)
                           break;
           case pMQTT_RES: // Предыдущая отправка - был сброс ДНС адреса теперь НАДО ЧИП СБРОСИТЬ
                          Diag.num_resMQTT++;
-                         journal.jprintf((char*)ResChip);
+                         journal.jprintf_time((char*)ResChip);
                          initW5200(false);                                  // Инициализация сети без вывода инфы в консоль
                          for (i=0;i<W5200_THREAD;i++) SETBIT1(Socket[i].flags,fABORT_SOCK);  // Признак инициализации сокета, надо прерывать передачу в сервере
                           _delay(50);
@@ -332,7 +332,7 @@ boolean clientMQTT::sendTopic(boolean NM, boolean debug, boolean link_close)
 // Попытка соединения - и определение что делаем дальше
          if (connect(NM))                                        // Попытка соединения
           {
-           w5200_MQTT.publish(topic,temp);                              // Посылка данных топика
+           w5200_MQTT.publish(topic, payload ? payload : temp);                              // Посылка данных топика
            if (link_close) w5200_MQTT.disconnect();              // отсоединение если надо
            if (debug) ShowSockRegisters(W5200_SOCK_SYS);         // выводим состояние регистров ЕСЛИ ОТЛАДКА
 

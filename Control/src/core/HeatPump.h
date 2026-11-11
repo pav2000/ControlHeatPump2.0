@@ -34,6 +34,7 @@
 #include "../hw/OmronFC.h"
 #include "../hw/VaconFC.h"
 #include "Scheduler.h"
+#include "WarningRecord.h"
 
 
 int32_t updatePID(int32_t errorPid, PID_STRUCT &pid, PID_WORK_STRUCT &pidw);
@@ -274,8 +275,13 @@ class HeatPump
     void eraseError();                                       // стереть последнюю ошибку
     void process_error(void);
 
-    inline int8_t get_errcode(){return error;} // Получить код последней ошибки
+    inline int8_t get_errcode(){return error == OK ? OK : activeErrorCode;} // Получить код последней ошибки
     inline void   drop_error_at_boot(){error=OK;} // Освободить поле ошибки для более важной. ТОЛЬКО до старта планировщика: иначе гонка с Error_Claim
+    void get_errorEvent(ErrorEvent &event) const;
+    ErrorEventInfo get_errorInfo() const;
+    WarningRecord get_lastWarning(char *text = nullptr, size_t size = 0) const;
+    void set_Warning(ErrorCatalog::Code code, const char *device, uint16_t cause = 0,
+                     const char *detail = nullptr, bool newEpisode = false, bool consoleOnly = false);
     char    *get_lastErr(){return note_error;} // Получить описание последней ошибки, которая вызвала останов ТН, при удачном запуске обнуляется
     void     scan_OneWire(char *result_str); // Сканирование шины OneWire на предмет датчиков
     inline TEST_MODE get_testMode(){return testMode;} // Получить текущий режим работы
@@ -303,6 +309,11 @@ class HeatPump
     boolean takeCommand();               // CommandHP: взять следующую команду из очереди, true - есть что выполнять
     uint8_t is_pause();					// Возвращает 1, если ТН в паузе
 	inline boolean is_compressor_on() { return dRelay[RCOMP].get_Relay() || dFC.isfOnOff(); }    // Проверка работает ли компрессор
+    void stopForError();
+    void raise_Error(int8_t legacy, ErrorCatalog::Code code, const char *device,
+                          ErrorDetail detail = {}, const char *meaning = nullptr, bool stopIssued = false);
+    void raise_ModbusError(ModbusResult result, const char *device,
+                           ErrorCatalog::Code transport = ErrorCatalog::kMODBUS_EXCHANGE);
 	bool    compressor_emergency_off();                                                           // аварийный останов компрессора (set_Error): true - останов отдан
 	SAFETY_WHY safety_check(SAFETY_OUT out, bool on, const char *name, const char *src);              // межблокировки выходов (Safety.h), отказ - в журнал
 
@@ -602,8 +613,16 @@ class HeatPump
     type_status Status;                   // Описание состояния ТН
 
     // Ошибки и описания
-    volatile int8_t error;                // Код ошибки; читают и пишут разные задачи, занимается атомарно (Error_Claim)
+    void copy_errorInfo(ErrorEventInfo &info, char *text) const;
+    void record_Error(int8_t legacy, const char *device, ErrorCatalog::ErrCode code,
+                      ErrorDetail detail, const char *meaning);
+    ErrorCatalog::ErrCode activeErrorCode{}; // Код каталога для активной аварии или 0
+    ErrorDetail activeErrorDetail{};        // Исходные данные той же аварии
+    volatile int8_t error;                // Внутренний статус аварии для управления и повторного пуска
     char   source_error[16];              // источник ошибки
+    WarningRecord lastWarning{};          // Снимок последнего предупреждения
+    char lastWarningText[160]{};           // Текст того же снимка предупреждения
+    NotifyRecent safetyWarnings{};        // Недавние правила межблокировок по источнику и причине
     char   note_error[160+1];             // Строка c описанием ошибки формат "время источник:описание"
     uint8_t fSD;                          // Признак наличия SD карты: 0 - нет, 1 - есть, но пустая, 2 - есть, веб в наличии
     uint8_t fSPIFlash;                    // Признак наличия (физического) SPI флеш: 0 - нет, 1 - есть, но пустая, 2 - есть, веб в наличии

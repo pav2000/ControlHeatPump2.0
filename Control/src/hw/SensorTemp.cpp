@@ -78,7 +78,7 @@ void sensorTemp::WatchIP()
 	uint8_t e = Sensor_IpEdge(&lost, linked, linked && devIP->get_got(), linked && devIP->get_update() <= UPDATE_IP);
 	if(e == SIE_NONE) return;
 	if(lost) SETBIT1(flags, fIpLost); else SETBIT0(flags, fIpLost);
-	if(e == SIE_LOST) journal.jprintf_time("$Warning: IP sensor of %s: no data for %d s, using %s %.2d\n", name, (int) UPDATE_IP, GETBIT(flags, fAddress) ? "wire" : "last IP value", get_Temp());
+	if(e == SIE_LOST) journal.jprintf_time("$WARN: IP sensor of %s: no data for %d s, using %s %.2d\n", name, (int) UPDATE_IP, GETBIT(flags, fAddress) ? "wire" : "last IP value", get_Temp());
 	else journal.jprintf_time("IP sensor of %s: restored\n", name);
 #endif
 }
@@ -103,7 +103,7 @@ int8_t sensorTemp::Read()
 				lastTemp = cfg.testTemp; // Если датчик не привязан, то присвоить значение теста
 				if(!GETBIT(flags, fWarnNoAddr)) {   // один раз на датчик: прежде подмена шла молча
 					SETBIT1(flags, fWarnNoAddr);
-					journal.jprintf("$Warning: sensor %s has no address, test value %.2d is used\n", name, lastTemp);
+					journal.jprintf_time("$WARN: sensor %s has no address, test value %.2d is used\n", name, lastTemp);
 				}
 			}
 		} else {
@@ -123,8 +123,10 @@ int8_t sensorTemp::Read()
 						if(++numErrorRead == 0) numErrorRead--;
 						if(numErrorRead > NUM_READ_TEMP_ERR && !get_setup_flag(fTEMP_ignory_errors)) { // Слишком много ошибок чтения подряд - ошибка!
 							int8_t code = Error_TempReadCode(err);
-							if(code != err) journal.jprintf_time("%s: read errors limit, last %d\n", name, err);   // причина - в журнал, итоговый код общий
-							set_Error(code, name);
+							if(code == err) set_Error(code, name);
+							else HP.raise_Error(code, ErrorCatalog::kTEMP_READ, name,
+							                    {ErrorDetailKind::Local, static_cast<uint16_t>(-err), 0},
+							                    Error_Text(err));
 						}
 						return err;
 					}

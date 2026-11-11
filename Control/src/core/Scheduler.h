@@ -72,7 +72,7 @@ public:
 	int16_t  load(uint8_t *data = NULL);  		     	// Считать настройки из eeprom i2c, возвращает длину или ошибку
 	int8_t   loadFromBuf(byte *buf, uint16_t avail, uint16_t hint = 0);	// Считать из буфера (секция файла): avail - сколько байт доступно, hint - длина данных из заголовка записи или 0; возврат код ошибки
 	uint16_t get_crc16(uint8_t *data);             		// Рассчитать контрольную сумму для данных на входе входная сумма на выходе новая
-	int8_t   check_crc16_eeprom(void);
+	int8_t   check_crc16_eeprom(bool reportReadError = true);
 	// Область расписания опознаёт себя сама: в новом формате она начинается
 	// с NTAG_Scheduler. Старые данные начинались с Flags и Active, а Active
 	// не больше MAX_CALENDARS, поэтому старший байт тега их исключает.

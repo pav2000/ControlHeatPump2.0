@@ -135,7 +135,7 @@ extern "C" void __assert_func(const char *file, int line, const char *func, cons
 extern "C" void __assert_func(const char *file, int line, const char *func, const char *expr)
 {
 	// Короткими строками: pbuf журнала PRINTF_BUF байт, а путь к файлу длинный.
-	journal.jprintf("$ERROR assert failed: %s\n", expr ? expr : "?");
+	journal.jprintf_time("$ERROR assert failed: %s\n", expr ? expr : "?");
 	journal.jprintf(" %s:%d, %s\n", file ? file : "?", line, func ? func : "?");
 	journal.jprintf(" Reset in 2 s\n");
 	delay(2000);                       // дать журналу дописаться в консоль
@@ -291,7 +291,7 @@ uint8_t initSD(void)
 	if(success)  // Запоминаем результаты
 		journal.jprintf("OK\n");
 	else {
-		HP.message.setMessage(pMESSAGE_SD, (char*) "Ошибка инициализации SD карты", 0);    // сформировать уведомление
+		HP.set_Warning(ErrorCatalog::kSD, "card", 1, "Ошибка инициализации SD-карты");
 		spiBusDeselectAll();
 		return false;
 	}
@@ -299,8 +299,7 @@ uint8_t initSD(void)
 	// 2. Вывод инфо о карте
 	cid_t cid;
 	if(!card.card()->readCID(&cid)) {
-		journal.jprintf((char*) "$ERROR - readCID SD card failed!\n");
-		HP.message.setMessage(pMESSAGE_SD, (char*) "Ошибка чтения информации о карте (readCID)", 0); // сформировать уведомление
+		HP.set_Warning(ErrorCatalog::kSD, "card", 2, "Ошибка чтения информации о SD-карте (readCID)");
 		spiBusDeselectAll();
 		return 0;
 	}
@@ -316,8 +315,7 @@ uint8_t initSD(void)
 
 	// 3. Проверка наличия индексного файла
 	if(!card.exists(INDEX_FILE)) {
-		journal.jprintf((char*) " ERROR - Can't find %s file on SD card!\n", INDEX_FILE);
-		HP.message.setMessage(pMESSAGE_SD, (char*) "Файл индекса не найден на SD карте", 0); // сформировать уведомление
+		HP.set_Warning(ErrorCatalog::kSD, "card", 3, "Файл индекса не найден на SD-карте");
 		spiBusDeselectAll();
 		return 1;
 	} // стартовый файл не найден
@@ -474,7 +472,6 @@ int8_t save_rec(uint32_t &addr_to, uint16_t tag, const uint8_t *addr_from, uint1
 	uint8_t hdr[REC_HDR_SIZE];
 	rec_hdr_put(hdr, tag, size);
 	if(writeEEPROM_I2C(addr_to, hdr, sizeof(hdr))) {
-		set_Error(ERR_SAVE_EEPROM, (char*)nameHeatPump);
 		return ERR_SAVE_EEPROM;
 	}
 	for(uint8_t i = 0; i < sizeof(hdr); i++) crc = _crc16(crc, hdr[i]);
@@ -486,11 +483,9 @@ int8_t save_rec(uint32_t &addr_to, uint16_t tag, const uint8_t *addr_from, uint1
 		uint32_t at = addr_to;
 		int8_t r = Record_WriteStable(W::put, &at, addr_from, size, &crc, SAVE_REC_ATTEMPTS);
 		if(r == 1) {
-			set_Error(ERR_SAVE_EEPROM, (char*)nameHeatPump);
 			return ERR_SAVE_EEPROM;
 		} else if(r == 2) {
 			journal.jprintf("Save record %d: data kept changing, gave up\n", (int) tag);
-			set_Error(ERR_SETTINGS_VERIFY, (char*)nameHeatPump);
 			return ERR_SETTINGS_VERIFY;
 		}
 		addr_to += size;

@@ -158,6 +158,8 @@ BootInfo    Boot_Decide(BootRegs *r, uint8_t rsttyp);
 bool        Boot_Abnormal(BOOT_CAUSE c);
 bool        Boot_NoAutoStart(const BootInfo &b);   // аварии по кругу: не запускать компрессор, ждать человека
 const char *Boot_CauseText(BOOT_CAUSE c);
+// Возвращает стабильную метку причины из b для журнала или nullptr при штатном сбросе.
+const char *Boot_ResetTag(const BootInfo &b);
 
 /*
  * Время работы (раздел 6.5): секунды с включения, 1 - первая секунда. Его никто не подстраивает - ни NTP,

@@ -6,9 +6,7 @@
 для проверки функции используйте   LinkTestOmronMX2Only(code)
 где code - проверочный код (любое число uint16_t),
 в случае успеха первый элемент буфера будет содержать этот код
-- сделана обработка ошибок инвертора (в коде функции добавляется 0х80)
-при этом возвращается состяние ku8MBErrorOmronMX2,
-первый элемент буфера при этом содержит код ошибки
+- подтверждённое исключение Modbus возвращается вместе с исходным байтом
 *
 * Some additional - vad7@yahoo.com
 *
@@ -209,7 +207,7 @@ Retrieve data from response buffer.
 */
 uint16_t ModbusMaster::getResponseBuffer(uint8_t u8Index)
 {
-  if (u8Index < ku8MaxBufferSize)
+  if (u8Index < ku8MaxBufferSize && u8Index < _u8ResponseBufferLength)
   {
     return _u16ResponseBuffer[u8Index];
   }
@@ -300,7 +298,7 @@ order end of the word).
 @return 0 on success; exception number on failure
 @ingroup discrete
 */
-uint8_t ModbusMaster::readCoils(uint16_t u16ReadAddress, uint16_t u16BitQty)
+ModbusMaster::Result ModbusMaster::readCoils(uint16_t u16ReadAddress, uint16_t u16BitQty)
 {
   _u16ReadAddress = u16ReadAddress;
   _u16ReadQty = u16BitQty;
@@ -331,7 +329,7 @@ order end of the word).
 @return 0 on success; exception number on failure
 @ingroup discrete
 */
-uint8_t ModbusMaster::readDiscreteInputs(uint16_t u16ReadAddress,
+ModbusMaster::Result ModbusMaster::readDiscreteInputs(uint16_t u16ReadAddress,
   uint16_t u16BitQty)
 {
   _u16ReadAddress = u16ReadAddress;
@@ -356,7 +354,7 @@ register.
 @return 0 on success; exception number on failure
 @ingroup register
 */
-uint8_t ModbusMaster::readHoldingRegisters(uint16_t u16ReadAddress,
+ModbusMaster::Result ModbusMaster::readHoldingRegisters(uint16_t u16ReadAddress,
   uint16_t u16ReadQty)
 {
   _u16ReadAddress = u16ReadAddress;
@@ -381,7 +379,7 @@ register.
 @return 0 on success; exception number on failure
 @ingroup register
 */
-uint8_t ModbusMaster::readInputRegisters(uint16_t u16ReadAddress,
+ModbusMaster::Result ModbusMaster::readInputRegisters(uint16_t u16ReadAddress,
   uint8_t u16ReadQty)
 {
   _u16ReadAddress = u16ReadAddress;
@@ -404,7 +402,7 @@ address of the coil to be forced. Coils are addressed starting at zero.
 @return 0 on success; exception number on failure
 @ingroup discrete
 */
-uint8_t ModbusMaster::writeSingleCoil(uint16_t u16WriteAddress, uint8_t u8State)
+ModbusMaster::Result ModbusMaster::writeSingleCoil(uint16_t u16WriteAddress, uint8_t u8State)
 {
   _u16WriteAddress = u16WriteAddress;
   _u16WriteQty = (u8State ? 0xFF00 : 0x0000);
@@ -425,7 +423,7 @@ written. Registers are addressed starting at zero.
 @return 0 on success; exception number on failure
 @ingroup register
 */
-uint8_t ModbusMaster::writeSingleRegister(uint16_t u16WriteAddress,
+ModbusMaster::Result ModbusMaster::writeSingleRegister(uint16_t u16WriteAddress,
   uint16_t u16WriteValue)
 {
   _u16WriteAddress = u16WriteAddress;
@@ -451,14 +449,14 @@ corresponding output to be ON. A logical '0' requests it to be OFF.
 @return 0 on success; exception number on failure
 @ingroup discrete
 */
-uint8_t ModbusMaster::writeMultipleCoils(uint16_t u16WriteAddress,
+ModbusMaster::Result ModbusMaster::writeMultipleCoils(uint16_t u16WriteAddress,
   uint16_t u16BitQty)
 {
   _u16WriteAddress = u16WriteAddress;
   _u16WriteQty = u16BitQty;
   return ModbusMasterTransaction(ku8MBWriteMultipleCoils);
 }
-uint8_t ModbusMaster::writeMultipleCoils()
+ModbusMaster::Result ModbusMaster::writeMultipleCoils()
 {
   _u16WriteQty = u16TransmitBufferLength;
   return ModbusMasterTransaction(ku8MBWriteMultipleCoils);
@@ -479,7 +477,7 @@ is packed as one word per register.
 @return 0 on success; exception number on failure
 @ingroup register
 */
-uint8_t ModbusMaster::writeMultipleRegisters(uint16_t u16WriteAddress,
+ModbusMaster::Result ModbusMaster::writeMultipleRegisters(uint16_t u16WriteAddress,
   uint16_t u16WriteQty)
 {
   _u16WriteAddress = u16WriteAddress;
@@ -488,7 +486,7 @@ uint8_t ModbusMaster::writeMultipleRegisters(uint16_t u16WriteAddress,
 }
 
 // new version based on Wire.h
-uint8_t ModbusMaster::writeMultipleRegisters()
+ModbusMaster::Result ModbusMaster::writeMultipleRegisters()
 {
   _u16WriteQty = _u8TransmitBufferIndex;
   return ModbusMasterTransaction(ku8MBWriteMultipleRegisters);
@@ -517,7 +515,7 @@ Result = (Current Contents && And_Mask) || (Or_Mask && (~And_Mask))
 @return 0 on success; exception number on failure
 @ingroup register
 */
-uint8_t ModbusMaster::maskWriteRegister(uint16_t u16WriteAddress,
+ModbusMaster::Result ModbusMaster::maskWriteRegister(uint16_t u16WriteAddress,
   uint16_t u16AndMask, uint16_t u16OrMask)
 {
   _u16WriteAddress = u16WriteAddress;
@@ -546,7 +544,7 @@ buffer.
 @return 0 on success; exception number on failure
 @ingroup register
 */
-uint8_t ModbusMaster::readWriteMultipleRegisters(uint16_t u16ReadAddress,
+ModbusMaster::Result ModbusMaster::readWriteMultipleRegisters(uint16_t u16ReadAddress,
   uint16_t u16ReadQty, uint16_t u16WriteAddress, uint16_t u16WriteQty)
 {
   _u16ReadAddress = u16ReadAddress;
@@ -555,7 +553,7 @@ uint8_t ModbusMaster::readWriteMultipleRegisters(uint16_t u16ReadAddress,
   _u16WriteQty = u16WriteQty;
   return ModbusMasterTransaction(ku8MBReadWriteMultipleRegisters);
 }
-uint8_t ModbusMaster::readWriteMultipleRegisters(uint16_t u16ReadAddress,
+ModbusMaster::Result ModbusMaster::readWriteMultipleRegisters(uint16_t u16ReadAddress,
   uint16_t u16ReadQty)
 {
   _u16ReadAddress = u16ReadAddress;
@@ -566,7 +564,7 @@ uint8_t ModbusMaster::readWriteMultipleRegisters(uint16_t u16ReadAddress,
 
 // Только для OMRON MX2 - проверка связи с инвертором
 // едиственный параметр - проверчый код - он должен вернуться с инвертора
-uint8_t  ModbusMaster::LinkTestOmronMX2Only(uint16_t code)
+ModbusMaster::Result  ModbusMaster::LinkTestOmronMX2Only(uint16_t code)
 {
   _u16WriteAddress=0x0;  //    первые два байта 0
   _u16TransmitBuffer[0] = code;
@@ -586,7 +584,7 @@ Sequence:  Последовательность:
   - return status (success/exception)*/
 // @param u8MBFunction Modbus function (0x01..0xFF)
 // @return 0 on success; exception number on failure
-uint8_t ModbusMaster::ModbusMasterTransaction(uint8_t u8MBFunction)
+ModbusMaster::Result ModbusMaster::ModbusMasterTransaction(uint8_t u8MBFunction)
 {
   // Максимальный ответ: адрес, функция, byte count, 125 регистров (250 байт), CRC.
   // 128 байт было недостаточно даже для штатного предела Modbus в 125 регистров.
@@ -596,6 +594,7 @@ uint8_t ModbusMaster::ModbusMasterTransaction(uint8_t u8MBFunction)
   uint16_t u16CRC;
   uint32_t u32StartTime;
   uint8_t u8BytesLeft = 8;             // число оставшихся байт для чтения (минимальна длина ответа??)
+  bool exception = false;
   uint8_t u8MBStatus = ku8MBSuccess;   // текущий статус
 
   // Проверяем количество элементов до сборки ADU. Это одновременно защищает
@@ -603,23 +602,23 @@ uint8_t ModbusMaster::ModbusMasterTransaction(uint8_t u8MBFunction)
   switch (u8MBFunction) {
     case ku8MBReadCoils:
     case ku8MBReadDiscreteInputs:
-      if (_u16ReadQty == 0 || _u16ReadQty > 2000) return ku8MBIllegalDataValue;
+      if (_u16ReadQty == 0 || _u16ReadQty > 2000) return {ResultKind::Local, ku8MBIllegalDataValue};
       break;
     case ku8MBReadInputRegisters:
     case ku8MBReadHoldingRegisters:
-      if (_u16ReadQty == 0 || _u16ReadQty > 125) return ku8MBIllegalDataValue;
+      if (_u16ReadQty == 0 || _u16ReadQty > 125) return {ResultKind::Local, ku8MBIllegalDataValue};
       break;
     case ku8MBWriteMultipleCoils:
       if (_u16WriteQty == 0 || _u16WriteQty > 2000 ||
-          ((_u16WriteQty + 7) / 8) > ku8MaxBufferSize) return ku8MBIllegalDataValue;
+          ((_u16WriteQty + 7) / 8) > ku8MaxBufferSize) return {ResultKind::Local, ku8MBIllegalDataValue};
       break;
     case ku8MBWriteMultipleRegisters:
       if (_u16WriteQty == 0 || _u16WriteQty > 123 ||
-          _u16WriteQty > ku8MaxBufferSize) return ku8MBIllegalDataValue;
+          _u16WriteQty > ku8MaxBufferSize) return {ResultKind::Local, ku8MBIllegalDataValue};
       break;
     case ku8MBReadWriteMultipleRegisters:
       if (_u16ReadQty == 0 || _u16ReadQty > 125 || _u16WriteQty == 0 ||
-          _u16WriteQty > 121 || _u16WriteQty > ku8MaxBufferSize) return ku8MBIllegalDataValue;
+          _u16WriteQty > 121 || _u16WriteQty > ku8MaxBufferSize) return {ResultKind::Local, ku8MBIllegalDataValue};
       break;
     default:
       break;
@@ -790,7 +789,10 @@ uint8_t ModbusMaster::ModbusMasterTransaction(uint8_t u8MBFunction)
 
 	   // evaluate slave ID, function code once enough bytes have been read
 	   // определение ID ведомого и кода функции - один байт
-	   if(u8ModbusADUSize == (u8MBFunction == ku8MBCustomRequest && _u8TransmitBufferIndex < 2 ? _u8TransmitBufferIndex + 3 : 5)) // Разбор заголовка
+	   const uint8_t header = u8MBFunction == ku8MBCustomRequest && _u8TransmitBufferIndex < 2 ?
+	                          _u8TransmitBufferIndex + 3 : 5;
+	   const bool exceptionHeader = u8ModbusADUSize >= 2 && (u8ModbusADU[1] & 0x80);
+	   if(u8ModbusADUSize == (exceptionHeader ? 5 : header))
 	   {
 		   // verify response is for correct Modbus slave
 		   // Сравнение ID с посланым в запросе
@@ -799,18 +801,14 @@ uint8_t ModbusMaster::ModbusMasterTransaction(uint8_t u8MBFunction)
 			   break;
 		   }
 
-		   // verify response is for correct Modbus function code (mask exception bit 7)
-		   else if((u8ModbusADU[1] & 0x80) == 0x80) {
-			   u8MBStatus = ku8MBExtendedError + u8ModbusADU[2];  // найдена ошибка, кодируем код исключения
-			   break;
-		   } else if((u8ModbusADU[1] & 0x7F) != u8MBFunction) {
+		   if((u8ModbusADU[1] & 0x7F) != u8MBFunction) {
 			   u8MBStatus = ku8MBInvalidFunction;
 			   break;
 		   }
 
-		   // check whether Modbus exception occurred; return Modbus Exception Code
-		   else if(bitRead(u8ModbusADU[1], 7)) {
-			   u8MBStatus = u8ModbusADU[2];
+		   // Исключение занимает пять байт. CRC проверяется общим путём ниже.
+		   if(exceptionHeader) {
+			   exception = true;
 			   break;
 		   }
 
@@ -888,8 +886,8 @@ uint8_t ModbusMaster::ModbusMasterTransaction(uint8_t u8MBFunction)
     }
   } //if (!u8MBStatus && u8ModbusADUSize >= 5)
 
-  // Разобрать ADU по словам  в буфер (данные готовы)
-  if (!u8MBStatus)
+  // Разобрать ADU по словам в буфер только для обычного ответа.
+  if (!u8MBStatus && !exception)
   {
     // Разбор данных в зависимости от кода функции Modbus
     switch(u8ModbusADU[1])
@@ -937,10 +935,9 @@ uint8_t ModbusMaster::ModbusMasterTransaction(uint8_t u8MBFunction)
         break;
       case ku8MBLinkTestOmronMX2Only: // Сохранение кода возврата
         _u16ResponseBuffer[0] = word(u8ModbusADU[4], u8ModbusADU[5]);
+        _u8ResponseBufferLength = 1;
         break;
     } //  switch(u8ModbusADU[1])
-  } else {
-	  _u16ResponseBuffer[0] = word(0,u8ModbusADU[2]); // ошибка - записать код ошибки в буфер
   }
 
   _u8TransmitBufferIndex = 0;
@@ -950,7 +947,9 @@ uint8_t ModbusMaster::ModbusMasterTransaction(uint8_t u8MBFunction)
 #ifdef MODBUSMASTER_DEBUG
   Serial.print(" E: "); Serial.println(millis());
 #endif
-  return u8MBStatus;
+  if(u8MBStatus) return {ResultKind::Transport, u8MBStatus};
+  if(exception) return {ResultKind::Exception, u8ModbusADU[2]};
+  return {ResultKind::Success, ku8MBSuccess};
 }
 
 /** @ingroup util_crc16

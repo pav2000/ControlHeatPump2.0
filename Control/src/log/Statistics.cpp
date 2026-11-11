@@ -210,7 +210,17 @@ xCutSearch:	while(--pos >= buffer) if(*pos == '\n') break;
 
 void Statistics::Error(const char *text, uint8_t what)
 {
-	journal.jprintf(" %s Error %s (%d,%d)!\n", what ? "History" : "Stats", text, card.cardErrorCode(), (int)(card.cardErrorData()));
+	const char *device = what ? "history" : "stats";
+	if(strcmp(text, "memory low") == 0) {
+		journal.jprintf(" %s Error %s!\n", device, text);
+		return;
+	}
+	const int status = card.cardErrorCode();
+	char detail[80];
+	m_snprintf(detail, sizeof(detail), "%s: %s (%d,%d)", device, text, status, (int)card.cardErrorData());
+	uint16_t cause = 0xFFFF;
+	for(const char *p = text; *p; ++p) cause = _crc16(cause, static_cast<uint8_t>(*p));
+	HP.set_Warning(ErrorCatalog::kSD, device, cause, detail);
 }
 
 // Карта файлов по годам: от текущего года вниз, пока файл существует
@@ -1010,7 +1020,7 @@ int8_t Statistics::SaveStats(uint8_t newday)
 			retval = ERR_SD_WRITE;
 		} else if(lensav != len){ // next block
 			if(CurrentBlock >= BlockEnd) {
-				journal.jprintf("Stats file size exceeded!\n"); // to do: increase file
+				Error("File Overflow", ID_STATS);
 				retval = ERR_SD_WRITE;
 			} else {
 				memset(stats_buffer, 0, SD_BLOCK);
@@ -1051,7 +1061,7 @@ int8_t Statistics::SaveHistory(uint8_t from_web)
 	int8_t retval = OK;
 	spiBusDeselectAll();
 	if(!card.card()->writeBlock(HistoryCurrentBlock, history_buffer)) {
-		Error("save", ID_STATS);
+		Error("save", ID_HISTORY);
 		retval = ERR_SD_WRITE;
 	}
 	if(!from_web) SemaphoreGive(xWebThreadSemaphore);

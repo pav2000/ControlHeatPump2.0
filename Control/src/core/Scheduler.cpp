@@ -190,21 +190,19 @@ int8_t Scheduler::save(void)
     // расписание, сохранённое раньше настроек, ничего не ломает.
     uint8_t hdr[REC_HDR_SIZE];
     rec_hdr_put(hdr, NTAG_Scheduler, sizeof(sch_data));
-    if(writeEEPROM_I2C(I2C_SCHEDULER_EEPROM, hdr, sizeof(hdr))) {
-        set_Error(ERR_SAVE_EEPROM, (char *) get_name());
-        return ERR_SAVE_EEPROM;
-    }
-    if(writeEEPROM_I2C(I2C_SCHEDULER_EEPROM + REC_HDR_SIZE, (byte*)&sch_data, sizeof(sch_data))) {
-        set_Error(ERR_SAVE_EEPROM, (char *) get_name());
-        return ERR_SAVE_EEPROM;
-    }
     uint16_t crc16 = get_crc16((uint8_t *)&sch_data);
-    if(writeEEPROM_I2C(I2C_SCHEDULER_EEPROM + REC_HDR_SIZE + sizeof(sch_data), (byte*)&crc16, sizeof(crc16))) {
-    	set_Error(ERR_SAVE_PROFILE, (char *) get_name());
-    	return ERR_SAVE_PROFILE;
+    int8_t err = ERR_SAVE_EEPROM;
+    if(!writeEEPROM_I2C(I2C_SCHEDULER_EEPROM, hdr, sizeof(hdr)) &&
+       !writeEEPROM_I2C(I2C_SCHEDULER_EEPROM + REC_HDR_SIZE, (byte*)&sch_data, sizeof(sch_data)) &&
+       !writeEEPROM_I2C(I2C_SCHEDULER_EEPROM + REC_HDR_SIZE + sizeof(sch_data), (byte*)&crc16, sizeof(crc16))) {
+        err = check_crc16_eeprom(false);
     }
-    int8_t err = check_crc16_eeprom();
-    if(err == OK) journal.jprintf("Save scheduler to I2C OK, write: %d bytes, crc: %04x\n", sizeof(sch_data) + sizeof(crc16), crc16);
+    if(err == OK) {
+        journal.jprintf("Save scheduler to I2C OK, write: %d bytes, crc: %04x\n", sizeof(sch_data) + sizeof(crc16), crc16);
+    } else {
+        HP.set_Warning(ErrorCatalog::kSETTINGS_WRITE, "schedule", -err,
+                       err == ERR_SAVE_EEPROM ? "Не удалось записать расписание" : "Проверка записи расписания не прошла");
+    }
     return err;
 }
 
@@ -213,9 +211,9 @@ int8_t Scheduler::save(void)
 // Остальное (обрезка буфера календарей) сделано при распаковке.
 void Scheduler::fix_loaded(Scheduler_Data *d, bool lost)
 {
-	if(lost) journal.jprintf("\n WARNING: calendars %d-%d dropped (limit is %d), their data lost\n", MAX_CALENDARS + 1, MAX_CALENDARS_OLD, MAX_CALENDARS);
+	if(lost) journal.jprintf_time("$WARN: calendars %d-%d dropped (limit is %d), their data lost\n", MAX_CALENDARS + 1, MAX_CALENDARS_OLD, MAX_CALENDARS);
 	if(Scheduler_FixActive(&d->Flags, &d->Active, MAX_CALENDARS, 1 << bScheduler_active)) {
-		journal.jprintf("\n WARNING: active calendar is out of range, scheduler is turned off, calendar 1 selected\n");
+		journal.jprintf_time("$WARN: active calendar is out of range, scheduler is turned off, calendar 1 selected\n");
 	}
 }
 
@@ -270,7 +268,7 @@ int16_t Scheduler::load(uint8_t *data)
 	if(fail) {
 		set_Error(ERR_LOAD_EEPROM, (char *) get_name());
 		journal.jprintf(" - Error!\n");
-		return ERR_SAVE_EEPROM;
+		return ERR_LOAD_EEPROM;
 	}
 	fix_loaded(d, lost);
 	ret = sizeof(*d);
@@ -350,7 +348,7 @@ uint32_t Scheduler::data_addr(void)
 	return I2C_SCHEDULER_EEPROM + (region_is_new() ? REC_HDR_SIZE : 0);
 }
 
-int8_t Scheduler::check_crc16_eeprom(void)
+int8_t Scheduler::check_crc16_eeprom(bool reportReadError)
 {
 	// Читаем пачками, а не по байту. Побайтно это 799 отдельных транзакций
 	// I2C, каждая с захватом семафора, и всё это под остановленными задачами,
@@ -368,14 +366,14 @@ int8_t Scheduler::check_crc16_eeprom(void)
 		uint16_t n = len - i;
 		if(n > sizeof(blk)) n = sizeof(blk);
 		if(readEEPROM_I2C(base + i, blk, n)) {
-			set_Error(ERR_LOAD_EEPROM, (char *) get_name());
+			if(reportReadError) set_Error(ERR_LOAD_EEPROM, (char *) get_name());
 			return ERR_LOAD_EEPROM;
 		}
 		crc = calc_crc16(blk, n, crc);
 		i += n;
 	}
 	if(readEEPROM_I2C(base + i, (byte*) &crc2, sizeof(crc2))) {
-		set_Error(ERR_LOAD_EEPROM, (char *) get_name());
+		if(reportReadError) set_Error(ERR_LOAD_EEPROM, (char *) get_name());
 		return ERR_LOAD_EEPROM;
 	}
 	return crc == crc2 ? OK : ERR_CRC16_EEPROM;

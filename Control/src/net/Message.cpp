@@ -483,7 +483,7 @@ boolean Message::smtpCmdSecret(const char *cmd, uint32_t timeout)
 // Проверяется необходимость отправки уведомления в зависимости от установленных флагов
 // p1 - температура для pMESSAGE_TEMP, код ошибки для pMESSAGE_ERROR (по нему узнаётся повтор)
 // true - сообщение принято (или запрещено), false - сообщение отвергнуто т.к оно уже посылалось (дубль) или внутренняя ошибка
-boolean Message::setMessage(MESSAGE ms, char *c, int p1) // может запускаться из любого потока!!
+boolean Message::setMessage(MESSAGE ms, char *c, int p1, uint32_t subject) // может запускаться из любого потока!!
 {
   // Проверка на необходимость посылки сообщения: ни почта, ни SMS не разрешены - слать некуда
   if (!((GETBIT(messageSetting.flags, fMail)) || (GETBIT(messageSetting.flags, fSMS)))) return true;	// посылать ненадо
@@ -501,7 +501,9 @@ boolean Message::setMessage(MESSAGE ms, char *c, int p1) // может запу�
   const uint32_t now = Uptime_s();                       // окно повторов - интервал, по времени работы (раздел 6.5)
   const bool repeatable = (ms == pMESSAGE_TESTMAIL) || (ms == pMESSAGE_TESTSMS) || (ms == pMESSAGE_LIFE);
   const uint8_t important = (ms != pMESSAGE_WARNING) && (ms != pMESSAGE_LIFE);   // предупреждения и сигнал жизни вытесняются первыми
-  const uint32_t key = Notify_Key(ms, ms == pMESSAGE_ERROR ? (uint16_t) p1 : calc_crc16((unsigned char*) c, strlen(c)));
+  if(subject == UINT32_MAX)
+    subject = ms == pMESSAGE_ERROR ? (uint16_t) p1 : calc_crc16((unsigned char*) c, strlen(c));
+  const uint32_t key = Notify_Key(ms, subject);
   type_messageData *d = NULL;
   uint8_t evicted = 0;
   bool dup;

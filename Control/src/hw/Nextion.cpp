@@ -456,9 +456,11 @@ void Nextion::Update()
 		setComponentText("syst5", ftoa(ntemp, (float) HP.get_motoHour()->H2 / 60.0, 1));
 		setComponentText("syst6", ftoa(ntemp, (float) HP.get_motoHour()->C2 / 60.0, 1));
 		setComponentText("syst7", itoa(Diag.CPU_LOAD, ntemp, 10));
-		setComponentText("syst8", HP.get_errcode() == OK ? (char *)"-" : itoa(HP.get_errcode(), ntemp, 10));
-		if(HP.get_errcode() == OK) buffer[0] = '\0';
-		else Encode_UTF8_to_ISO8859_5(buffer, HP.get_lastErr(), sizeof(buffer)-1);
+		ErrorEvent event;
+		HP.get_errorEvent(event);
+		setComponentText("syst8", event.code == OK ? (char *)"-" : itoa(event.code, ntemp, 10));
+		if(event.code == OK) buffer[0] = '\0';
+		else Encode_UTF8_to_ISO8859_5(buffer, event.text, sizeof(buffer)-1);
 		setComponentText("terr", buffer);
 
 	} else if(PageID == NXTID_PAGE_SCHEME)  // Обновление данных 4 страницы "СХЕМА ТН"

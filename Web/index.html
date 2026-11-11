@@ -69,7 +69,7 @@ var IDX_KEYS = {'temp.TIN.value': 'get_Temp(TIN)', 'temp.TOUT.value': 'get_Temp(
 	'temp.TCONING.value': 'get_Temp(TCONING)', 'temp.TCONOUTG.value': 'get_Temp(TCONOUTG)', 'temp.TBOILER.value': 'get_Temp(TBOILER)',
 	'state.trg_home': 'get_TrgT(1)', 'boiler.trg': 'get_Boiler(TRG)', 'fc.cfc': 'get_pFC(cFC)', 'state.overheat': 'get_OverHeat', 'eev.pospp': 'get_pEEV(POSpp)',
 	'state.power_220': 'get_Power220', 'state.power_out': 'get_PowerCO', 'state.cop': 'get_fullCOP', 'relay.RBOILER.on': 'get_Relay(RBOILER)',
-	'relay.RPUMPI.on': 'get_Relay(RPUMPI)', 'relay.RPUMPO.on': 'get_Relay(RPUMPO)', 'state.errcode': 'get_errcode', 'state.error': 'get_error', 'state.time': 'get_status',
+	'relay.RPUMPI.on': 'get_Relay(RPUMPI)', 'relay.RPUMPO.on': 'get_Relay(RPUMPO)', 'state.errcode': 'get_errcode', 'state.error': 'get_error', 'state.warning_text': 'get_warning_text', 'state.time': 'get_status',
 	'state.work': 'get_WORK', 'state.mode': 'get_MODE'};
 function idxPoll(d) {
 	for(var k in d) {
@@ -123,6 +123,7 @@ window.onPageValue = function(n, v) {
 	case 'get_Relay(RPUMPO)':  pump('c-po', v); break;
 	case 'get_errcode':     errState(parseInt(v)); break;
 	case 'get_error':       prev.errtext = v; showErr(); break;
+	case 'get_warning_text': { var w = $('warning'); w.textContent = v ? 'Последнее предупреждение: ' + v : ''; w.hidden = !v; break; }
 	case 'get_Heat(ADT)':   night.t = parseFloat(v); showNight(); break;
 	case 'get_Heat(ADH)':   night.h = parseInt(v); showNight(); break;
 	case 'get_Heat(ADEH)':  night.e = parseInt(v); showNight(); break;
@@ -374,6 +375,7 @@ window.onload = function() {
 			<div class="tile acc"><i>COP</i><b id="t-cop">–</b></div>
 		</div>
 		<div class="row" style="margin-top:12px"><span class="tag ok" id="err">…</span></div>
+		<div id="warning" hidden></div>
 	</section>
 
 	<section class="card c8">

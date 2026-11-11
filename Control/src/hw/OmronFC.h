@@ -190,7 +190,7 @@ public:
   uint16_t get_dtTempBoiler(){return _data.dtTempBoiler;}        // Привышение температуры от уставок (подача) при которой срабатыват защита ГВС в сотых градуса
   uint16_t get_maxFreqGen(){return _data.maxFreqGen;}            // Максимальная частота инвертора при работе от генератора в 0.01
   #ifndef FC_ANALOG_CONTROL
-  int8_t   emergency_stop(){ return write_0x05_bit(MX2_START, false); } // СРАЗУ снять команду «Ход» по Modbus (HeatPump::compressor_emergency_off без FC_USE_RCOMP); без журнала и ожиданий
+  int8_t emergency_stop();
   #endif
   void after_load(){ _data.maxFreqGen = fc_gen_freq_fix(_data.maxFreqGen, DEF_FC_MAX_FREQ_GEN); }  // после загрузки настроек: 0 из старых настроек -> значение по умолчанию
     
@@ -213,7 +213,10 @@ public:
   int8_t stop_FC();                                // Команда стоп на инвертор
   boolean isfOnOff(){return GETBIT(flags,fOnOff);} // получить состояние инвертора вкл или выкл
  
-  void check_blockFC();                            // Установить запрет на использование инвертора
+  void check_blockFC(ModbusResult result);
+  template<class Operation> ModbusResult retryExchange(const char *operation, Operation exchange, bool report, bool allowBlocked = false);
+  uint16_t faultCount = UINT16_MAX;          // Последний счётчик, прочитанный вне состояния отказа
+  void reportTrip();                            // Установить запрет на использование инвертора
   boolean get_blockFC(){return GETBIT(flags,fErrFC);}// Получить флаг блокировки инвертора
   union_errorFC get_errorFC(){return error;}       // Получить структуру с ошибкой
   
@@ -305,13 +308,13 @@ private:
      
   // Функции работы с OMRON MX2  Чтение регистров
   #ifndef FC_ANALOG_CONTROL    // НЕ АНАЛОГОВОЕ УПРАВЛЕНИЕ
-  int8_t   write_0x10_32(uint16_t cmd, uint32_t data);// Запись данных (4 байта) в регистр cmd возвращает код ошибки
-  int16_t  read_0x03_16(uint16_t cmd);                // Функция Modbus 0х03 прочитать 2 байта
-  uint32_t read_0x03_32(uint16_t cmd);                // Функция Modbus 0х03 прочитать 4 байта
+  int8_t   write_0x10_32(uint16_t cmd, uint32_t data, ModbusResult *exchange = nullptr);// Запись данных (4 байта) в регистр cmd возвращает код ошибки
+  int16_t  read_0x03_16(uint16_t cmd, ModbusResult *exchange = nullptr);                // Функция Modbus 0х03 прочитать 2 байта
+  uint32_t read_0x03_32(uint16_t cmd, ModbusResult *exchange = nullptr);                // Функция Modbus 0х03 прочитать 4 байта
   int16_t  read_0x03_error(uint16_t cmd);             // Функция Modbus 0х03 описание ошибки num
-  int8_t   write_0x05_bit(uint16_t cmd, boolean f);   // Запись отдельного бита в регистр cmd возвращает код ошибки
+  int8_t   write_0x05_bit(uint16_t cmd, boolean f, ModbusResult *exchange = nullptr);   // Запись отдельного бита в регистр cmd возвращает код ошибки
   boolean  read_0x01_bit(uint16_t cmd);               // Чтение отдельного бита в регистр cmd возвращает код ошибки
-  int8_t   write_0x06_16(uint16_t cmd, uint16_t data);// Запись данных (2 байта) в регистр cmd возвращает код ошибки
+  int8_t   write_0x06_16(uint16_t cmd, uint16_t data, ModbusResult *exchange = nullptr);// Запись данных (2 байта) в регистр cmd возвращает код ошибки
   int8_t   progReg16(uint16_t adrReg, char* nameReg, uint16_t valReg); // Программирование отдельного регистра инвертора c записью в журнал результатов
   int8_t   progReg32(uint16_t adrReg, char* nameReg, uint32_t valReg); // Программирование двух регистров инвертора c записью в журнал результатов
   #endif

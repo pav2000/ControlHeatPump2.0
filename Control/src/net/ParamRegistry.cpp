@@ -23,6 +23,7 @@
  */
 #include <string.h>
 #include <stdlib.h>     // atoi - номер перечисления в api_text
+#include "../core/DriveError.h"
 #include "ParamRegistry.h"
 #include "../util/Util.h"
 
@@ -35,8 +36,24 @@ const char *const ApiErrName[AE_COUNT] = {
 // ---------------------------------------------------------------------------
 void api_out_init(ApiOut *o, char *buf, uint16_t cap)
 {
-	o->p = buf; o->cap = cap; o->len = 0; o->over = 0;
+	o->p = buf; o->cap = cap; o->len = 0; o->over = 0; o->events = nullptr;
 	if(cap) buf[0] = 0;
+}
+
+// Записывает в o JSON с устройством и подтверждёнными исходными данными события.
+void api_put_event_detail(ApiOut *o, int8_t code, const char *source, ErrorDetail detail)
+{
+	if(!code) { api_put(o, "null"); return; }
+	api_put(o, "{\"source\":"); api_put_str(o, source);
+	const char *kind = ErrorDetailToken(detail.kind);
+	if(kind) {
+		api_put(o, ",\"kind\":"); api_put_str(o, kind);
+		api_put(o, ",\"code\":"); api_put_int(o, detail.value);
+		if(detail.kind == ErrorDetailKind::Fault && strcmp(source, "OMRON") == 0) {
+			api_put(o, ",\"status\":"); api_put_int(o, detail.state);
+		}
+	}
+	api_putc(o, '}');
 }
 
 void api_put_n(ApiOut *o, const char *s, uint16_t n)

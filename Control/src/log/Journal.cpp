@@ -27,6 +27,7 @@
  *
  */
 #include "Journal.h"
+#include "../core/HeatPump.h"
 #include "../hw/Hardware.h"     // readEEPROM_I2C / writeEEPROM_I2C, eepromI2C
 #include "../core/Rtos.h"         // _delay, замки шин
 #include "../core/Watchdog.h"     // Watchdog_AliveHere
@@ -77,11 +78,14 @@ void Journal::_unlock(void) { lockGive(xJournalSemaphore); }
 void Journal::Init()
 {
 	err = OK;
+	bufferTail = bufferHead = -1;
+	full = 0;
 	// Отложенная запись: до старта шедулера _post пишет напрямую, но состояние
 	// должно быть готово с самого начала.
 	JournalDedup_Reset(&dedup);
 	JournalRing_Init(&ring, ringbuf, sizeof(ringbuf));
 	lastPostTick = 0;
+	writeLockTimeouts = 0;
 	lostReported = 0;
 
 	uint8_t eepStatus = 0;
@@ -90,28 +94,27 @@ void Journal::Init()
 
 	if((eepStatus = eepromI2C.begin(I2C_SPEED)) != 0)  // Инициализация памяти; код возврата, а не результат сравнения (приоритет операций)
 	{
-		SerialDbg.println("$ERROR - open I2C journal, check I2C chip!");   // ошибка открытия чипа
 		err = ERR_OPEN_I2C_JOURNAL;
+		HP.set_Warning(ErrorCatalog::kJOURNAL, "journal", -err, "Не удалось открыть I2C-журнал", false, true);
 		return;
 	}
 
 	if(checkREADY() == false) // Проверка наличия журнал
 	{
+		if(err != OK) return;
 		SerialDbg.print("I2C journal not found! ");
 		Format();
 		return;
 	}
 
-	bufferTail = bufferHead = -1;
-	full = 0;
 	for(i = 0; i < JOURNAL_LEN / W5200_MAX_LEN; i++)   // поиск журнала начала и конца, для ускорения читаем по W5200_MAX_LEN байт
 	{
 		Watchdog_AliveHere();
 		SerialDbg.print(".");
 		if(readEEPROM_I2C(I2C_JOURNAL_START + i * W5200_MAX_LEN, (byte*) &bufI2C,W5200_MAX_LEN)) {
-			err=ERR_READ_I2C_JOURNAL;
-			SerialDbg.print(errorReadI2C);
-			break;
+			err = ERR_READ_I2C_JOURNAL;
+			HP.set_Warning(ErrorCatalog::kJOURNAL, "journal", -err, "Не удалось прочитать I2C-журнал", false, true);
+			return;
 		}
 		if((ptr = (char*) memchr(bufI2C, I2C_JOURNAL_HEAD, W5200_MAX_LEN)) != NULL) {
 			bufferHead=i*W5200_MAX_LEN+(ptr-bufI2C);
@@ -120,6 +123,11 @@ void Journal::Init()
 			bufferTail=i*W5200_MAX_LEN+(ptr-bufI2C);
 		}
 		if((bufferTail >= 0) && (bufferHead >= 0)) break;
+	}
+	if(bufferTail < 0 || bufferHead < 0) {
+		err = ERR_READ_I2C_JOURNAL;
+		HP.set_Warning(ErrorCatalog::kJOURNAL, "journal", -err, "Не найдены границы I2C-журнала", false, true);
+		return;
 	}
 	if(bufferTail < bufferHead) full = 1;                   // Буфер полный
 	jprintf("\nSTART ---\nFound I2C journal: size %d bytes, head=0x%x, tail=0x%x\n", JOURNAL_LEN, (unsigned int)(bufferHead), (unsigned int)(bufferTail));
@@ -131,17 +139,15 @@ void Journal::writeREADY()
 {  
     uint16_t  w=I2C_JOURNAL_READY; 
     if (writeEEPROM_I2C(I2C_JOURNAL_START-2, (byte*)&w,sizeof(w))) 
-       { err=ERR_WRITE_I2C_JOURNAL; 
-         SerialDbg.println(errorWriteI2C);
-        }
+       { err=ERR_WRITE_I2C_JOURNAL; }
 }
 // Проверить наличие журнала
 boolean Journal::checkREADY()
 {  
     uint16_t  w=0x0; 
     if (readEEPROM_I2C(I2C_JOURNAL_START-2, (byte*)&w,sizeof(w))) 
-       { err=ERR_READ_I2C_JOURNAL; 
-         SerialDbg.print(errorReadI2C);
+       { err=ERR_READ_I2C_JOURNAL;
+         HP.set_Warning(ErrorCatalog::kJOURNAL, "journal", -err, "Не удалось прочитать заголовок I2C-журнала", false, true);
         }
     if (w!=I2C_JOURNAL_READY) return false; else return true;
 }
@@ -157,18 +163,18 @@ void Journal::Format(void)
 	uint8_t buf[] = { I2C_JOURNAL_HEAD, I2C_JOURNAL_TAIL };
 	if(writeEEPROM_I2C(I2C_JOURNAL_START, (uint8_t*)buf, sizeof(buf))) {
 		err = ERR_WRITE_I2C_JOURNAL;
-		SerialDbg.println(errorWriteI2C);
 	}
-	uint32_t pm = irqSave();
-	full = 0;                   // Буфер не полный
-	bufferHead = 0;
-	bufferTail = 1;
+	if(err == OK) writeREADY();
+	const bool failed = err == ERR_WRITE_I2C_JOURNAL;
+	const uint32_t pm = irqSave();
+	full = 0;
+	bufferHead = failed ? -1 : 0;
+	bufferTail = failed ? -1 : 1;
 	irqRestore(pm);
-	if(err == OK) {
-		writeREADY();                 // было форматирование
-		jprintf("\nFormat I2C journal (size %d bytes) - Ok\n", JOURNAL_LEN);
-	}
+	if(!failed) jprintf("\nFormat I2C journal (size %d bytes) - Ok\n", JOURNAL_LEN);
 	lockGive(xJournalWriteSemaphore);
+	if(failed) HP.set_Warning(ErrorCatalog::kJOURNAL, "journal", -ERR_WRITE_I2C_JOURNAL,
+	                          "Не удалось записать заголовок I2C-журнала", false, true);
 }
     
 // Печать только в консоль
@@ -243,6 +249,7 @@ int32_t Journal::send_Data(uint8_t thread)
 	const int32_t head = bufferHead, tail = bufferTail;
 	const int32_t avail = full ? JOURNAL_LEN - 2 : bufferTail - 1;
 	irqRestore(pm);
+	if(head < 0 || tail < 0) return 0;
 	num = head + 1;                           // Начинаем с начала журнала, num позиция в буфере пропуская символ начала
 	for(uint16_t i = 0; i < (JOURNAL_LEN / W5200_MAX_LEN + 1); i++) // Передаем пакетами по W5200_MAX_LEN байт, может быть два неполных пакета!!
 	{
@@ -268,7 +275,7 @@ int32_t Journal::send_Data(uint8_t thread)
 		if(bad)
 		{
 			err = ERR_READ_I2C_JOURNAL;
-			SerialDbg.print(errorReadI2C);
+			HP.set_Warning(ErrorCatalog::kJOURNAL, "journal", -err, "Не удалось прочитать I2C-журнал", false, true);
 			return 0;                                                                           // SEM-OK: замок сети взят обратно и принадлежит web_server
 		}
 		if(sendPacketRTOS(thread, (byte*) Socket[thread].outBuf, len) == 0) return 0;        // SEM-OK: замок вернулся к web_server, при ошибке выход
@@ -283,9 +290,12 @@ int32_t Journal::send_Data(uint8_t thread)
 
 // Возвращает размер журнала
 int32_t Journal::available(void)
-{ 
-    if (full) return JOURNAL_LEN - 2; else return bufferTail-1;
-}    
+{
+	const uint32_t pm = irqSave();
+	const int32_t size = full ? JOURNAL_LEN - 2 : bufferTail > 0 ? bufferTail - 1 : 0;
+	irqRestore(pm);
+	return size;
+}
                  
 // чтобы print работал для это класса
 size_t Journal::write (uint8_t c)
@@ -400,47 +410,36 @@ void Journal::Drain(void)
 void Journal::_write(char *dataPtr)
 {
 	int32_t numBytes;
-	if(dataPtr == NULL || (numBytes = strlen(dataPtr)) == 0) return;  // Записывать нечего
+	if(bufferHead < 0 || bufferTail < 0 || dataPtr == NULL || (numBytes = strlen(dataPtr)) == 0) return;  // Записывать нечего
 	if(numBytes > PRINTF_BUF) numBytes = PRINTF_BUF; // Ограничиваем размер
 	// Запись в I2C память
 	if(SemaphoreTake(xI2CSemaphore, I2C_TIME_WAIT / portTICK_PERIOD_MS) == pdFALSE) {  // Если шедулер запущен то захватываем семафор
-		journal.printf((char*) cErrorMutex, __FUNCTION__, MutexI2CBusy);
+		constexpr uint8_t warningAfter = 3;
+		if(writeLockTimeouts < warningAfter && ++writeLockTimeouts == warningAfter)
+			HP.set_Warning(ErrorCatalog::kI2C_BUSY, "journal", 0, nullptr, true, true);
 		return;
 	}
+	writeLockTimeouts = 0;
 	__asm__ volatile ("" ::: "memory");
 	JournalPlan pl;
 	Journal_PlanWrite(numBytes, bufferTail, full, JOURNAL_LEN, &pl);
 	dataPtr[numBytes] = I2C_JOURNAL_TAIL;
 	if(pl.put_head) dataPtr[numBytes + 1] = I2C_JOURNAL_HEAD;
-	if(pl.len2) { //  Запись в два приема: до конца области и с её начала (помним про символ начала)
-		if(eepromI2C.write(I2C_JOURNAL_START + bufferTail, (byte*) dataPtr, pl.len1)) {
-				if(err != ERR_WRITE_I2C_JOURNAL) SerialDbg.print(errorWriteI2C);
-			err = ERR_WRITE_I2C_JOURNAL;
-		} else {
-			if(eepromI2C.write(I2C_JOURNAL_START, (byte*) dataPtr + pl.len1, pl.len2)) {
-				err = ERR_WRITE_I2C_JOURNAL;
-					SerialDbg.print(errorWriteI2C);
-			} else {
-				uint32_t pm = irqSave();
-				bufferTail = pl.tail;
-				bufferHead = pl.head;
-				full = 1;
-				irqRestore(pm);
-				err = OK;
-			}
-		}
-	} else {  // Запись в один прием
-		if(eepromI2C.write(I2C_JOURNAL_START + bufferTail, (byte*) dataPtr, pl.len1)) {
-				if(err != ERR_WRITE_I2C_JOURNAL) SerialDbg.print(errorWriteI2C);
-			err = ERR_WRITE_I2C_JOURNAL;
-		} else {
-			uint32_t pm = irqSave();
-			bufferTail = pl.tail;
-			if(full) bufferHead = pl.head;
-			irqRestore(pm);
-		}
+	const bool failed = eepromI2C.write(I2C_JOURNAL_START + bufferTail, (byte*)dataPtr, pl.len1) ||
+	                    (pl.len2 && eepromI2C.write(I2C_JOURNAL_START, (byte*)dataPtr + pl.len1, pl.len2));
+	if(!failed) {
+		uint32_t pm = irqSave();
+		bufferTail = pl.tail;
+		if(pl.put_head) bufferHead = pl.head;
+		full = pl.full_after;
+		irqRestore(pm);
 	}
+	const bool firstFailure = failed && err != ERR_WRITE_I2C_JOURNAL;
+	if(failed) err = ERR_WRITE_I2C_JOURNAL;
+	else if(err == ERR_WRITE_I2C_JOURNAL) err = OK;
 	SemaphoreGive(xI2CSemaphore);
+	if(firstFailure) HP.set_Warning(ErrorCatalog::kJOURNAL, "journal", -ERR_WRITE_I2C_JOURNAL,
+	                                "Не удалось записать I2C-журнал", true, true);
 }
 
     

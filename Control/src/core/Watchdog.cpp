@@ -148,3 +148,27 @@ const char *Boot_CauseText(BOOT_CAUSE c)
 	}
 	return "?";
 }
+
+
+// Возвращает метку причины из b, учитывая исходный код ядра. Штатный сброс даёт nullptr.
+const char *Boot_ResetTag(const BootInfo &b)
+{
+	switch(b.cause) {
+	case BOOT_KERNEL:
+		switch(b.fault) {
+		case 1: return "RTOS_CONFIG";
+		case 2: return "RTOS_MALLOC";
+		case 3: return "STACK_OVERFLOW";
+		case 4: return "HARD_FAULT";
+		case 5: return "BUS_FAULT";
+		case 6: return "USAGE_FAULT";
+		case 7: return "CRASH_DATA";
+		default: return "KERNEL_FAULT";
+		}
+	case BOOT_STUCK: return "TASK_STUCK";
+	case BOOT_HW_WDT: return "WATCHDOG";
+	case BOOT_ASSERT: return "ASSERT";
+	case BOOT_SOFT_UNKNOWN: return "SOFTWARE_UNKNOWN";
+	default: return nullptr;
+	}
+}

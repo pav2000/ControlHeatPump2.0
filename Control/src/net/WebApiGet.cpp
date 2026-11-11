@@ -33,6 +33,7 @@
 #include "../hw/Clock.h"        // get_NTP_result: итог последней синхронизации времени
 #include "../util/Util.h"         // _itoa, ftoa, dptoa, byteToHex, addressToHex
 #include "../core/ErrorCodes.h"   // Spi0_Check - конфигурация SPI0 для вкладки «SPI&Web»
+#include <new>
 #include <SerialFlash.h>          // объём флеш для sys.spi
 
 
@@ -470,12 +471,17 @@ uint8_t sensorIpRequest(uint8_t thread, int8_t sock)
 // Работает ТОЛЬКО в Socket[thread].inBuf/outBuf, без static-буферов и strtok. Мьютекс
 // xWebThreadSemaphore уже взят в web_server().
 // ---------------------------------------------------------------------------
-#define API_PROTO    1       // версия протокола; морда сверяет её через /api/ver
+#define API_PROTO    2       // версия протокола; морда сверяет её через /api/ver
 #define API_SCRATCH  256     // рабочая область ядра (разбор значений) в хвосте outBuf: чтение и meta
 #define API_SCRATCH_W 2300   // для set и do: значение до 2 КБ (поток календаря расписания), запрос целиком не длиннее ~1950 байт
 
 // ---- группа state: живые значения шапки и главной ----
-enum { S_WORK = 1, S_MODE, S_ERRCODE, S_ERROR, S_TIME, S_DATE, S_UPTIME, S_CPU, S_LASTCMD, S_STATUS, S_MODEH, S_TRGHOME, S_TRGPID, S_OH, S_OH2, S_EVAPOR, S_TCTC, S_STARTDT, S_RESETCAUSE, S_TEMPRTC, S_COP, S_PWRO, S_PWRG, S_PWR220, S_OVERCOOL, S_VCC };
+enum { S_WORK = 1, S_MODE, S_ERRCODE, S_ERROR, S_TIME, S_DATE, S_UPTIME, S_CPU, S_LASTCMD, S_STATUS, S_MODEH, S_TRGHOME, S_TRGPID, S_OH, S_OH2, S_EVAPOR, S_TCTC, S_STARTDT, S_RESETCAUSE, S_TEMPRTC, S_COP, S_PWRO, S_PWRG, S_PWR220, S_OVERCOOL, S_VCC,
+	S_WARNING,      // Номер последнего предупреждения
+	S_WARNING_TEXT, // Текст последнего предупреждения
+	S_ERROR_DETAIL, // Источник и исходный код активной аварии
+	S_WARNING_DETAIL // Источник и исходный код предупреждения
+};
 
 #define SP(nm, kind, hk) { nm, 0, 0, 0, 0, 1, PT_CALL, PF_RO, kind, hk, 0 }
 #define SPN(nm, hk) { nm, 0, 0, 0, 0, 100, PT_CALL, PF_RO, MK_NUM, hk, 0 }
@@ -485,6 +491,10 @@ static const ApiParam apiStateTab[] = {
 	SP("mode",     MK_TEXT, S_MODE),      // состояние текстом
 	SP("errcode",  MK_INT,  S_ERRCODE),
 	SP("error",    MK_TEXT, S_ERROR),
+	SP("warning", MK_INT, S_WARNING),
+	SP("warning_text", MK_TEXT, S_WARNING_TEXT),
+	SP("error_detail", MK_TABLE, S_ERROR_DETAIL),
+	SP("warning_detail", MK_TABLE, S_WARNING_DETAIL),
 	SP("time",     MK_TEXT, S_TIME),
 	SP("date",     MK_TEXT, S_DATE),
 	SP("uptime",   MK_TEXT, S_UPTIME),
@@ -513,14 +523,37 @@ static const ApiParam apiStateTab[] = {
 #endif
 };
 
+struct ApiEventSnapshot {
+	ErrorEvent error;      // Активная авария на момент начала чтения
+	WarningRecord warning; // Метаданные последнего предупреждения
+	char warningText[160]; // Текст того же предупреждения
+};
+
+// Восстанавливает исходные данные из ключа предупреждения Modbus.
+static ErrorDetail api_warning_detail(WarningRecord warning)
+{
+	if(warning.code > ErrorCatalog::kMODBUS_EXCEPTION || warning.code < ErrorCatalog::kMODBUS_UNKNOWN) return {};
+	return ModbusDetail({0, static_cast<ModbusKind>(warning.cause >> 8), static_cast<uint8_t>(warning.cause)});
+}
+
 static int api_get_state(uint8_t hook, uint8_t, ApiOut *o)
 {
 	char t[64]; t[0] = 0;
 	switch(hook) {
 	case S_WORK:    api_put(o, HP.IsWorkingNow() ? "true" : "false"); break;
 	case S_MODE:    api_put_str(o, HP.StateToStr()); break;
-	case S_ERRCODE: api_put_int(o, HP.get_errcode()); break;
-	case S_ERROR:   api_put_str(o, HP.get_lastErr()); break;
+	case S_ERRCODE: api_put_int(o, o->events ? o->events->error.code : HP.get_errcode()); break;
+	case S_ERROR: api_put_str(o, o->events && o->events->error.code ? o->events->error.text : "OK"); break;
+	case S_WARNING: api_put_int(o, o->events ? o->events->warning.code : 0); break;
+	case S_WARNING_TEXT: api_put_str(o, o->events ? o->events->warningText : ""); break;
+	case S_ERROR_DETAIL:
+		if(o->events) api_put_event_detail(o, o->events->error.code, o->events->error.source, o->events->error.detail);
+		else api_put(o, "null");
+		break;
+	case S_WARNING_DETAIL:
+		if(o->events) api_put_event_detail(o, o->events->warning.code, o->events->warning.device, api_warning_detail(o->events->warning));
+		else api_put(o, "null");
+		break;
 	case S_TIME:    HP.get_datetime((char*) time_TIME, t); api_put_str(o, t); break;
 	case S_DATE:    HP.get_datetime((char*) time_DATE, t); api_put_str(o, t); break;
 	case S_UPTIME:  TimeIntervalToStr(HP.get_uptime(), t); api_put_str(o, t); break;
@@ -529,10 +562,11 @@ static int api_get_state(uint8_t hook, uint8_t, ApiOut *o)
 		uint32_t c = HP.get_command_completed();
 		if(!c) api_put(o, "null"); else { TimeIntervalToStr(Uptime_s() - c, t, 1); api_put_str(o, t); }
 		break; }
-	case S_STATUS:
-		if(HP.get_errcode() == OK) HP.get_StateModworkStr(t); else { strcpy(t, "Error "); _itoa(HP.get_errcode(), t); }
+	case S_STATUS: {
+		const int8_t code = o->events ? o->events->error.code : HP.get_errcode();
+		if(code == OK) HP.get_StateModworkStr(t); else { strcpy(t, "Error "); _itoa(code, t); }
 		api_put_str(o, t);
-		break;
+		break; }
 	case S_MODEH:   api_put_int(o, HP.get_modeHouse()); break;
 	case S_TRGHOME:
 		if(HP.get_modeHouse() == pHEAT) api_put_dec(o, HP.get_targetTempHeat(), 100);
@@ -616,7 +650,9 @@ extern const ApiGroup ApiGrpEev;
 #endif     // у классов-владельцев
 
 // ---- группа sys: служебные данные для страниц системы ----
-enum { Y_SOCKETS = 1, Y_WEBSOCKS, Y_SOCKRES, Y_OWPIN, Y_LSTATS, Y_LHIST, Y_FREERAM, Y_INFO, Y_CONST, Y_CONST1, Y_WDT, Y_TASKS, Y_ERRORS, Y_ERRORS1, Y_LHISTOLD, Y_WEBSTAT, Y_SPI };
+enum { Y_SOCKETS = 1, Y_WEBSOCKS, Y_SOCKRES, Y_OWPIN, Y_LSTATS, Y_LHIST, Y_FREERAM, Y_INFO, Y_CONST, Y_CONST1, Y_WDT, Y_TASKS, Y_ERRORS, Y_ERRORS1, Y_LHISTOLD, Y_WEBSTAT, Y_SPI,
+	Y_ERRORS2 // Третья часть справочника ошибок
+};
 static const ApiParam apiSysTab[] = {
 	{ "sockets",    0, 0, 0, 0, 1, PT_CALL, PF_RO | PF_AR, MK_TABLE, Y_SOCKETS, 0 },    // состояние сокетов сетевого чипа
 	{ "web_socks",  0, 0, 0, 0, 1, PT_CALL, PF_RO, MK_INT,   Y_WEBSOCKS, 0 },   // число веб-сокетов в действующей раскладке (морда по нему выбирает очередь запросов)
@@ -632,23 +668,33 @@ static const ApiParam apiSysTab[] = {
 	{ "const1", 0, 0, 0, 0, 1, PT_CALL, PF_RO | PF_AR, MK_TEXT, Y_CONST1, 0 },
 	{ "wdt",    0, 0, 0, 0, 1, PT_CALL, PF_RO | PF_AR, MK_TEXT, Y_WDT,    0 },     // запас наблюдателя задач
 	{ "tasks",  0, 0, 0, 0, 1, PT_CALL, PF_RO | PF_AR, MK_TEXT, Y_TASKS,  0 },     // задачи FreeRTOS, по строке на задачу
-	// Описания кодов ошибок: массив строк, индекс = -код. Весь справочник (около 8 КБ) в выходной буфер не помещается,
-	// поэтому два ключа по API_ERR_HALF записей: errors - коды 0...-(API_ERR_HALF-1), errors1 - остальные
+	// Справочник делится на три части по API_ERR_PAGE записей с явными номерами.
 	{ "errors",  0, 0, 0, 0, 1, PT_CALL, PF_RO | PF_AR, MK_TABLE, Y_ERRORS,  0 },
 	{ "errors1", 0, 0, 0, 0, 1, PT_CALL, PF_RO | PF_AR, MK_TABLE, Y_ERRORS1, 0 },
+	{ "errors2", 0, 0, 0, 0, 1, PT_CALL, PF_RO | PF_AR, MK_TABLE, Y_ERRORS2, 0 },
 	{ "webstat", 0, 0, 0, 0, 1, PT_CALL, PF_RO,         MK_TABLE, Y_WEBSTAT, 0 },    // метрики веб-сервера (WebShared.h), обнуляются действием reset.webstat
 	{ "spi",     0, 0, 0, 0, 1, PT_CALL, PF_RO,         MK_TABLE, Y_SPI,     0 },    // шина SPI: устройства, частоты, счётчики (вкладка «SPI&Web»), сброс - reset.spi
 };
-#define API_ERR_HALF 47
-static_assert(-ERR_ERRMAX + 1 <= 2 * API_ERR_HALF, "справочник ошибок не помещается в два ключа sys.errors/errors1: добавьте ключ");
+// Число записей на одну часть каталога. Части запрашиваются раздельно.
+static constexpr int API_ERR_PAGE = 24;
+// Имена групп и способов регистрации в порядке перечислений справочника.
+static const char *const apiErrorGroups[] = {"SENSORS", "CONTROL", "INVERTER", "MODBUS_POWER", "SETTINGS", "STORAGE_SYSTEM", "INFRASTRUCTURE", "STAGE_TWO"};
+static const char *const apiErrorRegistration[] = {"ERROR", "WARN", "REQUIRED_AT_BOOT", "BY_DEVICE", "BY_OPERATION", "LOG_ONLY"};
+
+// Пишет в o выбранную часть каталога с явными номерами и метаданными.
 static void api_put_errors(ApiOut *o, uint8_t part)
 {
-	int from = part * API_ERR_HALF, to = from + API_ERR_HALF;
-	if(to > -ERR_ERRMAX + 1) to = -ERR_ERRMAX + 1;
+	const int from = part * API_ERR_PAGE + 1;
+	const int to = from + API_ERR_PAGE;
 	api_putc(o, '[');
-	for(int i = from; i < to; i++) {
-		if(i > from) api_putc(o, ',');
-		api_put_str(o, Error_Text((int8_t) -i));
+	for(int i = from; i < to && i <= ErrorCatalog::Count(); ++i) {
+		const auto &entry = *ErrorCatalog::Find(-i);
+		if(i != from) api_putc(o, ',');
+		api_put(o, "{\"code\":"); api_put_int(o, entry.code);
+		api_put(o, ",\"group\":"); api_put_str(o, apiErrorGroups[static_cast<uint8_t>(entry.group)]);
+		api_put(o, ",\"registration\":"); api_put_str(o, apiErrorRegistration[static_cast<uint8_t>(entry.registration)]);
+		api_put(o, ",\"description\":"); api_put_str(o, entry.description);
+		api_putc(o, '}');
 	}
 	api_putc(o, ']');
 }
@@ -785,6 +831,7 @@ static int api_get_sys(uint8_t hook, uint8_t, ApiOut *o)
 	else if(hook == Y_LHISTOLD) api_put_year_files(o, 2);
 	else if(hook == Y_FREERAM) api_put_int(o, freeRam() + Diag.startRAM);
 	else if(hook == Y_ERRORS || hook == Y_ERRORS1) api_put_errors(o, hook - Y_ERRORS);
+	else if(hook == Y_ERRORS2) api_put_errors(o, 2);
 	else if(hook >= Y_INFO && hook <= Y_TASKS) return api_sys_table(hook, o);
 	else if(hook == Y_OWPIN) {
 		char t[24]; t[0] = 0;
@@ -1516,7 +1563,16 @@ uint8_t api_dispatch(uint8_t thread)
 	api_out_init(&o, body, (uint16_t)(c.scratch - body));
 
 	int r = -1;
-	if(vl == 3 && !strncmp(path, "get", 3)) r = api_get(&c, q, &o);
+	if(vl == 3 && !strncmp(path, "get", 3)) {
+		const uintptr_t tail = (reinterpret_cast<uintptr_t>(c.scratch) - sizeof(ApiEventSnapshot)) &
+		                       ~static_cast<uintptr_t>(alignof(ApiEventSnapshot) - 1);
+		auto *events = new (reinterpret_cast<void *>(tail)) ApiEventSnapshot;
+		o.cap = reinterpret_cast<char *>(tail) - body;
+		o.events = events;
+		HP.get_errorEvent(events->error);
+		events->warning = HP.get_lastWarning(events->warningText, sizeof(events->warningText));
+		r = api_get(&c, q, &o);
+	}
 	else if(vl == 3 && !strncmp(path, "set", 3)) r = api_set(&c, q, &o);
 	else if(vl == 2 && !strncmp(path, "do", 2)) r = api_do(&c, q, &o);
 	else if(vl == 4 && !strncmp(path, "meta", 4)) r = api_meta(&c, q, &o);

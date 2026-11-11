@@ -57,7 +57,7 @@ FEED (температура подачи), POWER (мощность), CURRENT (�
 <table>
 <thead><tr><th width="70">Флаг</th><th width="60">По умолч.</th><th>Что выводит</th><th>Как часто</th></tr></thead>
 <tbody>
-<tr><td><b>WERR</b></td><td>выкл.</td><td>Ошибки веб-сервера и исходящих запросов: <code>WEB:Wrong request …</code> (нераспознанный запрос), <code>$Error send AJAX/POST</code>, ответ сервера при неудачной отправке.</td><td>При ошибках.</td></tr>
+<tr><td><b>WERR</b></td><td>выкл.</td><td>Ошибки веб-сервера и исходящих запросов: <code>WEB:Wrong request …</code> (нераспознанный запрос), <code>$ERROR send AJAX/POST</code>, ответ сервера при неудачной отправке.</td><td>При ошибках.</td></tr>
 <tr><td><b>WFULL</b></td><td>выкл.</td><td>Детальный лог сетевых сервисов: <code>Send request: …</code>, <code>Response: …</code>, <code>Ret = N</code>, подробности отправки уведомлений и запросов. Включает всё, что даёт WERR.</td><td>На каждый исходящий запрос (уведомления, мониторинг по HTTP).</td></tr>
 <tr><td><b>HTTP</b></td><td>выкл.</td><td>Тела запросов и ответов веб-сервера: <code>$QUERY:</code>, <code>$INPUT:</code>, <code>$RETURN:</code> и чтение файлов с карты <code>$Thread: N socket: M read file: …</code>.</td><td>Очень часто и очень объёмно, на каждый запрос веб-морды. Включать на минуты.</td></tr>
 <tr><td><b>PHY</b></td><td>выкл.</td><td>Подробности сетевого чипа при проверке связи: <code>Speed Status</code>, <code>Duplex Status</code>, <code>Register PHYCFGR</code>, полные сообщения о связи, настройки сети (DHCP, IP, маска, DNS, шлюз), включение блокировки ping. Без флага те же сведения выводятся одной краткой строкой.</td><td>Редко, при сбросе и проверке сети.</td></tr>

@@ -221,7 +221,7 @@ int8_t devEEV::set_EEV(int16_t x)
 		return err;
 	}
 	if(x < EEV_CLOSE_STEP) x = EEV_CLOSE_STEP; else if(x > _data.maxSteps) x = _data.maxSteps;
-	if(testMode != SAFE_TEST) { if(!stepperEEV.step(x)) { journal.jprintf("$ERROR - Step motor command rejected\n"); return ERR_CONFIG; } }
+	if(testMode != SAFE_TEST) { if(!stepperEEV.step(x)) { journal.jprintf_time("$ERROR - Step motor command rejected\n"); return ERR_CONFIG; } }
 	else simulatedPosition = x; // SAFE_TEST не двигает обмотки
 	return err;
 }

@@ -72,6 +72,7 @@ public:
   void CreateLocks(void);                                 // создать замки журнала, зовётся из setup() до старта шедулера
 private:
   int8_t err;                                             // ошибка журнала
+  uint8_t writeLockTimeouts{};                             // последовательные пропуски записи из-за замка I2C
   int32_t bufferHead, bufferTail;                        // Начало и конец
   uint8_t full;                                           // признак полного буфера
   void _write(char *dataPtr);                            // Записать строку в журнал

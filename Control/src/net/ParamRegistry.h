@@ -70,11 +70,13 @@ extern const char *const ApiErrName[AE_COUNT];   // "unknown", "bad_value", ...
 
 // Выходной буфер. Запись никогда не выходит за cap: при нехватке места
 // ставится over, а ответ остаётся синтаксически целым (за это отвечает вызывающий).
+struct ApiEventSnapshot;
 struct ApiOut {
 	char    *p;
 	uint16_t cap;
 	uint16_t len;
 	uint8_t  over;
+	const ApiEventSnapshot *events; // Снимок событий на весь запрос чтения, если подготовлен диспетчером
 };
 void api_out_init(ApiOut *o, char *buf, uint16_t cap);
 void api_put(ApiOut *o, const char *s);                 // строка как есть
@@ -84,6 +86,9 @@ void api_put_str(ApiOut *o, const char *s);             // JSON-строка в 
 void api_put_str2(ApiOut *o, const char *a, const char *b);   // одна JSON-строка из двух кусков (без буфера под сумму)
 void api_str_inplace(ApiOut *o);                       // сырой текст, дописанный по адресу o->p + o->len + 1, -> JSON-строка на месте
 void api_put_int(ApiOut *o, int32_t v);
+struct ErrorDetail;
+// Пишет JSON с источником и исходными деталями события, либо null при нулевом коде.
+void api_put_event_detail(ApiOut *o, int8_t code, const char *source, ErrorDetail detail);
 void api_put_dec(ApiOut *o, int32_t raw, int16_t scale);// raw/scale точно, без хвостовых нулей (scale 10/100/1000), иначе целое деление
 void api_put_float(ApiOut *o, float v);                 // границы для meta: целое или до 3 знаков
 

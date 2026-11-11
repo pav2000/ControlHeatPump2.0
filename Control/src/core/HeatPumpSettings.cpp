@@ -57,12 +57,11 @@ int32_t HeatPump::load(uint8_t *buffer, uint8_t from_RAM)
 		journal.jprintf("I2C");
 		if(readEEPROM_I2C(I2C_SETTING_EEPROM, (byte*) &size, sizeof(size))) {
 x_ReadError:
-			error = ERR_CRC16_EEPROM;
-x_Error:
-			journal.jprintf(" - read error %d!\n", error);
-			return error;      // этот путь только при чтении из I2C (from_RAM == 0)
+			journal.jprintf(" - read error!\n");
+			return load_fail(ERR_LOAD_EEPROM, from_RAM);
 		}
-		if(size < 2 || size > I2C_PROFILE_EEPROM - I2C_SETTING_EEPROM) { error = ERR_BAD_LEN_EEPROM; goto x_Error; }
+		if(size < 2 || size > I2C_PROFILE_EEPROM - I2C_SETTING_EEPROM)
+			return load_fail(ERR_BAD_LEN_EEPROM, from_RAM);
 		if(readEEPROM_I2C(I2C_SETTING_EEPROM + sizeof(size), buffer, size)) goto x_ReadError;
 	} else {
 		journal.jprintf("FILE");
@@ -78,7 +77,7 @@ x_Error:
 	crc = calc_crc16(buffer, size, crc);
 	if(crc != *((uint16_t *)(buffer + size))) {
 		journal.jprintf("Error: %04x != %04x!\n", crc, *((uint16_t *)(buffer + size)));
-		return from_RAM ? ERR_CRC16_EEPROM : (error = ERR_CRC16_EEPROM);   // отказ файла не должен менять код ошибки ТН
+		return load_fail(ERR_CRC16_EEPROM, from_RAM);
 	}
 	journal.jprintf("%04x", crc);
 #else
@@ -224,11 +223,19 @@ int32_t HeatPump::save_all(void)
 		journal.jprintf(" Save settings: busy, another save is in progress\n");
 		return ERR_I2C_BUSY;
 	}
-	int32_t ret;
 	Prof.cache_store(Prof.get_idProfile());        // текущий профиль - в кеш, оттуда пишется область
-	if(Prof.save_region() < 0) ret = error;
-	else if(Schdlr.save() != OK) ret = error;
-	else ret = save_new();                         // настройки последними
+	int32_t ret = Prof.save_region();
+	if(ret >= 0) {
+		ret = Schdlr.save();
+		if(ret == OK) {
+			ret = save_new();                     // настройки последними
+			if(ret < 0) {
+				const char *detail = ret == ERR_SETTINGS_VERIFY ? "Проверка записи настроек не прошла" :
+				                     ret == ERR_LOAD_EEPROM ? "Контрольное чтение настроек не удалось" : nullptr;
+				set_Warning(ErrorCatalog::kSETTINGS_WRITE, "settings", -ret, detail);
+			}
+		}
+	}
 	__atomic_store_n(&saving, (uint8_t) 0, __ATOMIC_SEQ_CST);
 	return ret;
 }
@@ -240,76 +247,61 @@ int32_t HeatPump::save_new(void)
 	Option.numProf = Prof.get_idProfile();      // нужно для восстановления настроек
 	// Планировщик НЕ останавливается: он замораживал держателей замка I2C посреди транзакции (замок при остановке
 	// фиктивный), а нужен был для согласованности CRC с записанными байтами - её теперь даёт save_rec (Record_WriteStable).
-	if(error == ERR_SAVE_EEPROM || error == ERR_LOAD_EEPROM || error == ERR_CRC16_EEPROM || error == ERR_SETTINGS_VERIFY) error = OK;
-	journal.jprintf(" Save settings v.%d ", VER_SAVE);
+	journal.jprintf(" Save settings v.%d\n", VER_SAVE);
 	DateTime.saveTime = rtcSAM3X8.unixtime();
-	while(1) {
-		// Пролог. Версия ложится на смещение 3 от начала блока - туда же,
-		// где её держит старый формат, см. NEW_OFS_VER в Constant.h.
-		uint8_t hdr[NEW_HDR_SIZE - 2];
-		memset(hdr, 0, sizeof(hdr));
-		hdr[NEW_OFS_VER - 2] = VER_SAVE;
-		// Смещение NEW_OFS_VERLEGACY держало версию, с которой конвертировали.
-		// Больше не нужна: старая обработка нужна ТОЛЬКО до конверсии, а тогда
-		// её включает сам Option.ver. Байт остаётся нулём от memset выше и
-		// НЕ переиспользуется: прошивки до этой правки читают его как эпоху.
-		if(writeEEPROM_I2C(addr, hdr, sizeof(hdr))) { error = ERR_SAVE_EEPROM; break; }
-		crc = calc_crc16(hdr, sizeof(hdr), crc);
-		addr += sizeof(hdr);
-		Option.ver = VER_SAVE;
 
-		dbg_before_save();
-		if(save_rec(addr, NTAG_Option,   (uint8_t *)&Option,   sizeof(Option),   crc)) break;
-		if(save_rec(addr, NTAG_DateTime, (uint8_t *)&DateTime, sizeof(DateTime), crc)) break;
-		if(save_rec(addr, NTAG_Network,  (uint8_t *)&Network,  sizeof(Network),  crc)) break;
-		if(save_rec(addr, NTAG_Message,  message.get_save_addr(), message.get_save_size(), crc)) break;
-		if(save_rec(addr, NTAG_FC,       dFC.get_save_addr(),     dFC.get_save_size(),     crc)) break;
+	// Пролог. Версия ложится на смещение 3 от начала блока - туда же,
+	// где её держит старый формат, см. NEW_OFS_VER в Constant.h.
+	uint8_t hdr[NEW_HDR_SIZE - 2];
+	memset(hdr, 0, sizeof(hdr));
+	hdr[NEW_OFS_VER - 2] = VER_SAVE;
+	// Смещение NEW_OFS_VERLEGACY держало версию, с которой конвертировали.
+	// Больше не нужна: старая обработка нужна ТОЛЬКО до конверсии, а тогда
+	// её включает сам Option.ver. Байт остаётся нулём от memset выше и
+	// НЕ переиспользуется: прошивки до этой правки читают его как эпоху.
+	if(writeEEPROM_I2C(addr, hdr, sizeof(hdr))) return ERR_SAVE_EEPROM;
+	crc = calc_crc16(hdr, sizeof(hdr), crc);
+	addr += sizeof(hdr);
+	Option.ver = VER_SAVE;
 
-		for(uint8_t i = 0; i < TNUMBER; i++)
-			if(save_rec(addr, NTAG_sTemp, sTemp[i].get_save_addr(), sTemp[i].get_save_size(), crc)) break;
-		if(error == ERR_SAVE_EEPROM) break;
-		for(uint8_t i = 0; i < ANUMBER; i++)
-			if(save_rec(addr, NTAG_sADC, sADC[i].get_save_addr(), sADC[i].get_save_size(), crc)) break;
-		if(error == ERR_SAVE_EEPROM) break;
-		for(uint8_t i = 0; i < INUMBER; i++)
-			if(save_rec(addr, NTAG_sInput, sInput[i].get_save_addr(), sInput[i].get_save_size(), crc)) break;
-		if(error == ERR_SAVE_EEPROM) break;
-		for(uint8_t i = 0; i < FNUMBER; i++)
-			if(save_rec(addr, NTAG_sFrequency, sFrequency[i].get_save_addr(), sFrequency[i].get_save_size(), crc)) break;
-		if(error == ERR_SAVE_EEPROM) break;
+	dbg_before_save();
+	int8_t result;
+	if((result = save_rec(addr, NTAG_Option,   (uint8_t *)&Option,   sizeof(Option),   crc)) != OK) return result;
+	if((result = save_rec(addr, NTAG_DateTime, (uint8_t *)&DateTime, sizeof(DateTime), crc)) != OK) return result;
+	if((result = save_rec(addr, NTAG_Network,  (uint8_t *)&Network,  sizeof(Network),  crc)) != OK) return result;
+	if((result = save_rec(addr, NTAG_Message,  message.get_save_addr(), message.get_save_size(), crc)) != OK) return result;
+	if((result = save_rec(addr, NTAG_FC,       dFC.get_save_addr(),     dFC.get_save_size(),     crc)) != OK) return result;
+
+	for(uint8_t i = 0; i < TNUMBER; i++)
+		if((result = save_rec(addr, NTAG_sTemp, sTemp[i].get_save_addr(), sTemp[i].get_save_size(), crc)) != OK) return result;
+	for(uint8_t i = 0; i < ANUMBER; i++)
+		if((result = save_rec(addr, NTAG_sADC, sADC[i].get_save_addr(), sADC[i].get_save_size(), crc)) != OK) return result;
+	for(uint8_t i = 0; i < INUMBER; i++)
+		if((result = save_rec(addr, NTAG_sInput, sInput[i].get_save_addr(), sInput[i].get_save_size(), crc)) != OK) return result;
+	for(uint8_t i = 0; i < FNUMBER; i++)
+		if((result = save_rec(addr, NTAG_sFrequency, sFrequency[i].get_save_addr(), sFrequency[i].get_save_size(), crc)) != OK) return result;
 #ifdef SENSOR_IP
-		for(uint8_t i = 0; i < IPNUMBER; i++)
-			if(save_rec(addr, NTAG_sIP, sIP[i].get_save_addr(), sIP[i].get_save_size(), crc)) break;
-		if(error == ERR_SAVE_EEPROM) break;
+	for(uint8_t i = 0; i < IPNUMBER; i++)
+		if((result = save_rec(addr, NTAG_sIP, sIP[i].get_save_addr(), sIP[i].get_save_size(), crc)) != OK) return result;
 #endif
 #ifdef EEV_DEF
-		if(save_rec(addr, NTAG_dEEV, dEEV.get_save_addr(), dEEV.get_save_size(), crc)) break;
+	if((result = save_rec(addr, NTAG_dEEV, dEEV.get_save_addr(), dEEV.get_save_size(), crc)) != OK) return result;
 #endif
 #ifdef USE_ELECTROMETER_SDM
-		if(save_rec(addr, NTAG_dSDM, dSDM.get_save_addr(), dSDM.get_save_size(), crc)) break;
+	if((result = save_rec(addr, NTAG_dSDM, dSDM.get_save_addr(), dSDM.get_save_size(), crc)) != OK) return result;
 #endif
 #ifdef MQTT
-		if(save_rec(addr, NTAG_clMQTT, clMQTT.get_save_addr(), clMQTT.get_save_size(), crc)) break;
+	if((result = save_rec(addr, NTAG_clMQTT, clMQTT.get_save_addr(), clMQTT.get_save_size(), crc)) != OK) return result;
 #endif
-		if(save_rec(addr, NTAG_END, NULL, 0, crc)) break;
+	if((result = save_rec(addr, NTAG_END, NULL, 0, crc)) != OK) return result;
 
-		if(writeEEPROM_I2C(addr, (uint8_t *)&crc, sizeof(crc))) { error = ERR_SAVE_EEPROM; break; }
-		addr = addr + sizeof(crc) - (I2C_SETTING_EEPROM + 2);          // превратить в длину
-		if(writeEEPROM_I2C(I2C_SETTING_EEPROM, (uint8_t *)&addr, 2)) { error = ERR_SAVE_EEPROM; break; }
-		int8_t _err;
-		if((_err = check_crc16_eeprom(I2C_SETTING_EEPROM + 2, addr - 2)) != OK) {
-			error = (_err == ERR_CRC16_EEPROM) ? ERR_SETTINGS_VERIFY : _err;   // записали, а прочитали другое
-			journal.jprintf("- Verify Error!\n");
-			break;
-		}
-		addr += 2;
-		journal.jprintf("OK, wrote: %d bytes, crc: %04x\n", (int)(addr), crc);
-		break;
-	}
-	if(error == ERR_SAVE_EEPROM || error == ERR_LOAD_EEPROM || error == ERR_CRC16_EEPROM || error == ERR_SETTINGS_VERIFY) {
-		set_Error(error, (char*)__FUNCTION__);
-		return error;
-	}
+	if(writeEEPROM_I2C(addr, (uint8_t *)&crc, sizeof(crc))) return ERR_SAVE_EEPROM;
+	addr = addr + sizeof(crc) - (I2C_SETTING_EEPROM + 2);          // превратить в длину
+	if(writeEEPROM_I2C(I2C_SETTING_EEPROM, (uint8_t *)&addr, 2)) return ERR_SAVE_EEPROM;
+	result = check_crc16_eeprom(I2C_SETTING_EEPROM + 2, addr - 2);
+	if(result != OK) return result == ERR_CRC16_EEPROM ? ERR_SETTINGS_VERIFY : result;
+	addr += 2;
+	journal.jprintf("OK, wrote: %d bytes, crc: %04x\n", (int)addr, crc);
 	return addr;
 }
 
@@ -546,8 +538,7 @@ xNotEqual:
 		}
 		uint8_t errcode;
 		if((errcode = writeEEPROM_I2C(I2C_COUNT_EEPROM + ptr, (byte*)&motoHour + ptr, ptre - ptr))) {
-			journal.jprintf(" ERROR %d save counters!\n", errcode);
-			set_Error(ERR_SAVE2_EEPROM, (char*) __FUNCTION__);
+			set_Warning(ErrorCatalog::kMOTO_HOUR, "counters", errcode, "Не удалось записать моточасы");
 			return ERR_SAVE2_EEPROM;
 		}
 		ptr = ptre;
@@ -560,7 +551,7 @@ xNotEqual:
 int8_t HeatPump::load_motoHour()          
 {
 	if(readEEPROM_I2C(I2C_COUNT_EEPROM, &motoHour.Header, sizeof(motoHour.Header))) { // прочитать заголовок
-		set_Error(ERR_LOAD2_EEPROM, (char*) __FUNCTION__);
+		set_Warning(ErrorCatalog::kMOTO_HOUR, "counters", 0, "Не удалось прочитать моточасы");
 		return ERR_LOAD2_EEPROM;
 	}
 	if(motoHour.Header != I2C_COUNT_EEPROM_HEADER) { // заголовок плохой
@@ -568,7 +559,7 @@ int8_t HeatPump::load_motoHour()
 		return ERR_HEADER2_EEPROM;
 	}
 	if(readEEPROM_I2C(I2C_COUNT_EEPROM + sizeof(motoHour.Header), (byte*) &motoHour + sizeof(motoHour.Header), sizeof(motoHour) - sizeof(motoHour.Header))) { // прочитать счетчики
-		set_Error(ERR_LOAD2_EEPROM, (char*) __FUNCTION__);
+		set_Warning(ErrorCatalog::kMOTO_HOUR, "counters", 0, "Не удалось прочитать моточасы");
 		return ERR_LOAD2_EEPROM;
 	}
 	if(legacy_motohour_needed(Option.ver)) {

@@ -236,7 +236,7 @@ int16_t Profile::save_region(void)
 	                written, (int)I2C_PROFIL_NUM, (int)(addr - I2C_PROFILE_EEPROM), crc);
 	return addr - I2C_PROFILE_EEPROM;
 xErr:
-	set_Error(ERR_SAVE_PROFILE, (char*)nameHeatPump);
+	HP.set_Warning(ErrorCatalog::kPROFILE_WRITE, "profiles");
 	return ERR_SAVE_PROFILE;
 }
 
@@ -489,9 +489,9 @@ int8_t Profile::check_crc16_eeprom(int8_t num)
   uint16_t crc= 0xFFFF;
   int32_t adr=I2C_PROFILE_EEPROM+dataProfile.len*num;     // вычислить адрес начала данных
   
-  if (readEEPROM_I2C(adr, (byte*)&x, sizeof(x))) { set_Error(ERR_LOAD_PROFILE,(char*)nameHeatPump); return ERR_SAVE_PROFILE;}  adr=adr+sizeof(x);              // прочитать заголовок
+  if (readEEPROM_I2C(adr, (byte*)&x, sizeof(x))) { set_Error(ERR_LOAD_PROFILE,(char*)nameHeatPump); return ERR_LOAD_PROFILE;}  adr=adr+sizeof(x);              // прочитать заголовок
   if (x!=0xaa)   return OK;                                                                                                                              // профиль пустой, или его вообще нет, контрольная сумма не актуальна
-  if (readEEPROM_I2C(adr, (byte*)&crc16tmp, sizeof(crc16tmp))) { set_Error(ERR_LOAD_PROFILE,(char*)nameHeatPump); return ERR_SAVE_PROFILE;}  adr=adr+sizeof(crc16tmp);        // прочитать crc16
+  if (readEEPROM_I2C(adr, (byte*)&crc16tmp, sizeof(crc16tmp))) { set_Error(ERR_LOAD_PROFILE,(char*)nameHeatPump); return ERR_LOAD_PROFILE;}  adr=adr+sizeof(crc16tmp);        // прочитать crc16
   
   for (i=0;i<dataProfile.len-1-2;i++) {if (readEEPROM_I2C(adr+i, (byte*)&x, sizeof(x))) { set_Error(ERR_LOAD_PROFILE,(char*)nameHeatPump); return ERR_LOAD_PROFILE;}  crc=_crc16(crc,x);} // расчет - записанной в еепром сумму за вычетом заголовка
   if (crc==crc16tmp) return OK; 

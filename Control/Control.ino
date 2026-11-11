@@ -547,7 +547,7 @@ void setup() {
 	// на букву. Длинный многострочный формат обрезается молча - проверено на
 	// стенде, сообщение оборвалось на полуслове.
 	if(i2cMemCheck == I2C_MEM_TOO_SMALL) {
-		journal.jprintf("$ERROR I2C memory: выбран I2C_FRAM_128KB,\n");
+		journal.jprintf_time("$ERROR I2C memory: выбран I2C_FRAM_128KB,\n");
 		journal.jprintf(" но второй банк (0x%X) не отвечает - на плате чип на 64 КБ.\n", I2C_ADR_EEPROM + 1);
 		journal.jprintf(" Журнал объявлен длиной %d, вдвое больше чипа.\n", JOURNAL_LEN);
 		journal.jprintf(" Обмен за границей 65536 не проходит.\n");
@@ -584,11 +584,26 @@ void setup() {
 	if(GPBR->SYS_GPBR[GPBR_DBG]) journal.jprintf(" (%d)", (int)(GPBR->SYS_GPBR[GPBR_DBG]));
 	if(GPBR->SYS_GPBR[GPBR_WEBDBG]) journal.jprintf(" Web(%d)", (int)(GPBR->SYS_GPBR[GPBR_WEBDBG]));
 	journal.jprintf("\n");
-	if(Boot_Abnormal(boot.cause)) {
-		const char *detail = boot.cause == BOOT_STUCK ? (boot.task < WDT_TASK_COUNT ? wdtNames[boot.task] : "?")
-		                   : boot.cause == BOOT_KERNEL ? ResetCause() : "";
-		journal.jprintf("$Аварийная перезагрузка: %s%s%s, %d подряд (предел %d)\n",
-		                Boot_CauseText(boot.cause), *detail ? " " : "", detail, boot.resets, BOOT_MAX_RESETS);
+	if(const char *tag = Boot_ResetTag(boot)) {
+		char stackTask[13]{}; // До 12 байт имени из трёх резервных регистров.
+		const char *task = "";
+		if(boot.cause == BOOT_KERNEL && boot.fault == 3) {
+			for(uint8_t i = 0; i < 3; ++i) {
+				const uint32_t word = GPBR->SYS_GPBR[GPBR_TASK + i];
+				memcpy(stackTask + 4 * i, &word, sizeof(word));
+			}
+			for(char &ch : stackTask) {
+				if(ch < '!' || ch > '~') { ch = 0; break; }
+			}
+			task = stackTask;
+		} else if(boot.cause == BOOT_STUCK && boot.task >= 0 && boot.task < WDT_TASK_COUNT) {
+			task = wdtNames[boot.task];
+		}
+		// Историческая запись о предыдущем запуске, поле активной аварии не занимаем.
+		const auto *event = ErrorCatalog::Find(ErrorCatalog::kABNORMAL_RESET);
+		journal.jprintf_time("$ERROR %d %s %s%s%s  — %s, %u подряд (предел %u)\n",
+		                     (int)event->code, event->source, tag, *task ? " " : "", task,
+		                     event->description, (unsigned)boot.resets, (unsigned)BOOT_MAX_RESETS);
 	}
 
 #ifdef PIN_LED1                            // Включение (точнее индикация) питания платы если необходимо
@@ -619,7 +634,7 @@ void setup() {
 		{
 			if ((eepStatus=eepromI2C.begin(I2C_SPEED))>0)    // переходим на I2C_SPEED и пытаемся инициализировать
 			{
-				journal.jprintf("$ERROR - I2C mem failed, status = %d\n", eepStatus);
+				journal.jprintf_time("$ERROR - I2C mem failed, status = %d\n", eepStatus);
 #ifdef POWER_CONTROL
 				digitalWriteDirect(PIN_POWER_ON, HIGH);
 				digitalWriteDirect(PIN_LED1, LOW);
@@ -635,11 +650,12 @@ void setup() {
 				Watchdog_AliveHere();                       // Сбросить вачдог
 			}  else break;   // Все хорошо
 		} // for
+		if(eepStatus == 0) journal.Init();              // Восстановить границы журнала после успешного повторного открытия I2C.
 	}
 	if(eepStatus)  // если I2C память не инициализирована, делаем попытку запустится на малой частоте один раз!
 	{
 		if((eepStatus=eepromI2C.begin(twiClock100kHz))>0) {
-			journal.jprintf("$ERROR - I2C mem init failed on speed %d kHz, status = %d\n",twiClock100kHz/1000,eepStatus);
+			journal.jprintf_time("$ERROR - I2C mem init failed on speed %d kHz, status = %d\n",twiClock100kHz/1000,eepStatus);
 			eepromI2C.begin(I2C_SPEED);
 			goto x_I2C_init_std_message;
 		} else journal.jprintf("I2C bus low speed, init on %d kHz - OK\n",twiClock100kHz/1000);
@@ -1577,7 +1593,7 @@ delayTask:	// чтобы задача отдавала часть времени
 			break;
 		case pERROR_CODE:                       // 6 - Эта ошибка возникать не должна!
 		default:
-			journal.jprintf((const char*)" $ERROR: Bad state HP in function %s\n",(char*)__FUNCTION__);
+			journal.jprintf_time((const char*)"$ERROR: Bad state HP in function %s\n",(char*)__FUNCTION__);
 		} //  switch (HP.get_State())
 
 		if(!Tasks.Task_vUpdate_run) continue;

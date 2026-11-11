@@ -12,7 +12,7 @@
 .logbox div{white-space:pre;padding:0 14px;cursor:pointer}
 .logbox div:hover{background:rgba(255,255,255,.05)}
 .logbox div.sel{background:rgba(15,139,141,.35);color:#fff}
-.logbox div.w{color:#f2b36b}.logbox div.e{color:#ff8a8a}.logbox div.c{color:#7fa6c4}
+.logbox div.w{color:#ffe066}.logbox div.e{color:#ff8a8a}.logbox div.c{color:#7fa6c4}
 .refx p{margin:0 0 8px;font-size:13px;line-height:1.5}
 .refx ul{margin:0;padding-left:18px;font-size:13px;line-height:1.5}.refx li{margin-bottom:6px}
 .refx code{background:var(--bg);border-radius:5px;padding:1px 5px;font-size:12px}
@@ -53,11 +53,17 @@ function refToggle() {
 	b.hidden = !b.hidden;
 	$('ref-a').innerHTML = b.hidden ? 'показать ▾' : 'скрыть ▴';
 }
+// Возвращает класс цвета строки по явному маркеру события или служебной отметке.
+function logLineClass(line) {
+	var marker = /(?:^|\s)\$(ERROR|WARN)\b/.exec(line);
+	if(marker) return marker[1] === 'ERROR' ? 'e' : 'w';
+	return /^\s*\^/.test(line) ? 'c' : '';
+}
 function load() {
 	$('state').innerHTML = 'Загрузка…';
 	gFetchLog(function(t) {
 		var h = '', a = t.split('\n');
-		a.forEach(function(l) { if(l === '') return; h += '<div class="' + (/\bERR(OR)?\b|ошибк/i.test(l) ? 'e' : /WARN/i.test(l) ? 'w' : /^\s*\^/.test(l) ? 'c' : '') + '">' + esc(l) + '</div>'; });
+		a.forEach(function(l) { if(l === '') return; h += '<div class="' + logLineClass(l) + '">' + esc(l) + '</div>'; });
 		$('log').innerHTML = h;
 		$('log').scrollTop = $('log').scrollHeight;
 		$('state').innerHTML = a.length + ' строк · ' + Math.round(t.length / 1024) + ' КБ';

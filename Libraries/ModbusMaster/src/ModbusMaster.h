@@ -6,9 +6,7 @@
 для проверки функции используйте   LinkTestOmronMX2Only(code)
 где code - проверочный код (любое число uint16_t),
 в случае успеха первый элемент буфера будет содержать этот код
-- сделана обработка ошибок инвертора (в коде функции добавляется 0х80)
-при этом возвращается состяние ku8MBErrorOmronMX2,
-первый элемент буфера при этом содержит код ошибки
+- подтверждённое исключение Modbus возвращается вместе с исходным байтом
 *
 * Some additional - vad7@yahoo.com
 */
@@ -79,6 +77,17 @@ RS232/485 (via RTU protocol).
 class ModbusMaster
 {
   public:
+    enum class ResultKind : uint8_t {
+      Success,   // Валидный обычный ответ
+      Exception, // Валидный ответ с исключением ведомого
+      Transport, // Ошибка приёма или проверки кадра
+      Local      // Ошибка запроса до отправки
+    };
+    struct Result {
+      ResultKind kind; // Источник результата обмена
+      uint8_t code;    // Исходный байт исключения либо статус библиотеки
+    };
+
     ModbusMaster();
    
     void begin(uint8_t, Stream &serial);
@@ -208,8 +217,6 @@ class ModbusMaster
     // преобразователь частоты возвращает в ответе сообщение об исключении и не выполняет никаких действий.
     // Ошибку можно найти по коду функции в ответе. Код функции для ответа с
     // сообщением об ошибке определяется как сумма кода функции запроса и числа 80h.
-    // Для кодирования используется  ku8MBErrorOmronMX2+Код_исключения (третий байт пакета)
-    static const uint8_t ku8MBExtendedError              = 0x08;
     
     uint16_t getResponseBuffer(uint8_t);
     void     clearResponseBuffer();
@@ -226,23 +233,23 @@ class ModbusMaster
     uint16_t receive(void);
     
     
-    uint8_t  readCoils(uint16_t, uint16_t);
-    uint8_t  readDiscreteInputs(uint16_t, uint16_t);
-    uint8_t  readHoldingRegisters(uint16_t, uint16_t);
-    uint8_t  readInputRegisters(uint16_t, uint8_t);
-    uint8_t  writeSingleCoil(uint16_t, uint8_t);
-    uint8_t  writeSingleRegister(uint16_t, uint16_t);
-    uint8_t  writeMultipleCoils(uint16_t, uint16_t);
-    uint8_t  writeMultipleCoils();
-    uint8_t  writeMultipleRegisters(uint16_t, uint16_t);
-    uint8_t  writeMultipleRegisters();
-    uint8_t  maskWriteRegister(uint16_t, uint16_t, uint16_t);
-    uint8_t  readWriteMultipleRegisters(uint16_t, uint16_t, uint16_t, uint16_t);
-    uint8_t  readWriteMultipleRegisters(uint16_t, uint16_t);
-    uint8_t  LinkTestOmronMX2Only(uint16_t);
+    Result  readCoils(uint16_t, uint16_t);
+    Result  readDiscreteInputs(uint16_t, uint16_t);
+    Result  readHoldingRegisters(uint16_t, uint16_t);
+    Result  readInputRegisters(uint16_t, uint8_t);
+    Result  writeSingleCoil(uint16_t, uint8_t);
+    Result  writeSingleRegister(uint16_t, uint16_t);
+    Result  writeMultipleCoils(uint16_t, uint16_t);
+    Result  writeMultipleCoils();
+    Result  writeMultipleRegisters(uint16_t, uint16_t);
+    Result  writeMultipleRegisters();
+    Result  maskWriteRegister(uint16_t, uint16_t, uint16_t);
+    Result  readWriteMultipleRegisters(uint16_t, uint16_t, uint16_t, uint16_t);
+    Result  readWriteMultipleRegisters(uint16_t, uint16_t);
+    Result  LinkTestOmronMX2Only(uint16_t);
 
     // master function that conducts Modbus transactions
-    uint8_t ModbusMasterTransaction(uint8_t u8MBFunction);
+    Result ModbusMasterTransaction(uint8_t u8MBFunction);
     
   private:
     Stream* _serial;                                             ///< reference to serial port object

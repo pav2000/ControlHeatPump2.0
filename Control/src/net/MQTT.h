@@ -49,9 +49,9 @@ STRCONST(BlockService,  "Too many sending errors, sending %s is off . . .\n");
 STRCONST(SlowService,  "Too many sending errors, sending %s switched to %d min interval . . .\n");
 STRCONST(BackService,  "Sending %s recovered, interval back to normal\n");
 STRCONST(ChangeIP,  "\n Change IP address %s\n");
-STRCONST(ResSock,  "\n$WARNING: Reset W5200_SOCK_SYS sock\n");
-STRCONST(ResDHCP,  "\n$WARNING: Update server IP\n");
-STRCONST(ResChip,  "\n$WARNING: Reset W5XXX chip\n");
+STRCONST(ResSock,  "$WARN: Reset W5200_SOCK_SYS sock\n");
+STRCONST(ResDHCP,  "$WARN: Update server IP\n");
+STRCONST(ResChip,  "$WARN: Reset W5XXX chip\n");
 
 // Настройки относящиеся к MQTT
 struct type_mqtt                             // настройки MQTT клиента
@@ -99,7 +99,7 @@ class clientMQTT                              // Класс клиент MQTT
     uint16_t get_crc16(uint16_t crc);           // Рассчитать контрольную сумму для данных на входе входная сумма на выходе новая
 
     boolean dnsUpdate();                        // Обновление IP адресов MQTT через dns
-    boolean sendTopic(boolean NM, boolean debug, boolean link_close);// Внутренная функция послать один топик
+    boolean sendTopic(boolean NM, boolean debug, boolean link_close, const char *payload = nullptr); // Публикует payload либо рабочий буфер temp
     void    recoverNARMON();                    // Реанимация связи с народным мониторингом. МЮТЕКС xWebThreadSemaphore ДОЛЖЕН быть захвачен!
 
     uint16_t updateErrMQTT(boolean NM);         // Еще одна ошибка отправки на MQTT параметр тип сервера true - народный мониторинг false MQTT

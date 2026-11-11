@@ -225,7 +225,7 @@ public:
   uint16_t	get_current(){return current;}          // Получить текущий ток в 0.01А
   void		get_infoFC(char *buf);                   // Получить информацию о инверторе
   void		get_infoFC_status(char *buffer, uint16_t st); // Вывести в buffer строковый статус.
-  boolean	reset_errorFC();                        // Сброс ошибок инвертора
+  boolean	reset_errorFC(ModbusResult *exchange = nullptr);                        // Сброс ошибок инвертора
   boolean	reset_FC();               		      // Сброс состояния связи Modbus
   int16_t	CheckLinkStatus(void);				   // Получить Слово состояния FB, ERR_LINK_FC - ошибка связи
   int16_t	read_stateFC();                        // Текущее состояние инвертора
@@ -245,7 +245,8 @@ public:
   int8_t	stop_FC();                                 // Команда стоп на инвертор
   boolean	isfOnOff(){return GETBIT(flags,fOnOff);} // получить состояние инвертора вкл или выкл
  
-  bool		check_blockFC();                          // Установить запрет на использование инвертора
+  bool		check_blockFC(ModbusResult result);
+  uint16_t readActiveFault();                         // Прочитать активный код отказа
   boolean	get_blockFC() { return GETBIT(flags, fErrFC); }    // Получить флаг блокировки инвертора
 
   const char *get_fault_str(uint8_t fault); // Возвращает название ошибки
@@ -265,10 +266,10 @@ public:
   uint16_t  get_save_size(void) { return sizeof(_data); } // Размер структуры сохранения
 
 #ifndef FC_ANALOG_CONTROL    // НЕ АНАЛОГОВОЕ УПРАВЛЕНИЕ
-  int16_t  read_0x03_16(uint16_t cmd);             // Функция Modbus 0х03 прочитать 2 байта
-  uint32_t read_0x03_32(uint16_t cmd);             // Функция Modbus 0х03 прочитать 4 байта
-  int8_t   write_0x06_16(uint16_t cmd, uint16_t data);// Запись данных (2 байта) в регистр cmd возвращает код ошибки
-  int8_t   emergency_stop(){ return write_0x06_16(FC_CONTROL, FC_C_STOP); } // СРАЗУ стоп словом управления (HeatPump::compressor_emergency_off без FC_USE_RCOMP)
+  int16_t  read_0x03_16(uint16_t cmd, ModbusResult *exchange = nullptr);             // Функция Modbus 0х03 прочитать 2 байта
+  uint32_t read_0x03_32(uint16_t cmd, ModbusResult *exchange = nullptr);             // Функция Modbus 0х03 прочитать 4 байта
+  int8_t   write_0x06_16(uint16_t cmd, uint16_t data, ModbusResult *exchange = nullptr);// Запись данных (2 байта) в регистр cmd возвращает код ошибки
+  int8_t emergency_stop();
 #endif
   uint16_t nominal_power;							// Номинальная мощность двигателя Вт
 
@@ -295,6 +296,7 @@ public:
   uint16_t last_ctrl;								// Последнее записанное слово управления (2001)
   
   int16_t  state;									// Чтение: Состояние ПЧ регистр FC_STATUS
+  uint32_t unexpectedStopTick{};                  // Момент команды останова при неожиданном вращении
   uint32_t startCompressor;							// время работы Uptime_s() при старте компрессора, 0 - не было
 
 #ifdef FC_ANALOG_CONTROL

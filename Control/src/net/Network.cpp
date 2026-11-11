@@ -113,7 +113,7 @@ boolean resetWiznet(boolean show)
 // Проверят сетевой кабель, возврат true - OK false - проблемы, сеть не работает
 const char* NetworkChipOK={" Network library setting: %s, ID chip: 0x%x\n"};
 const char* NetworkChipBad={" WRONG setting library, library: %s, ID: chip 0x%x\n"};
-const char* NetworkError={" $ERROR: Problem reset and setting %s\n"};
+const char* NetworkError={"$ERROR: Problem reset and setting %s\n"};
 // Таймаут повтора пакета и число повторов в чип (настройка net.rtr). Регистры общие на все сокеты и пишутся на ходу, без сброса чипа и сокетов.
 void netApplyRtr()
 {
@@ -138,13 +138,13 @@ boolean initW5200(boolean flag)
 #endif
 	netLayoutMode = (HP.safeNetwork || !HP.get_SockFast()) ? NL_MODE_OLD : NL_MODE_FAST0;
 	W5100.setLayoutMode(netLayoutMode);            // раскладка запоминается, в чип её пишет init() после каждого сброса
-	if(flag) journal.jprintf("Network setup:");
+	if(flag) journal.jprintf("Network setup:\n");
 	if(!resetWiznet(false))  // 1. Сброс и проверка провода (молча)
 	{
 		if(DBG_ON(DBG_PHY)) {
-			journal.jprintf(" WARNING: %s no link, check ethernet cable\n", nameWiznet);
-			journal.jprintf((char*) NetworkError, nameWiznet);
-		} else journal.jprintf(" WARNING: %s no link\n", nameWiznet);
+			journal.jprintf_time("$WARN: %s no link, check ethernet cable\n", nameWiznet);
+			journal.jprintf_time((char*)NetworkError, nameWiznet);
+		} else journal.jprintf_time("$WARN: %s no link\n", nameWiznet);
 		return false; // дальше ехать бесполезно
 	} else if(flag && DBG_ON(DBG_PHY)) journal.jprintf(" SUCCESS: %s link OK\n", nameWiznet);
 	linkStatusWiznet(flag);  // вывести полученные настройки чипа
@@ -159,15 +159,15 @@ boolean initW5200(boolean flag)
 			if(DBG_ON(DBG_PHY)) journal.jprintf((char*) NetworkChipOK, nameWiznet, W5200VERSIONR());
 		} else {
 			journal.jprintf((char*) NetworkChipBad, nameWiznet, W5200VERSIONR());
-			journal.jprintf((char*) NetworkError, nameWiznet);
+			journal.jprintf_time((char*)NetworkError, nameWiznet);
 			return false;
 		} // дальше ехать бесполезно
 #elif defined(W5200_ETHERNET_SHIELD)
 		if (W5200VERSIONR()==0x03) journal.jprintf((char*)NetworkChipOK,nameWiznet,W5200VERSIONR());
-		else {journal.jprintf((char*)NetworkChipBad,nameWiznet,W5200VERSIONR());journal.jprintf((char*)NetworkError,nameWiznet); return false;} // дальше ехать бесполезно
+		else {journal.jprintf((char*)NetworkChipBad,nameWiznet,W5200VERSIONR());journal.jprintf_time((char*)NetworkError,nameWiznet); return false;} // дальше ехать бесполезно
 #else
 		if (W5200VERSIONR()==0x51) journal.jprintf((char*)NetworkChipOK,nameWiznet,W5200VERSIONR());
-		else {journal.jprintf((char*)NetworkChipBad,nameWiznet,W5200VERSIONR());journal.jprintf((char*)NetworkError,nameWiznet); return false;} // дальше ехать бесполезно
+		else {journal.jprintf((char*)NetworkChipBad,nameWiznet,W5200VERSIONR());journal.jprintf_time((char*)NetworkError,nameWiznet); return false;} // дальше ехать бесполезно
 #endif
 	}
 
@@ -239,11 +239,11 @@ x_TryStaticIP:
 			journal.jprintf(" DNS: %s\n", IPAddress2String(dip));
 			dip = Ethernet.gatewayIP();
 			journal.jprintf(" Gateway: %s\n", IPAddress2String(dip));
-		} else journal.jprintf((char*) NetworkError, nameWiznet);
+		} else journal.jprintf_time((char*)NetworkError, nameWiznet);
 	} else   // Кратко выводим сообщение в журнал
 	{
 		if(EthernetOK) journal.jprintf_time("Reset %s . . . \n", nameWiznet);
-		else journal.jprintf((char*) NetworkError, nameWiznet);
+		else journal.jprintf_time((char*)NetworkError, nameWiznet);
 	}
 	} else {
 	if(flag)  // 5. Печать сетевых настроек
@@ -256,11 +256,14 @@ x_TryStaticIP:
 			journal.jprintf("G:%s ", IPAddress2String(dip));
 			dip = Ethernet.dnsServerIP();
 			journal.jprintf("DNS:%s\n", IPAddress2String(dip));
-		} else journal.jprintf(" ERROR: setting %s", nameWiznet);
+		} else {
+			journal.jprintf("\n"); // Краткий вывод PHY выше оставил строку открытой.
+			journal.jprintf_time("$ERROR: setting %s\n", nameWiznet);
+		}
 	} else   // Кратко выводим сообщение в журнал
 	{
 		if(EthernetOK) journal.jprintf_time("Reset %s Ok.\n", nameWiznet);
-		else journal.jprintf(" ERROR: setting %s", nameWiznet);
+		else journal.jprintf_time("$ERROR: setting %s\n", nameWiznet);
 	}
 	}
 	if(EthernetOK) netChipBaseline();   // снимок регистров для самотеста: после beginWeb и pingW5200, то есть в рабочем состоянии
@@ -395,8 +398,7 @@ static void netChipRecover(NETCHIP_FAULT f, NETCHIP_ACTION a)
 	Diag.num_resW5200++;
 	netChipReinit(false);
 	if(a == NCA_RECOVER_NOTIFY) {
-		journal.jprintf("$W5500 resets too often: %d in the last hour\n", (int)netWatch.recoveries);
-		HP.message.setMessage(pMESSAGE_WARNING, (char*) "Сетевой чип W5500 сбрасывается слишком часто", 0);
+		HP.set_Warning(ErrorCatalog::kNET, "W5500", f, nullptr, true);
 	}
 }
 

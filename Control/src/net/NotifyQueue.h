@@ -112,14 +112,14 @@ static inline void NotifyQueue_Done(NotifyQueue *q)
 #define NOTIFY_RECENT 4
 #endif
 struct NotifyRecent {
-	uint32_t key[NOTIFY_RECENT];  // тип << 16 | предмет
+	uint32_t key[NOTIFY_RECENT];  // тип << 24 | предмет
 	uint32_t at[NOTIFY_RECENT];   // когда принято, с
 	uint8_t  n;                   // сколько записей занято
 };
 
 static inline void NotifyRecent_Init(NotifyRecent *r) { r->n = 0; }
 
-static inline uint32_t Notify_Key(uint8_t type, uint16_t subject) { return (uint32_t) type << 16 | subject; }
+static inline uint32_t Notify_Key(uint8_t type, uint32_t subject) { return (uint32_t) type << 24 | (subject & 0xFFFFFFu); }
 
 // Принималось ли такое уведомление за последние window секунд
 static inline bool Notify_Seen(const NotifyRecent *r, uint32_t key, uint32_t now, uint32_t window)

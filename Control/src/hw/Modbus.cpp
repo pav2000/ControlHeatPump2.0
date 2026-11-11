@@ -150,21 +150,21 @@ int8_t devSDM::get_readState(uint8_t group)
 		return err;
 	}
 	// Чтение состояния счетчика
-	int8_t _err = OK;
+	ModbusResult exchange{};
 	for(int8_t i=0; i < SDM_NUM_READ; i++)   // делаем SDM_NUM_READ попыток чтения
 	{
 		// Читаем значения счетчика
 		if(group == 0) {
-			_err = Modbus.readInputRegistersFloat(SDM_MODBUS_ADR, SDM_AC_POWER, &tmp);
-			if(_err == OK) AcPower = tmp; else goto xErr;
+			exchange = Modbus.readInputRegistersFloat(SDM_MODBUS_ADR, SDM_AC_POWER, &tmp);
+			if(exchange == OK) AcPower = tmp; else goto xErr;
 		}
 		if(group == 2) {
 #if defined(SDM_MAX_VOLTAGE) || defined(SDM_MIN_VOLTAGE) || (SDM_READ_PERIOD > 0)
-			_err = Modbus.readInputRegistersFloat(SDM_MODBUS_ADR, SDM_VOLTAGE, &tmp);   // Напряжение
-			if(_err==OK) { Voltage=tmp; group = 1; } else goto xErr;
+			exchange = Modbus.readInputRegistersFloat(SDM_MODBUS_ADR, SDM_VOLTAGE, &tmp);   // Напряжение
+			if(exchange == OK) { Voltage=tmp; group = 1; } else goto xErr;
 #endif
 		}
-		if(_err == OK) break;
+		if(exchange == OK) break;
 xErr:
 #ifdef SPOWER
 		HP.sInput[SPOWER].Read(true);
@@ -172,28 +172,41 @@ xErr:
 #endif
 		numErr++;                  // число ошибок чтение по Modbus
 		if(DBG_ON(DBG_SDM)) {
-			journal.jprintf_time("%s: Read #%d error %d, repeat...\n", name, group, _err);      // Выводим сообщение о повторном чтении
+			journal.jprintf_time("%s: Read #%d error %d, repeat...\n", name, group, exchange.status);      // Выводим сообщение о повторном чтении
 		}
 		_delay(SDM_DELAY_REPEAD);  // Чтение не удачно, делаем паузу
 	}
-	if(_err==OK)
+	if(exchange == OK)
 	{
 #ifdef SDM_MAX_VOLTAGE
 		if((settingSDM.maxVoltage>1)&&(settingSDM.maxVoltage< Voltage)) {err=ERR_MAX_VOLTAGE;set_Error(err,name);return err; }       // Контроль входного напряжения
 #endif
-#ifdef SDM_MIN_VOLTAGE
-		if ((settingSDM.minVoltage>1)&&(settingSDM.minVoltage>Voltage) ) {HP.message.setMessage(pMESSAGE_WARNING,(char*)"Напряжение сети ниже нормы",(int)Voltage);return err; } // сформировать уведомление о низком напряжени
-#endif
 		if ((settingSDM.maxPower>1)&&(settingSDM.maxPower< AcPower))     {err=ERR_MAX_POWER;set_Error(err,name);return err; }         // Контроль мощности потребления
-		return err = _err;                       // все прочиталось, выходим
+#ifdef SDM_MIN_VOLTAGE
+		if(group == 1) {
+			const bool low = settingSDM.minVoltage > 1 && Voltage < settingSDM.minVoltage;
+			if(low && !lowVoltage) HP.set_Warning(ErrorCatalog::kVOLTAGE_LOW, name, 0, nullptr, true);
+			lowVoltage = low;
+		}
+#endif
+		return err = exchange.status;                       // все прочиталось, выходим
 	}
 #ifdef SDM_BLOCK                     // если стоит флаг блокировки связи
 	SETBIT0(flags,fSDMLink);             // связь со счетчиком потеряна
 #endif
-	if(!err && _err) {
-		journal.jprintf_time("%s: Read #%d error %d!\n", name, group, _err);
+	const ErrorDetail detail = ModbusDetail(exchange);
+	const char *kind = detail.kind == ErrorDetailKind::Exception ? "EXC" :
+	                   detail.kind == ErrorDetailKind::Transport ? "RX" : "LOCAL";
+	const auto code = ModbusAlarm(exchange.kind);
+	const auto *entry = ErrorCatalog::Find(code);
+	char text[128];
+	const char *description = nullptr;
+	if(detail.kind != ErrorDetailKind::None && entry) {
+		m_snprintf(text, sizeof(text), "%s 0x%02X: %s", kind, (unsigned)detail.value, entry->description);
+		description = text;
 	}
-	return err = _err;
+	HP.set_Warning(code, name, (static_cast<uint16_t>(exchange.kind) << 8) | exchange.raw, description);
+	return err = exchange.status;
 }
 
 // Получить параметр счетчика в виде строки
@@ -308,76 +321,82 @@ static inline void postTransmission() // Функция вызываемая П�
 }
 
 // Инициализация Modbus без проверки связи связи
-int8_t devModbus::initModbus()    
-     {
+int8_t devModbus::initModbus()
+{
+	flags = 0;
 #ifdef MODBUS_PORT_NUM
-        flags=0x00;
-        linkFails=0;                                                                 // отсчёт связи с инвертором с момента запуска
-        linkLastOk=GetTickCount();
-        SETBIT1(flags,fModbus);                                                      // Modbus присутствует
-	#ifdef PIN_MODBUS_RSE
-        pinMode(PIN_MODBUS_RSE , OUTPUT);                                            // Подготовка управлением полудуплексом
-        digitalWriteDirect(PIN_MODBUS_RSE , LOW);
-	#endif
-        MODBUS_PORT_NUM.begin(MODBUS_PORT_SPEED,MODBUS_PORT_CONFIG);                 // SERIAL_8N1 - настройки по умолчанию
-        RS485.begin(1,MODBUS_PORT_NUM);                                              // Привязать к сериал
-        // Назначение функций обратного вызова
-        RS485.preTransmission(preTransmission);
-        RS485.postTransmission(postTransmission);
-        RS485.idle(idle);
-        err=OK;                                                                      // Связь есть
-#else
-        flags=0x00;
-        SETBIT0(flags,fModbus);                                                     // Modbus отсутвует
-        err=ERR_NO_MODBUS;
+	link = {0, GetTickCount()};
+	SETBIT1(flags, fModbus);
+#ifdef PIN_MODBUS_RSE
+	pinMode(PIN_MODBUS_RSE, OUTPUT);
+	digitalWriteDirect(PIN_MODBUS_RSE, LOW);
 #endif
-        return err;                                                                 
-     }
-     
+	MODBUS_PORT_NUM.begin(MODBUS_PORT_SPEED, MODBUS_PORT_CONFIG);
+	RS485.begin(1, MODBUS_PORT_NUM);
+	RS485.preTransmission(preTransmission);
+	RS485.postTransmission(postTransmission);
+	RS485.idle(idle);
+	return OK;
+#else
+	return ERR_NO_MODBUS;
+#endif
+}
+
 // ---- Обмен по шине Modbus ----
 // Ниже одиннадцать методов чтения и записи отличались только вызовом ModbusMaster
 // и разбором ответа, а обвязку - захват замка, выбор адреса, освобождение замка -
 // каждый повторял своей копией. Обвязка собрана здесь в одном месте, методы
 // оставляют себе только то, чем действительно различаются.
-int8_t devModbus::transact(const char *who, uint8_t id, MB_FUNC func, uint16_t cmd,
+// Выполняет func для адреса id и регистра cmd, читает в rx или пишет из tx.
+// Возвращает локальный знаковый статус вместе с типом и байтом ответа.
+ModbusResult devModbus::transact(const char *who, uint8_t id, MB_FUNC func, uint16_t cmd,
                            uint16_t num, uint16_t *rx, const uint16_t *tx)
 {
 	// Замок создаётся в setup() после HP.initHeatPump, а initFC/initSDM ходят по шине раньше. До старта планировщика
 	// SemaphoreTake замок не трогает (задач нет), поэтому пустой замок там допустим; после старта пустой замок - assert ядра.
-	if(Modbus_LockRefused(xModbusSemaphore != NULL, xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED)) return err = ERR_NO_MODBUS;
+	if(!get_present() || Modbus_LockRefused(xModbusSemaphore != NULL, xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED))
+		return {ERR_NO_MODBUS, ModbusKind::Unavailable, 0};
 	if(SemaphoreTake(xModbusSemaphore, (MODBUS_TIME_WAIT / portTICK_PERIOD_MS)) == pdFALSE) // Захват мютекса потока или ОЖИДАНИЕ MODBUS_TIME_WAIT
 	{
 		journal.jprintf((char*) cErrorMutex, who, MutexModbusBusy);
-		return err = ERR_485_BUSY;
+		return {ERR_485_BUSY, ModbusKind::Busy, 0};
 	}
 	RS485.set_slave(id);
 	if(tx) for(uint16_t i = 0; i < num; i++) RS485.setTransmitBuffer(i, tx[i]);
-	uint8_t result;
+	ModbusMaster::Result frame;
 	switch(func) {
-	case MB_READ_INPUT:   result = RS485.readInputRegisters(cmd, num);    break;
-	case MB_READ_HOLDING: result = RS485.readHoldingRegisters(cmd, num);  break;
-	case MB_READ_COILS:   result = RS485.readCoils(cmd, num);             break;  // Нумерация регистров с НУЛЯ!
-	case MB_WRITE_COIL:   result = RS485.writeSingleCoil(cmd, num);       break;
-	case MB_WRITE_SINGLE: result = RS485.writeSingleRegister(cmd, num);   break;
-	case MB_WRITE_MULTI:  result = RS485.writeMultipleRegisters(cmd, num);break;
-	default:              result = 0xFF;                                  break;
+	case MB_READ_INPUT:   frame = RS485.readInputRegisters(cmd, num);    break;
+	case MB_READ_HOLDING: frame = RS485.readHoldingRegisters(cmd, num);  break;
+	case MB_READ_COILS:   frame = RS485.readCoils(cmd, num);             break;  // Нумерация регистров с НУЛЯ!
+	case MB_WRITE_COIL:   frame = RS485.writeSingleCoil(cmd, num);       break;
+	case MB_WRITE_SINGLE: frame = RS485.writeSingleRegister(cmd, num);   break;
+	case MB_WRITE_MULTI:  frame = RS485.writeMultipleRegisters(cmd, num);break;
+	case MB_LINK_TEST:    frame = RS485.LinkTestOmronMX2Only(num);        break;
+	default:              frame = {ModbusMaster::ResultKind::Local, 0xFF}; break;
 	}
-	if(result == RS485.ku8MBSuccess) {
-		err = OK;
-		if(rx) for(uint16_t i = 0; i < num; i++) rx[i] = RS485.getResponseBuffer(i);
-	} else err = translateErr(result);
-	if(id == FC_MODBUS_ADR) {                    // учёт связи с инвертором
-		if(Error_IsLinkLoss(err)) { if(linkFails < 255) linkFails++; }
-		else { linkFails = 0; linkLastOk = GetTickCount(); }   // ответил, пусть и отказом - связь есть
+	ModbusResult result = translateErr(frame, id == FC_MODBUS_ADR);
+	if(result.kind == ModbusKind::Success && rx) {
+		const uint16_t words = func == MB_LINK_TEST ? 1 : num;
+		for(uint16_t i = 0; i < words; i++) rx[i] = RS485.getResponseBuffer(i);
+	}
+	if(func == MB_LINK_TEST && result.kind == ModbusKind::Success && *rx != num)
+		result = {ERR_485_INIT, ModbusKind::EchoMismatch, 0};
+	if(id == FC_MODBUS_ADR) {
+		const uint32_t irq = irqSave();
+		link.Observe(result.kind, GetTickCount());
+		irqRestore(irq);
 	}
 	SemaphoreGive(xModbusSemaphore);
-	return err;
+	return result;
 }
 
 bool devModbus::link_lost(bool running)
 {
-	return Error_LinkLost(linkFails, GetTickCount() - linkLastOk, running,
-	                      FC_LINK_FAILS, FC_LINK_TIME_RUN, FC_LINK_TIME_IDLE);
+	const uint32_t irq = irqSave();
+	const uint8_t fails = link.failures;
+	const uint32_t since = GetTickCount() - link.lastReply;
+	irqRestore(irq);
+	return Error_LinkLost(fails, since, running, FC_LINK_FAILS, FC_LINK_TIME_RUN, FC_LINK_TIME_IDLE);
 }
 
 // ---- ФУНКЦИИ ЧТЕНИЯ ----
@@ -386,94 +405,101 @@ bool devModbus::link_lost(bool running)
 // проверять возвращённый код ошибки, а не содержимое *ret.
 
 // Получить значение 2-x (Modbus function 0x04 Read Input Registers) регистров (4 байта) в виде float возвращает код ошибки данные кладутся в ret
-int8_t devModbus::readInputRegistersFloat(uint8_t id, uint16_t cmd, float *ret)
+ModbusResult devModbus::readInputRegistersFloat(uint8_t id, uint16_t cmd, float *ret)
 {
 	uint16_t b[2];
-	if(transact(__FUNCTION__, id, MB_READ_INPUT, cmd, 2, b) == OK) *ret = fromInt16ToFloat(b[0], b[1]);
+	const auto result = transact(__FUNCTION__, id, MB_READ_INPUT, cmd, 2, b);
+	if(result == OK) *ret = fromInt16ToFloat(b[0], b[1]);
 	else *ret = 0;
-	return err;
+	return result;
 }
 
-int8_t devModbus::readInputRegisters16(uint8_t id, uint16_t cmd, uint16_t *ret)
+ModbusResult devModbus::readInputRegisters16(uint8_t id, uint16_t cmd, uint16_t *ret)
 {
 	uint16_t b;
-	if(transact(__FUNCTION__, id, MB_READ_INPUT, cmd, 1, &b) == OK) *ret = b;
-	return err;
+	const auto result = transact(__FUNCTION__, id, MB_READ_INPUT, cmd, 1, &b);
+	if(result == OK) *ret = b;
+	return result;
 }
 
 // LITTLE-ENDIAN! 0x04
-int8_t devModbus::readInputRegisters32(uint8_t id, uint16_t cmd, uint32_t *ret)
+ModbusResult devModbus::readInputRegisters32(uint8_t id, uint16_t cmd, uint32_t *ret)
 {
 	uint16_t b[2];
-	if(transact(__FUNCTION__, id, MB_READ_INPUT, cmd, 2, b) == OK) *ret = ((uint32_t)b[1] << 16) | b[0];
-	return err;
+	const auto result = transact(__FUNCTION__, id, MB_READ_INPUT, cmd, 2, b);
+	if(result == OK) *ret = ((uint32_t)b[1] << 16) | b[0];
+	return result;
 }
 
 // Получить значение регистра (2 байта) в виде целого  числа возвращает код ошибки данные кладутся в ret
-int8_t devModbus::readHoldingRegisters16(uint8_t id, uint16_t cmd, uint16_t *ret)
+ModbusResult devModbus::readHoldingRegisters16(uint8_t id, uint16_t cmd, uint16_t *ret)
 {
 	uint16_t b;
-	if(transact(__FUNCTION__, id, MB_READ_HOLDING, cmd, 1, &b) == OK) *ret = b;
+	const auto result = transact(__FUNCTION__, id, MB_READ_HOLDING, cmd, 1, &b);
+	if(result == OK) *ret = b;
 	else *ret = 0;
-	return err;
+	return result;
 }
 
 // Получить значение 2-x регистров (4 байта) в виде целого  числа возвращает код ошибки данные кладутся в ret
 // BIG-ENDIAN, в отличие от readInputRegisters32 - так отвечают приборы на этой функции.
-int8_t devModbus::readHoldingRegisters32(uint8_t id, uint16_t cmd, uint32_t *ret)
+ModbusResult devModbus::readHoldingRegisters32(uint8_t id, uint16_t cmd, uint32_t *ret)
 {
 	uint16_t b[2];
-	if(transact(__FUNCTION__, id, MB_READ_HOLDING, cmd, 2, b) == OK) *ret = ((uint32_t)b[0] << 16) | b[1];
+	const auto result = transact(__FUNCTION__, id, MB_READ_HOLDING, cmd, 2, b);
+	if(result == OK) *ret = ((uint32_t)b[0] << 16) | b[1];
 	else *ret = 0;
-	return err;
+	return result;
 }
 
 // Получить значение 2-x регистров (4 байта) в виде float возвращает код ошибки данные кладутся в ret
-int8_t devModbus::readHoldingRegistersFloat(uint8_t id, uint16_t cmd, float *ret)
+ModbusResult devModbus::readHoldingRegistersFloat(uint8_t id, uint16_t cmd, float *ret)
 {
 	uint16_t b[2];
-	if(transact(__FUNCTION__, id, MB_READ_HOLDING, cmd, 2, b) == OK) *ret = fromInt16ToFloat(b[0], b[1]);
+	const auto result = transact(__FUNCTION__, id, MB_READ_HOLDING, cmd, 2, b);
+	if(result == OK) *ret = fromInt16ToFloat(b[0], b[1]);
 	else *ret = 0;
-	return err;
+	return result;
 }
 
 // Получить значение N регистров c cmd (2*N байта) МХ2 в виде целого  числа (uint16_t *buf) при ошибке возвращает err
-int8_t devModbus::readHoldingRegistersNN(uint8_t id,uint16_t cmd, uint16_t num, uint16_t *buf)
+ModbusResult devModbus::readHoldingRegistersNN(uint8_t id,uint16_t cmd, uint16_t num, uint16_t *buf)
 {
 	return transact(__FUNCTION__, id, MB_READ_HOLDING, cmd, num, buf);
 }
 
 // прочитать отдельный бит возвращает ошибку Modbus function 0x01 Read Coils.
-int8_t  devModbus::readCoil(uint8_t id,uint16_t cmd, boolean *ret)
+ModbusResult  devModbus::readCoil(uint8_t id,uint16_t cmd, boolean *ret)
 {
 	uint16_t b;
-	if(transact(__FUNCTION__, id, MB_READ_COILS, cmd, 1, &b) == OK) *ret = b != 0;
-	return err;
+	const auto result = transact(__FUNCTION__, id, MB_READ_COILS, cmd, 1, &b);
+	if(result == OK) *ret = b != 0;
+	return result;
 }
 
 
 // ---- ФУНКЦИИ ЗАПИСИ ----
 // установить битовый вход функция Modbus function 0x05 Write Single Coil.
-int8_t devModbus::writeSingleCoil(uint8_t id,uint16_t cmd, uint8_t u8State)
+ModbusResult devModbus::writeSingleCoil(uint8_t id,uint16_t cmd, uint8_t u8State)
 {
 	return transact(__FUNCTION__, id, MB_WRITE_COIL, cmd, u8State);
 }
 
 // Установить значение регистра (2 байта) МХ2 в виде целого  числа возвращает код ошибки данные data
-int8_t   devModbus::writeHoldingRegisters16(uint8_t id, uint16_t cmd, uint16_t data)
+ModbusResult   devModbus::writeHoldingRegisters16(uint8_t id, uint16_t cmd, uint16_t data)
 {
 	return transact(__FUNCTION__, id, MB_WRITE_SINGLE, cmd, data);
 }
 
 // Записать 2 регистра подряд возвращает код ошибки
-int8_t devModbus::writeHoldingRegisters32(uint8_t id, uint16_t cmd, uint32_t data)
+ModbusResult devModbus::writeHoldingRegisters32(uint8_t id, uint16_t cmd, uint32_t data)
 {
 	uint16_t tx[2] = { (uint16_t)(data >> 16), (uint16_t)(data & 0xFFFF) };
 	return transact(__FUNCTION__, id, MB_WRITE_MULTI, cmd, 2, NULL, tx);
 }
 
 // Записать float как 2 регистра числа возвращает код ошибки данные dat
-int8_t   devModbus::writeHoldingRegistersFloat(uint8_t id, uint16_t cmd, float dat)
+ModbusResult   devModbus::writeHoldingRegistersFloat(uint8_t id, uint16_t cmd, float dat)
 {
 	union {
 		float f;
@@ -485,51 +511,53 @@ int8_t   devModbus::writeHoldingRegistersFloat(uint8_t id, uint16_t cmd, float d
 
 // Тестирование связи возвращает код ошибки
 #ifndef FC_VACON
-int8_t devModbus::LinkTestOmronMX2()
+ModbusResult devModbus::LinkTestOmronMX2()
 {
-  uint16_t result, ret;
-  err=OK;
-  RS485.set_slave(FC_MODBUS_ADR);
-  result = RS485.LinkTestOmronMX2Only(TEST_NUMBER);                                              // Послать команду проверки связи
-  if (result == RS485.ku8MBSuccess) ret=RS485.getResponseBuffer(0);                              // Получить данные с ответа
-  else return err=ERR_485_INIT;                                                                  // Ошибка инициализации
-  if (TEST_NUMBER!=ret) return err=ERR_MODBUS_MX2_0x05;  // Контрольные данные не совпали
-  return err;                                                    
+	uint16_t echo;
+	return transact(__FUNCTION__, FC_MODBUS_ADR, MB_LINK_TEST, 0, TEST_NUMBER, &echo);
 }
 #endif
-// Перевод ошибки протокола Modbus (что дает либа) в ошибки ТН, учитывается специфика Инверторов
-// коды ошибок у инверторов могут отличаться
-int8_t devModbus::translateErr(uint8_t result)
+
+// Возвращает статус контроллера, тип и байт кадра. inverter включает таблицу исключений привода.
+ModbusResult devModbus::translateErr(ModbusMaster::Result frame, bool inverter)
 {
- switch (result)
-    {
-    // Стандартные ошибки протокола modbus  едины для всех устройств на Modbus
-    case 0x00:      return OK;                  break;  
-    case 0x01:      return ERR_MODBUS_0x01;     break;
-    case 0x02:      return ERR_MODBUS_0x02;     break;
-    case 0x03:      return ERR_MODBUS_0x03;     break;
-    case 0x04:      return ERR_MODBUS_0x04;     break;
-    case 0xe0:      return ERR_MODBUS_0xe0;     break;
-    case 0xe1:      return ERR_MODBUS_0xe1;     break;
-    case 0xe2:      return ERR_MODBUS_0xe2;     break;
-    case 0xe3:      return ERR_MODBUS_0xe3;     break;    
-    #ifdef FC_VACON
-      case 0x05:      return ERR_MODBUS_VACON_0x05;break;
-      case 0x06:      return ERR_MODBUS_VACON_0x06;break;
-      case 0x07:      return ERR_MODBUS_VACON_0x07;break;
-      case 0x08:      return ERR_MODBUS_VACON_0x08;break;
-    #else
-      case 0x05:      return ERR_MODBUS_MX2_0x05; break;
-      case 0x08+0x01: return ERR_MODBUS_MX2_0x01; break;
-      case 0x08+0x02: return ERR_MODBUS_MX2_0x02; break;
-      case 0x08+0x03: return ERR_MODBUS_MX2_0x03; break;
-      case 0x08+0x21: return ERR_MODBUS_MX2_0x21; break;
-      case 0x08+0x22: return ERR_MODBUS_MX2_0x22; break;
-      case 0x08+0x23: return ERR_MODBUS_MX2_0x23; break;
-    #endif
-    default  :      return ERR_MODBUS_UNKNOW;   break;
-    }
- 
+	using Frame = ModbusMaster::ResultKind;
+	int8_t legacy = ERR_MODBUS_UNKNOW;
+	switch(frame.kind) {
+	case Frame::Success: return {OK, ModbusKind::Success, 0};
+	case Frame::Transport:
+		switch(frame.code) {
+		case 0xE0: legacy = ERR_MODBUS_0xe0; break;
+		case 0xE1: legacy = ERR_MODBUS_0xe1; break;
+		case 0xE2: legacy = ERR_MODBUS_0xe2; break;
+		case 0xE3: legacy = ERR_MODBUS_0xe3; break;
+		}
+		return {legacy, ModbusKind::Transport, frame.code};
+	case Frame::Exception:
+		if(inverter) {
+#ifdef FC_VACON
+			switch(frame.code) {
+			case 5: legacy = ERR_MODBUS_VACON_0x05; break;
+			case 6: legacy = ERR_MODBUS_VACON_0x06; break;
+			case 7: legacy = ERR_MODBUS_VACON_0x07; break;
+			case 8: legacy = ERR_MODBUS_VACON_0x08; break;
+			}
+#else
+			switch(frame.code) {
+			case 1: legacy = ERR_MODBUS_MX2_0x01; break;
+			case 2: legacy = ERR_MODBUS_MX2_0x02; break;
+			case 3: legacy = ERR_MODBUS_MX2_0x03; break;
+			case 0x21: legacy = ERR_MODBUS_MX2_0x21; break;
+			case 0x22: legacy = ERR_MODBUS_MX2_0x22; break;
+			case 0x23: legacy = ERR_MODBUS_MX2_0x23; break;
+			}
+#endif
+		}
+		if(legacy == ERR_MODBUS_UNKNOW && frame.code >= 1 && frame.code <= 4)
+			legacy = ERR_MODBUS_0x01 - (frame.code - 1);
+		return {legacy, ModbusKind::Exception, frame.code};
+	default: return {legacy, ModbusKind::Local, frame.code};
+	}
 }
 
 #ifdef USE_ELECTROMETER_SDM

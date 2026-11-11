@@ -33,7 +33,15 @@
 // ---------------------------------------------------------------------------
 #include "HeatPump.h"
 #include "ClimateControl.h"  // решение об управлении компрессором
+#include "../util/DateTime.h" // Метка для предупреждений только в консоли
 #include "OverheatCalc.h"    // OHN_*: какие датчики нужны правилу перегрева
+
+// Имя активной модели для событий, зарегистрированных общим кодом ТН.
+#ifdef FC_VACON
+static constexpr const char *driveDevice = "VACON";
+#else
+static constexpr const char *driveDevice = "OMRON";
+#endif
 
 // Объявлены в HeatPump.h - создаются здесь, в единственном экземпляре.
 int32_t motohour_OUT_work = 0; // рабочий для счетчиков - энергия отопления, Вт
@@ -68,6 +76,92 @@ bool HeatPump::compressor_emergency_off()
 }
 
 
+// Копирует в info метаданные одной аварии и при наличии text её строку.
+void HeatPump::copy_errorInfo(ErrorEventInfo &info, char *text) const
+{
+	const uint32_t irq = irqSave();
+	info.code = error == OK ? OK : activeErrorCode;
+	info.detail = info.code ? activeErrorDetail : ErrorDetail{};
+	if(info.code) {
+		memcpy(info.source, source_error, sizeof(info.source));
+		if(text) memcpy(text, note_error, sizeof(note_error));
+	} else {
+		info.source[0] = 0;
+		if(text) text[0] = 0;
+	}
+	irqRestore(irq);
+}
+
+// Заполняет event согласованным снимком метаданных и текста активной аварии.
+void HeatPump::get_errorEvent(ErrorEvent &event) const
+{
+	copy_errorInfo(event, event.text);
+}
+
+// Возвращает согласованный снимок метаданных активной аварии без текста.
+ErrorEventInfo HeatPump::get_errorInfo() const
+{
+	ErrorEventInfo info{};
+	copy_errorInfo(info, nullptr);
+	return info;
+}
+
+// Возвращает согласованный снимок предупреждения и при наличии буфера копирует в него текст.
+WarningRecord HeatPump::get_lastWarning(char *text, size_t size) const
+{
+	const uint32_t irq = irqSave();
+	const WarningRecord snapshot = lastWarning;
+	if(text && size) {
+		const size_t count = size < sizeof(lastWarningText) ? size : sizeof(lastWarningText);
+		memcpy(text, lastWarningText, count);
+		text[count - 1] = '\0';
+	}
+	irqRestore(irq);
+	return snapshot;
+}
+
+// Регистрирует предупреждение по коду, устройству и причине.
+// detail заменяет описание, newEpisode разрешает повтор, consoleOnly оставляет вывод в консоли.
+void HeatPump::set_Warning(ErrorCatalog::Code code, const char *device, uint16_t cause,
+                           const char *detail, bool newEpisode, bool consoleOnly)
+{
+	const auto *entry = ErrorCatalog::Find(code);
+	if(!entry) return;
+
+	WarningRecord event{code, cause, rtcSAM3X8.unixtime(), {}};
+	strncpy(event.device, device, sizeof(event.device) - 1);
+	char line[sizeof(lastWarningText)]{};
+	m_snprintf(line, sizeof(line), "$WARN %d %s %s  — %s",
+	           (int)code, entry->source, event.device, detail ? detail : entry->description);
+	ErrorTrimUtf8(line);
+	const uint32_t subject = event.Subject();
+	const bool safety = code == ErrorCatalog::kSAFETY_INTERLOCK;
+	const uint32_t now = safety ? Uptime_s() : 0;
+	const uint32_t irq = irqSave();
+	const bool publish = safety ? !Notify_Seen(&safetyWarnings, subject, now, 60) :
+	                             (newEpisode || !lastWarning.SameCause(event));
+	if(publish) {
+		if(safety) Notify_Remember(&safetyWarnings, subject, now);
+		lastWarning = event;
+		memcpy(lastWarningText, line, sizeof(lastWarningText));
+	}
+	irqRestore(irq);
+	if(!publish) return;
+
+	if(consoleOnly) {
+		char timeText[NOW_TIME_LEN];
+		NowTimeToStr(timeText);
+		if(xTaskGetSchedulerState() == taskSCHEDULER_NOT_STARTED) {
+			SerialDbg.print(timeText);
+			SerialDbg.print(' ');
+			SerialDbg.println(line);
+		} else journal.printf("%s %s\n", timeText, line);
+		return;
+	}
+	journal.jprintf_time("%s\n", line);
+	message.setMessage(code == ErrorCatalog::kSD ? pMESSAGE_SD : pMESSAGE_WARNING, line, code, subject);
+}
+
 // Межблокировки выходов (Safety.h). Этап наблюдения: отказ только пишется в журнал, переключение выполняет вызывающий.
 SAFETY_WHY HeatPump::safety_check(SAFETY_OUT out, bool on, const char *name, const char *src)
 {
@@ -80,36 +174,103 @@ SAFETY_WHY HeatPump::safety_check(SAFETY_OUT out, bool on, const char *name, con
 	s.overrun_in     = DELAY_BEFORE_STOP_IN_PUMP;
 	s.overrun_out    = Option.delayOffPump;
 	SAFETY_WHY w = Safety_Allow(out, on, s);
-	if(w) journal.jprintf_time("$Safety: %s %s by %s - %s (observe only)\n", name, on ? "ON" : "OFF", src, Safety_WhyText(w));
+	if(w) {
+		const uint8_t origin = strcmp(src, "manual") == 0 ? 1 : strcmp(src, "all") == 0 ? 2 :
+		                       strcmp(src, "Modbus") == 0 ? 3 : 0;
+		const uint16_t cause = (static_cast<uint16_t>(w) << 3) | (origin << 1) | on;
+		char detail[96];
+		m_snprintf(detail, sizeof(detail), "%s %s: %s (наблюдение)", src, on ? "ON" : "OFF", Safety_WhyText(w));
+		set_Warning(ErrorCatalog::kSAFETY_INTERLOCK, name, cause, detail);
+	}
 	return w;
 }
 
-// Установка критической ошибки для класса ТН вызывает останов ТН
-// Возвращает ошибку останова ТН
-void set_Error(int8_t _err, char *nam)
+// Снимает команду работающего компрессора и отмечает время успешно отданного останова.
+void HeatPump::stopForError()
 {
-	if(HP.is_compressor_on())    // СРАЗУ Если компрессор включен, выключить  ГЛАВНАЯ ЗАЩИТА
-	{
-		journal.jprintf("$Compressor protection ");
-		if(HP.compressor_emergency_off()) HP.set_stopCompressor();
+	if(is_compressor_on() && compressor_emergency_off()) set_stopCompressor();
+}
+
+void set_Error(int8_t code, char *device)
+{
+	if(code == OK) return;
+	HP.stopForError();
+	HP.record_Error(code, device, ErrorCatalog::FromLegacy(code), {}, code == ERR_MINTEMP || code == ERR_MAXTEMP ? nullptr : Error_Text(code));
+}
+
+// Регистрирует аварию с кодом каталога и исходными деталями.
+// legacy сохраняет внутренний статус, device обозначает источник, meaning заменяет текст каталога.
+// stopIssued означает, что команда останова уже отдана.
+void HeatPump::raise_Error(int8_t legacy, ErrorCatalog::Code code, const char *device,
+                                ErrorDetail detail, const char *meaning, bool stopIssued)
+{
+	if(!stopIssued) stopForError();
+	record_Error(legacy, device, code, detail, meaning);
+}
+
+// Регистрирует окончательный сбой обмена. transport задаёт код для контекста транспортного отказа.
+void HeatPump::raise_ModbusError(ModbusResult result, const char *device, ErrorCatalog::Code transport)
+{
+	if(result.kind == ModbusKind::Success) return;
+	const auto code = ModbusAlarm(result.kind, transport);
+	const int8_t legacy = code == ErrorCatalog::kFC_NO_LINK ? ERR_FC_NO_LINK : result.status;
+	raise_Error(legacy, code, device, ModbusDetail(result));
+}
+
+// Записывает первую аварию, её описание и детали, затем публикует журнал и уведомление.
+// legacy остаётся кодом управления ТН, code выбирает строку нового каталога.
+// device указывает источник, detail задаёт исходный код, meaning заменяет текст каталога.
+void HeatPump::record_Error(int8_t legacy, const char *device, ErrorCatalog::ErrCode code,
+                           ErrorDetail detail, const char *meaning)
+{
+	if(error != OK) return;
+
+	char source[sizeof(source_error)]{};
+	char note[sizeof(note_error)]{};
+	const auto *entry = ErrorCatalog::Find(code);
+	if(entry) {
+		strncpy(source, device, sizeof(source) - 1);
+		char extra[32]{};
+		switch(detail.kind) {
+		case ErrorDetailKind::Fault:
+			if(strcmp(device, "OMRON") == 0)
+				m_snprintf(extra, sizeof(extra), " FAULT E%02d.%d", (int)detail.value, (int)detail.state);
+			else m_snprintf(extra, sizeof(extra), " FAULT %d", (int)detail.value);
+			break;
+		case ErrorDetailKind::Exception: m_snprintf(extra, sizeof(extra), " EXC 0x%02X", (unsigned)detail.value); break;
+		case ErrorDetailKind::Transport: m_snprintf(extra, sizeof(extra), " RX 0x%02X", (unsigned)detail.value); break;
+		case ErrorDetailKind::Local: m_snprintf(extra, sizeof(extra), " LOCAL 0x%02X", (unsigned)detail.value); break;
+		case ErrorDetailKind::State: m_snprintf(extra, sizeof(extra), " STATE %d", (int)(int16_t)detail.value); break;
+		default: break;
+		}
+		m_snprintf(note, sizeof(note), "$ERROR %d %s %s%s  — %s",
+		           (int)code, entry->source, source, extra, meaning ? meaning : entry->description);
+	} else {
+		strncpy(source, device, sizeof(source) - 1);
+		m_snprintf(note, sizeof(note), "$ERROR %d SYS %s  — Неизвестный код %d", (int)legacy, source, (int)legacy);
 	}
 
-	// Занять поле ошибки одной атомарной операцией: задачи с разными приоритетами зовут set_Error одновременно,
-	// и проверка с записью по отдельности давали две записи в source_error/note_error и двойной process_error
-	if(Error_Claim(&HP.error, _err)) {
-		char tmbuf[NOW_TIME_LEN];                    // свой буфер: общей статической строки у времени больше нет (Н-4)
-		// Сборка строки "<время> <источник>: <описание>" делается в ErrorCodes:
-		// там же лежит расшифровка кода, и там она проверяется на хосте -
-		// вместе с обрезкой по границам буферов.
-		Error_Store(HP.source_error, sizeof(HP.source_error),
-		            HP.note_error,   sizeof(HP.note_error),
-		            NowTimeToStr(tmbuf), nam, _err);
-		journal.jprintf_time("$ERROR source: %s, code: %d\n", nam, _err);
-		if(xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) HP.save_DumpJournal(true); // вывод отладочной информации для начала  если запущена freeRTOS
-		HP.message.setMessage(pMESSAGE_ERROR, HP.note_error, _err); // уведомление об ошибке; повтор узнаётся по коду
-		// Сюда ставить надо останов ТН !!!!!!!!!!!!!!!!!!!!!
-		HP.process_error();
+	ErrorTrimUtf8(note);
+	const uint32_t irq = irqSave();
+	const bool first = Error_Claim(&error, legacy);
+	if(first) {
+		activeErrorCode = entry ? code : legacy;
+		activeErrorDetail = detail;
+		memcpy(source_error, source, sizeof(source_error));
+		memcpy(note_error, note, sizeof(note_error));
 	}
+	irqRestore(irq);
+	if(!first) return;
+
+	journal.jprintf_time("%s\n", note);
+	if(xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) save_DumpJournal(true);
+	if(entry) {
+		WarningRecord key{code, detail.value, 0, {}};
+		strncpy(key.device, source, sizeof(key.device) - 1);
+		const uint32_t subject = key.Subject() ^ ((uint32_t)detail.kind << 16) ^ detail.state;
+		message.setMessage(pMESSAGE_ERROR, note, code, subject);
+	} else message.setMessage(pMESSAGE_ERROR, note, legacy);
+	process_error();
 }
 
 void HeatPump::process_error(void)
@@ -185,9 +346,13 @@ void HeatPump::initHeatPump()
 // Стереть последнюю ошибку
 void HeatPump::eraseError()
 {
-	strcpy(note_error, "OK");          // Строка c описанием ошибки
-	strcpy(source_error, "");          // Источник ошибки
-	error = OK;                         // Код ошибки
+	const uint32_t irq = irqSave();
+	strcpy(note_error, "OK");
+	source_error[0] = '\0';
+	activeErrorCode = OK;
+	activeErrorDetail = {};
+	error = OK;
+	irqRestore(irq);
 }
 
 // Получить число ошибок чтения ВСЕХ датчиков температуры
@@ -599,7 +764,7 @@ int8_t HeatPump::ResetFC()
 	dRelay[RRESET].set_ON(); _delay(100); dRelay[RRESET].set_OFF();         // Подать импульс сброса
 	journal.jprintf(" Reset %s by RRESET: ",dFC.get_name());
 #else
-	dFC.reset_FC();                                                         // подать команду на сброс по Modbus
+	if(!dFC.reset_FC()) return dFC.get_err() == OK ? ERR_RESET_FC : dFC.get_err();
     journal.jprintf(" Reset %s by Modbus: ",dFC.get_name());
 #endif
 // 3. Проверка результатов сброса
@@ -839,7 +1004,7 @@ xGoWait:
 		{
 			if(dFC.get_err() != ERR_485_BUSY) {
 				journal.jprintf("%s: is blocked, ignore start\n", dFC.get_name());
-				set_Error(ERR_MODBUS_BLOCK, (char*) __FUNCTION__);          // ВОТ ЗДЕСЬ КОМАНДА СТОП И ПРОЙДЕТ
+				raise_Error(ERR_MODBUS_BLOCK, ErrorCatalog::kFC_BLOCK, driveDevice);
 				return;
 			}
 		}
@@ -1682,8 +1847,9 @@ void HeatPump::compressorON()
 		return;
 	}
 
-	if(ResetFC() != OK) {                                // Сброс инвертора если нужно
-		set_Error(ERR_RESET_FC, (char*) __FUNCTION__);
+	const int8_t reset = ResetFC();
+	if(reset != OK) {
+		if(error == OK) raise_Error(reset, ErrorCatalog::kFC_RESET, driveDevice);
 		return;
 	}
 
@@ -1741,7 +1907,7 @@ void HeatPump::compressorON()
 		if (startPump)                                      // Проверка задачи насос - должен быть выключен
 		{
 			startPump=false;                               // Поставить признак останова задачи насос
-			if(get_workPump()) journal.jprintf(" WARNING! %s: Pumps in pause, OFF . . .\n",(char*)__FUNCTION__);
+			if(get_workPump()) journal.jprintf_time("$WARN! %s: Pumps in pause, OFF . . .\n",(char*)__FUNCTION__);
 		}
 	#ifdef DEFROST
 	  if(!(get_modWork() & pDEFROST))  // При разморозке есть лишние проверки
@@ -1749,13 +1915,13 @@ void HeatPump::compressorON()
 	#endif		
 		// Проверка включения насосов с проверкой и предупреждением (этого не должно быть)
 		if(!dRelay[PUMP_IN].get_Relay()) {
-			journal.jprintf(" WARNING! %s is off before start compressor!\n", dRelay[PUMP_IN].get_name());
+			journal.jprintf_time("$WARN! %s is off before start compressor!\n", dRelay[PUMP_IN].get_name());
 			set_Error(ERR_COMP_NO_PUMP, (char*) dRelay[PUMP_IN].get_name());
 			return;
 		}
 		if(!(dRelay[PUMP_OUT].get_Relay()
 		)) {
-			journal.jprintf(" WARNING! %s is off before start compressor!\n", dRelay[PUMP_OUT].get_name());
+			journal.jprintf_time("$WARN! %s is off before start compressor!\n", dRelay[PUMP_OUT].get_name());
 			set_Error(ERR_COMP_NO_PUMP, (char*) dRelay[PUMP_OUT].get_name());
 			return;
 		}
@@ -1927,7 +2093,7 @@ void HeatPump::defrost()
       // с компрессором в режиме оттайки. DEFROST_WAIT_MAX задаёт предел.
       for(uint16_t w = 0; sInput[SFROZEN].get_Input()!=SFROZEN_OFF; w++)   // ждем оттаивания
       {
-        if(w >= DEFROST_WAIT_MAX / 10) { journal.jprintf("$ERROR: defrost sensor timeout, abort\n"); defrostTimeout = true; break; }
+        if(w >= DEFROST_WAIT_MAX / 10) { journal.jprintf_time("$ERROR: defrost sensor timeout, abort\n"); defrostTimeout = true; break; }
       Watchdog_SleepHere(10*1000);                              // Задержка на 10 сек
         journal.jprintf(" Wait process defrost . . .\n"); 
         if((get_State()==pOFF_HP)||(get_State()==pSTARTING_HP)||(get_State()==pSTOPING_HP)) break;     // ТН выключен или включается или выключается выходим из разморозки
@@ -1972,7 +2138,7 @@ void HeatPump::defrost()
 	 // ПОТОЛОК ОЖИДАНИЯ, та же причина, что и у цикла по датчику обмерзания выше.
 	 for(uint16_t w = 0; sTemp[TEVAOUT].get_Temp()<TEMP_END_DEFROST; w++)   // Ждем оттаивания, поднятия температуры выхода испарителя. Испаритель и конденсатор меняются местами?
 		{
-		  if(w >= DEFROST_WAIT_MAX / 10) { journal.jprintf("$ERROR: defrost heat-gas timeout, abort\n"); defrostTimeout = true; break; }
+		  if(w >= DEFROST_WAIT_MAX / 10) { journal.jprintf_time("$ERROR: defrost heat-gas timeout, abort\n"); defrostTimeout = true; break; }
 		  Watchdog_SleepHere(10*1000);                                                      // Задержка на 10 сек
 		  journal.jprintf(" Wait process HEAT GAS defrost . . .\n");
 		  if (error ||(get_State() == pOFF_HP) || (get_State() == pSTARTING_HP) || (get_State() == pSTOPING_HP)) break; // ТН выключен или включается или выключается выходим из разморозки

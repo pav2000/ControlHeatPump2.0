@@ -37,7 +37,7 @@ const DbgFlagInfo DbgTable[] = {
 	{ "FCW",   G_HW,  "Параметры инвертора на каждый опрос [FC:]",                     DBG_FCW,   0 },
 	{ "SDM",   G_HW,  "Повторные чтения счётчика SDM [Read #]",                        DBG_SDM,   0 },
 	{ "NXT",   G_HW,  "Обмен с дисплеем Nextion [NXTTX:]",                             DBG_NXT,   0 },
-	{ "WERR",  G_NET, "Ошибки веб-запросов [WEB:Wrong request, $Error send]",                       DBG_WERR,  0 },
+	{ "WERR",  G_NET, "Ошибки веб-запросов [WEB:Wrong request, $ERROR send]",                       DBG_WERR,  0 },
 	{ "WFULL", G_NET, "Детальный лог сетевых сервисов [Send request, Response]",       DBG_WFULL, 0 },
 	{ "HTTP",  G_NET, "Тела запросов и ответов веб-сервера [$QUERY, $INPUT, $RETURN]", DBG_HTTP,  0 },
 	{ "PHY",   G_NET, "Подробности сетевого чипа [Speed Status, DHCP use]",            DBG_PHY,   0 },

@@ -242,7 +242,7 @@ void web_server(uint8_t thread)
 							if(DBG_ON(DBG_WERR)) {
 								uint8_t ip[4];
 								W5100.readSnDIPR(sock, ip);
-								journal.jprintf("$Error send AJAX(%d.%d.%d.%d): %s\n", ip[0], ip[1], ip[2], ip[3], (char*) Socket[thread].inBuf);
+								journal.jprintf_time("$ERROR send AJAX(%d.%d.%d.%d): %s\n", ip[0], ip[1], ip[2], ip[3], (char*) Socket[thread].inBuf);
 							}
 						}
 						break;
@@ -252,7 +252,7 @@ void web_server(uint8_t thread)
 						if(api_dispatch(thread) == 0 && DBG_ON(DBG_WERR)) {
 							uint8_t ip[4];
 							W5100.readSnDIPR(sock, ip);
-							journal.jprintf("$Error send API(%d.%d.%d.%d): %s\n", ip[0], ip[1], ip[2], ip[3], Socket[thread].inPtr);
+							journal.jprintf_time("$ERROR send API(%d.%d.%d.%d): %s\n", ip[0], ip[1], ip[2], ip[3], Socket[thread].inPtr);
 						}
 						if(DBG_ON(DBG_HTTP)) { journal.jprintf("$RETURN: %s\n", Socket[thread].outBuf); }
 						break;
@@ -267,7 +267,7 @@ void web_server(uint8_t thread)
 							if(DBG_ON(DBG_WERR)) {
 								uint8_t ip[4];
 								W5100.readSnDIPR(sock, ip);
-								journal.jprintf("$Error send POST(%d.%d.%d.%d): %s\n", ip[0], ip[1], ip[2], ip[3], (char*) Socket[thread].inBuf);
+								journal.jprintf_time("$ERROR send POST(%d.%d.%d.%d): %s\n", ip[0], ip[1], ip[2], ip[3], (char*) Socket[thread].inBuf);
 							}
                			}
 						break;

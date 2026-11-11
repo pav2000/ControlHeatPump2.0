@@ -112,7 +112,7 @@ class Message
   {
    public:
      void initMessage(uint8_t web_task);                                    // Инициализация переменных параметр - номер потока сервера в котором запускается отправка уведомлений
-     boolean setMessage(MESSAGE ms, char *c, int p1);                       // Установить уведомление (сформировать для отправки но НЕ ОТПРАВЛЯТЬ)
+     boolean setMessage(MESSAGE ms, char *c, int p1, uint32_t subject = UINT32_MAX);                       // Установить уведомление (сформировать для отправки но НЕ ОТПРАВЛЯТЬ)
      boolean setTestMail();                                                 // Установить (сформировать) тестовое письмо, отправка sendMessage();  
      boolean setTestSMS();                                                  // Установить (сформировать) тестовое СМС, отправка sendMessage();  
      boolean sendMessage();                                                 // Послать уведомление согласно выбранных настроек сформированное setMessage

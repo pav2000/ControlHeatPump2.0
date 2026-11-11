@@ -38,6 +38,7 @@
 #include "../util/Util.h"         // _itoa/_ftoa/_dtoa
 #include "../util/DateTime.h"     // NowTimeToStr
 #include "../log/Statistics.h"   // Stats для набора величин
+#include "ParamRegistry.h" // Формирование JSON для ERROR_DETAIL
 #include "WebShared.h"    // Socket[]
 
 // ---- M Q T T ----
@@ -416,6 +417,24 @@ static const char *mqtt_topic_name(const Mqtt_item &it, uint8_t n)
 	return "";
 }
 
+// Публикует номер и JSON с исходными деталями одной аварии. false означает отказ отправки.
+static bool mqtt_send_error(bool debug, bool close)
+{
+	const auto event = HP.get_errorInfo();
+	// После temp[16] свободен хвост выходного буфера MAIN_WEB_TASK.
+	char *payload = HP.clMQTT.temp + 16;
+	ApiOut out;
+	api_out_init(&out, payload, 128);
+	api_put(&out, "{\"event\":"); api_put_int(&out, event.code);
+	api_put(&out, ",\"detail\":"); api_put_event_detail(&out, event.code, event.source, event.detail);
+	api_putc(&out, '}');
+	itoa(event.code, HP.clMQTT.temp, 10);
+	if(out.over || !HP.clMQTT.sendTopic(false, debug, false)) return false;
+	strcpy(HP.clMQTT.topic, HP.clMQTT.root);
+	strcat(HP.clMQTT.topic, "ERROR_DETAIL");
+	return HP.clMQTT.sendTopic(false, debug, close, payload);
+}
+
 // Состояние значения пункта кладётся в clMQTT.temp
 static void mqtt_value(const Mqtt_item &it, uint8_t n)
 {
@@ -427,7 +446,7 @@ static void mqtt_value(const Mqtt_item &it, uint8_t n)
 	case MQS_FCcurrent: ftoa(t, (float)HP.dFC.get_current() / 100.0, it.decimals); break;
 	case MQS_FCparam:   *t = '\0'; HP.dFC.get_paramFC((char*)it.param, t); break;
 	case MQS_Relay:     strcpy(t, (char*)(HP.dRelay[n].get_Relay() ? cOne : cZero)); break;
-	case MQS_Error:     itoa(HP.get_errcode(), t, 10); break;
+	case MQS_Error:     break; // Публикуется вместе с деталями из одного снимка
 	case MQS_PowerOUT:  ftoa(t, HP.powerOUT, it.decimals); break;
 	case MQS_COP:       ftoa(t, (float)HP.COP / 100.0, it.decimals); break;
 #ifdef USE_ELECTROMETER_SDM
@@ -533,6 +552,10 @@ boolean sendMQTT(boolean debug)
 			if(!mqtt_cond(it, n)) continue;
 			strcpy(HP.clMQTT.topic, HP.clMQTT.root);
 			strcat(HP.clMQTT.topic, mqtt_topic_name(it, n));
+			if(it.src == MQS_Error) {
+				if(!mqtt_send_error(debug, mqtt_close_here(i, n))) return false;
+				continue;
+			}
 			mqtt_value(it, n);
 			// false - это брокер MQTT, а не НародМон.
 			if(!HP.clMQTT.sendTopic(false, debug, mqtt_close_here(i, n))) return false;
@@ -601,10 +624,19 @@ boolean  sendThingSpeak(boolean debug)
      #endif
      
      strcat(HP.clMQTT.topic,"&field8=");
-     _itoa(HP.get_errcode(),HP.clMQTT.topic);
-     strcat(HP.clMQTT.topic,(char*)"&status=MQTTPUBLISH");
+     const auto event = HP.get_errorInfo();
+     _itoa(event.code,HP.clMQTT.topic);
+     strcat(HP.clMQTT.topic,"&status=MQTTPUBLISH");
+     if(event.code) {
+         if(const char *kind = ErrorDetailToken(event.detail.kind)) {
+             const size_t used = strlen(HP.clMQTT.topic);
+             if(used + 32 >= LEN_TOPIC) return false;
+             m_snprintf(HP.clMQTT.topic + used, LEN_TOPIC - used, "-%s-%u-%u",
+                        kind, (unsigned)event.detail.value, (unsigned)event.detail.state);
+         }
+     }
      // Проверка на длины
-       if((strlen(HP.clMQTT.root)>=LEN_ROOT-2)||(strlen(HP.clMQTT.topic)>LEN_TOPIC-2)) { journal.jprintf("$WARNING: Long topic or data string, is problem.\n"); return false;}
+       if((strlen(HP.clMQTT.root)>=LEN_ROOT-2)||(strlen(HP.clMQTT.topic)>LEN_TOPIC-2)) { journal.jprintf_time("$WARN: Long topic or data string, is problem.\n"); return false;}
      // Отправка
      if(debug || DBG_ON(DBG_MON)) journal.jprintf((char*)MQTTpublish,HP.clMQTT.get_mqtt_server());
      
