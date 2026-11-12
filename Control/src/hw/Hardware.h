@@ -54,7 +54,7 @@ class sensorADC : public Sensor
 {
   public:
     void initSensorADC(uint8_t sensor, uint8_t pinA, uint16_t filter_size); // Инициализация датчика  порядковый номер датчика и нога он куда прикреплен
-    int8_t  Read();                                      // чтение данных c аналогового датчика давления (АЦП) возвращает код ошибки, делает все преобразования
+    int8_t  Read(bool *fresh = nullptr);                  // Статус чтения и, по запросу, свежесть отсчёта.
     inline int16_t get_minValue(){return cfg.minValue;}     // Минимальное значение датчика - нижняя граница диапазона, при выходе из него ошибка
     inline int16_t get_maxValue(){return cfg.maxValue;}     // Максимальное значение датчика - верхняя граница диапазона, при выходе из него ошибка
     int16_t get_zeroValue(){return cfg.zeroValue;}       // Выход датчика (отсчеты ацп)  соответсвующий 0
@@ -83,9 +83,11 @@ class sensorADC : public Sensor
     volatile uint16_t adc_last;       	                // текущий индекс
     volatile boolean  adc_flagFull;     			    // буфер полный
     volatile uint16_t adc_lastVal;             			// последнее считанное значение
+    volatile uint32_t adc_samples;                       // Число принятых отсчётов АЦП.
     int16_t  Temp;										// Температура в сотых
     
   private:
+    uint32_t adc_samples_read;                           // Счётчик при предыдущей проверке свежести.
     int16_t Value;                                       // значение датчика (обработанное) в сотых
     struct {     // Save GROUP, firth number
 		uint8_t number;									 // Номер
@@ -599,8 +601,8 @@ int8_t save_2bytes(uint32_t &addr_to, uint16_t data, uint16_t &crc);
 // Year == 0 - вызывающий обязан это проверять.
 tmElements_t *getTime_RtcI2C();
 int16_t getTemp_RtcI2C();               // встроенный термодатчик часов, в сотых градуса
-void setTime_RtcI2C(uint8_t hour, uint8_t min, uint8_t sec);
-void setDate_RtcI2C(uint8_t date, uint8_t mon, uint16_t year);
+// Сохраняет полную дату и время внутренних часов во внешний DS3232.
+void saveTime_RtcI2C();
 
 // Текстовая причина последнего сброса из регистра RSTC. Определена в Board.cpp.
 char *ResetCause(void);

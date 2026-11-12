@@ -238,7 +238,7 @@ boolean sendNarodMon2022(boolean debug)
 	}
 	if(!flag) {
 		journal.jprintf("sendNarodMon2022: connect fail\n");
-		HP.clMQTT.updateErrMQTT(true);               // После NARMON_NUM_ERR_SLOW неудач подряд период станет редким, но отправка не прекратится
+		HP.clMQTT.noteNarodMonFailure();               // После NARMON_NUM_ERR_SLOW неудач подряд период станет редким, но отправка не прекратится
 		HP.clMQTT.nextStateNARMON();                 // Следующая ступень реанимации - на следующей попытке
 		SemaphoreGive(xWebThreadSemaphore);
 		return false;
@@ -247,7 +247,7 @@ boolean sendNarodMon2022(boolean debug)
 	if(tTCP.write((const uint8_t *)HP.clMQTT.root, strlen(HP.clMQTT.root)) == 0) {
 		journal.jprintf("sendNarodMon2022: send error\n");
 		tTCP.stop();                                 // Сокет закрыть обязательно, иначе останется занятым
-		HP.clMQTT.updateErrMQTT(true);
+		HP.clMQTT.noteNarodMonFailure();
 		HP.clMQTT.nextStateNARMON();
 		SemaphoreGive(xWebThreadSemaphore);
 		return false;
@@ -269,17 +269,17 @@ boolean sendNarodMon2022(boolean debug)
 	if(!answer_ok || debug || DBG_ON(DBG_MON)) journal.jprintf_time((char*)MQTTpublish, HP.clMQTT.get_narodMon_server());
 	if(len == 0) {                                   // Ответа нет - протокол предписывает повторить отправку
 		journal.jprintf("no answer\n");
-		HP.clMQTT.updateErrMQTT(true);
+		HP.clMQTT.noteNarodMonFailure();
 		HP.clMQTT.nextStateNARMON();
 		ret = false;
 	} else if(answer_ok) {                           // Показания приняты
 		if(debug || DBG_ON(DBG_MON)) journal.jprintf("%s\n", answer);
-		HP.clMQTT.resetErrMQTT(true);
+		HP.clMQTT.noteNarodMonSuccess();
 		HP.clMQTT.updateState(true, pMQTT_OK);
 		ret = true;
 	} else {                                         // Ошибка протокола: связь исправна, но данные не приняты.
 		journal.jprintf("ERROR: %s\n", answer);      // ПОВТОРЯТЬ НЕЛЬЗЯ, надо исправлять настройки прибора
-		HP.clMQTT.updateErrMQTT(true);
+		HP.clMQTT.noteNarodMonFailure();
 		HP.clMQTT.updateState(true, pMQTT_OK);       // Реанимировать связь не нужно, она работает
 		ret = true;
 	}
@@ -417,8 +417,8 @@ static const char *mqtt_topic_name(const Mqtt_item &it, uint8_t n)
 	return "";
 }
 
-// Публикует номер и JSON с исходными деталями одной аварии. false означает отказ отправки.
-static bool mqtt_send_error(bool debug, bool close)
+// Публикует номер и JSON с исходными деталями одной аварии. Возвращает итог отправки обоих топиков.
+static MqttResult mqtt_send_error(bool debug, bool close)
 {
 	const auto event = HP.get_errorInfo();
 	// После temp[16] свободен хвост выходного буфера MAIN_WEB_TASK.
@@ -429,7 +429,9 @@ static bool mqtt_send_error(bool debug, bool close)
 	api_put(&out, ",\"detail\":"); api_put_event_detail(&out, event.code, event.source, event.detail);
 	api_putc(&out, '}');
 	itoa(event.code, HP.clMQTT.temp, 10);
-	if(out.over || !HP.clMQTT.sendTopic(false, debug, false)) return false;
+	if(out.over) return MqttResult::Skipped;
+	const auto result = HP.clMQTT.sendTopic(false, debug, false);
+	if(result != MqttResult::Ok) return result;
 	strcpy(HP.clMQTT.topic, HP.clMQTT.root);
 	strcat(HP.clMQTT.topic, "ERROR_DETAIL");
 	return HP.clMQTT.sendTopic(false, debug, close, payload);
@@ -523,7 +525,8 @@ static boolean mqtt_group_on(uint8_t g)
 	return true;     // MQG_BASE шлётся всегда
 }
 
-boolean sendMQTT(boolean debug)
+// Отправляет включённые группы MQTT, debug включает журнал. Возвращает итог цикла.
+MqttResult sendMQTT(boolean debug)
 {
 	HP.clMQTT.clearBuf();                                        // очистить рабочие буфера
 	strcpy(HP.clMQTT.root, "");                                  // корень, к которому приписываются топики
@@ -553,27 +556,29 @@ boolean sendMQTT(boolean debug)
 			strcpy(HP.clMQTT.topic, HP.clMQTT.root);
 			strcat(HP.clMQTT.topic, mqtt_topic_name(it, n));
 			if(it.src == MQS_Error) {
-				if(!mqtt_send_error(debug, mqtt_close_here(i, n))) return false;
+				const auto result = mqtt_send_error(debug, mqtt_close_here(i, n));
+				if(result != MqttResult::Ok) return result;
 				continue;
 			}
 			mqtt_value(it, n);
 			// false - это брокер MQTT, а не НародМон.
-			if(!HP.clMQTT.sendTopic(false, debug, mqtt_close_here(i, n))) return false;
+			const auto result = HP.clMQTT.sendTopic(false, debug, mqtt_close_here(i, n));
+			if(result != MqttResult::Ok) return result;
 			if(debug) journal.jprintf((char*)MQTTDebugStr, HP.clMQTT.topic, HP.clMQTT.temp);
 		}
 	}
 	if(on && debug) journal.jprintf(cStrEnd);
 	if(!debug && DBG_ON(DBG_MON)) journal.jprintf((char*)MQTTPublishOK);
-	return true;
+	return MqttResult::Ok;
 }
 
  
 // Отослать данные на ThingSpeak отсылка идет одним пакетом
 // debug  true - выводить в консоль информацию о посылаемых данных false - нет вывода
-// возвращает true если удачно
+// Возвращает итог публикации.
 // При удачной отправке Socket# 7 Sn_MR:1 Sn_CR:0 Sn_IR:7 Sn_SR:0 Sn_PORT:401 Sn_DPORT:75b Sn_TOS:0 Sn_TTL:80 Sn_IMR:ff Sn_FRAG:4000 Sn_KPALVTR:0
 // При неудачной
-boolean  sendThingSpeak(boolean debug)
+MqttResult sendThingSpeak(boolean debug)
 {
 
      HP.clMQTT.clearBuf();   // подготовить рабочие буфера
@@ -630,18 +635,22 @@ boolean  sendThingSpeak(boolean debug)
      if(event.code) {
          if(const char *kind = ErrorDetailToken(event.detail.kind)) {
              const size_t used = strlen(HP.clMQTT.topic);
-             if(used + 32 >= LEN_TOPIC) return false;
+             if(used + 32 >= LEN_TOPIC) return MqttResult::Skipped;
              m_snprintf(HP.clMQTT.topic + used, LEN_TOPIC - used, "-%s-%u-%u",
                         kind, (unsigned)event.detail.value, (unsigned)event.detail.state);
          }
      }
      // Проверка на длины
-       if((strlen(HP.clMQTT.root)>=LEN_ROOT-2)||(strlen(HP.clMQTT.topic)>LEN_TOPIC-2)) { journal.jprintf_time("$WARN: Long topic or data string, is problem.\n"); return false;}
+       if((strlen(HP.clMQTT.root)>=LEN_ROOT-2)||(strlen(HP.clMQTT.topic)>LEN_TOPIC-2)) { journal.jprintf_time("$WARN: Long topic or data string, is problem.\n"); return MqttResult::Skipped;}
      // Отправка
      if(debug || DBG_ON(DBG_MON)) journal.jprintf((char*)MQTTpublish,HP.clMQTT.get_mqtt_server());
      
-     if (HP.clMQTT.sendTopic(false,debug,true)) { if (debug) journal.jprintf(" %s %s\n", HP.clMQTT.root,HP.clMQTT.topic);else if(DBG_ON(DBG_MON)) journal.jprintf((char*)MQTTPublishOK);return true;} else return false;  
-     return true;
+     const auto result = HP.clMQTT.sendTopic(false, debug, true);
+     if(result == MqttResult::Ok) {
+         if(debug) journal.jprintf(" %s %s\n", HP.clMQTT.root, HP.clMQTT.topic);
+         else if(DBG_ON(DBG_MON)) journal.jprintf((char*)MQTTPublishOK);
+     }
+     return result;
 }
   
 // получить  состояние MQTT клиента в виде строки

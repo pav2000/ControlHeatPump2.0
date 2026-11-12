@@ -405,30 +405,24 @@ tmElements_t *getTime_RtcI2C()
 		ret_getTime_RtcI2C.Year = 0;
 	} else {
 		if(rtcI2C.read(ret_getTime_RtcI2C)) ret_getTime_RtcI2C.Year = 0;
+		else {
+			const int16_t status = rtcI2C.readRTC(RTC_STATUS);
+			if(status < 0 || (status & (1 << RTC_OSF))) ret_getTime_RtcI2C.Year = 0;
+		}
 		SemaphoreGive(xI2CSemaphore);
 	}
 	return &ret_getTime_RtcI2C;
 }
 
-// Часы на I2C   Установка времени
-void setTime_RtcI2C(uint8_t hour, uint8_t min, uint8_t sec)
+// Сохраняет дату и время SAM3X в DS3232. Бит OSF очищается после успешной записи обоих полей.
+void saveTime_RtcI2C()
 {
 	if(SemaphoreTake(xI2CSemaphore, I2C_TIME_WAIT / portTICK_PERIOD_MS) == pdFALSE) {  // Если шедулер запущен то захватываем семафор
 		journal.printf((char*) cErrorMutex, __FUNCTION__, MutexI2CBusy);
 		return;
 	}
-	rtcI2C.setTime(hour, min, sec);
-	SemaphoreGive(xI2CSemaphore);
-}
-
-// Часы на I2C   Установка даты
-void setDate_RtcI2C(uint8_t date, uint8_t mon, uint16_t year)
-{
-	if(SemaphoreTake(xI2CSemaphore, I2C_TIME_WAIT / portTICK_PERIOD_MS) == pdFALSE) {  // Если шедулер запущен то захватываем семафор
-		journal.printf((char*) cErrorMutex, __FUNCTION__, MutexI2CBusy);
-		return;
-	}
-	rtcI2C.setDate(date, mon, year);
+	if(rtcI2C.setDate(rtcSAM3X8.get_days(), rtcSAM3X8.get_months(), rtcSAM3X8.get_years()) == 0)
+		rtcI2C.setTime(rtcSAM3X8.get_hours(), rtcSAM3X8.get_minutes(), rtcSAM3X8.get_seconds());
 	SemaphoreGive(xI2CSemaphore);
 }
 

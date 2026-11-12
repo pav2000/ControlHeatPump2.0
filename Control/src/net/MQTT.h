@@ -20,6 +20,7 @@
 // Заголовок самодостаточен.
 #include "../../Constant.h"
 #include <Ethernet.h>     // EthernetClient
+#include "../core/ServiceWarnings.h" // Итог цикла и счётчик отказов MQTT.
 #include <PubSubClient.h> // PubSubClient
 // ---------------------------------------------------------------------------
 // ---- Структура MQTT клиент ТН ----
@@ -82,8 +83,8 @@ char *get_stateMQTT();
 // Все три существуют только при определённом MQTT - под этим же условием
 // стоят и вызовы. Аргумент debug просит вывести отправляемое в журнал.
 boolean sendNarodMon2022(boolean debug);
-boolean sendMQTT(boolean debug);
-boolean sendThingSpeak(boolean debug);
+MqttResult sendMQTT(boolean debug);
+MqttResult sendThingSpeak(boolean debug);
 
 class clientMQTT                              // Класс клиент MQTT
  {
@@ -99,11 +100,15 @@ class clientMQTT                              // Класс клиент MQTT
     uint16_t get_crc16(uint16_t crc);           // Рассчитать контрольную сумму для данных на входе входная сумма на выходе новая
 
     boolean dnsUpdate();                        // Обновление IP адресов MQTT через dns
-    boolean sendTopic(boolean NM, boolean debug, boolean link_close, const char *payload = nullptr); // Публикует payload либо рабочий буфер temp
+    MqttResult sendTopic(boolean NM, boolean debug, boolean link_close, const char *payload = nullptr); // Публикует payload либо рабочий буфер temp
     void    recoverNARMON();                    // Реанимация связи с народным мониторингом. МЮТЕКС xWebThreadSemaphore ДОЛЖЕН быть захвачен!
 
-    uint16_t updateErrMQTT(boolean NM);         // Еще одна ошибка отправки на MQTT параметр тип сервера true - народный мониторинг false MQTT
-    void resetErrMQTT(boolean NM);               // Сброс числа ошибок отправки; для народного мониторинга ещё и возврат с редкого периода
+    // Учитывает результат одного полного цикла MQTT или ThingSpeak.
+    void finishCycle(MqttResult result);
+    // Учитывает отказ НародМон, возвращает число отказов подряд.
+    uint16_t noteNarodMonFailure();
+    // Завершает серию отказов НародМон после успешной отправки.
+    void noteNarodMonSuccess();
     void updateState(boolean NM,TYPE_STATE_MQTT state){if(NM) stateNARMON=state;else stateMQTT=state;}  // Установка состояния соединения MQTT
 
     // Установка параметров
@@ -163,7 +168,7 @@ class clientMQTT                              // Класс клиент MQTT
    boolean testNARMON;                          // Заказана внеочередная отправка на народный мониторинг (кнопка в веб морде)
    boolean narmonSlow;                          // Редкий период отправки на народный мониторинг после серии неудач
    uint16_t numErrNARMON;                       // число ошибок отправки на народный мониторинг
-   uint16_t numErrMQTT;                         // число ошибок отправки на MQTT
+   MqttFailureSeries mqttFailures;              // Счётчик циклов и состояние предупреждения MQTT.
    TYPE_STATE_MQTT stateNARMON;                 // Состояние передачи что надо делать
    TYPE_STATE_MQTT stateMQTT;                   // Состояние передачи что надо делать
    type_mqtt mqttSettintg;                      // настройки клиента

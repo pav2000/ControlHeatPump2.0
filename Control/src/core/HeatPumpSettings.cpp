@@ -36,6 +36,7 @@
 #include "../net/Message.h"      // Message
 #include "../hw/Nextion.h"      // myNextion
 #include "../hw/Clock.h"        // get_NTP_result
+#include "ServiceWarnings.h"
 #include "../net/ParamRegistry.h" // таблица параметров веб-API (внизу файла)
 #include <stddef.h>               // offsetof
 
@@ -774,9 +775,9 @@ boolean HeatPump::set_datetime(char *var, char *c)
 	int16_t buf[3];
 	// Интервалы считаются по времени работы (Uptime_s) и смены часов не замечают (раздел 6.5): сдвигать нечего
 	if(strcmp(var, time_TIME) == 0) {
-		if(!parseInt16_t(c, ':', buf, 2, 10)) return false;
+		if(!parseInt16_t(c, ':', buf, 2, 10) || buf[0] < 0 || buf[0] > 23 || buf[1] < 0 || buf[1] > 59) return false;
 		rtcSAM3X8.set_time(buf[0], buf[1], 0);  // внутренние
-		setTime_RtcI2C(rtcSAM3X8.get_hours(), rtcSAM3X8.get_minutes(), rtcSAM3X8.get_seconds()); // внешние
+		ClockManualTimeSet(false);
 	} else if(strcmp(var, time_DATE) == 0) {
 		uint8_t i = 0, f = 0;
 		char ch;
@@ -788,9 +789,9 @@ boolean HeatPump::set_datetime(char *var, char *c)
 				break;
 			}
 		} while(ch != '\0');
-		if(f != 2 || !parseInt16_t(c, ch, buf, 3, 10)) return false;
+		if(f != 2 || !parseInt16_t(c, ch, buf, 3, 10) || !ServiceDateValid(buf[0], buf[1], buf[2])) return false;
 		rtcSAM3X8.set_date(buf[0], buf[1], buf[2]); // внутренние
-		setDate_RtcI2C(rtcSAM3X8.get_days(), rtcSAM3X8.get_months(), rtcSAM3X8.get_years()); // внешние
+		ClockManualTimeSet(true);
 	} else if(strcmp(var, time_NTP) == 0) {
 		if(strlen(c) == 0) return false;                                                 // пустая строка
 		if(strlen(c) > NTP_SERVER_LEN) return false;                                     // слишком длиная строка

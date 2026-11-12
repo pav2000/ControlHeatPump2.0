@@ -26,6 +26,44 @@
 #include "Hardware.h"     // getTime_RtcI2C, rtcSAM3X8
 #include "../net/Network.h"      // check_address, Udp, сокет W5200_SOCK_SYS
 #include "../core/Rtos.h"         // семафор сети, Watchdog_AliveHere
+#include "../core/ServiceWarnings.h"
+
+static ServiceClockTrust clockTrust; // Подтверждение источника и контроль хода внутренних часов.
+
+// Подтверждает установку часов по исправному RTC или принятому сетевому времени.
+void ClockConfirmTime()
+{
+	const uint32_t now = Uptime_s();
+	const uint32_t irq = irqSave();
+	clockTrust.Confirm(now);
+	irqRestore(irq);
+}
+
+// Учитывает введённое поле date и сохраняет подтверждённые часы во внешний RTC.
+void ClockManualTimeSet(bool date)
+{
+	const uint32_t now = Uptime_s();
+	const uint32_t irq = irqSave();
+	const bool trusted = clockTrust.Manual(date, now);
+	irqRestore(irq);
+	if(trusted) saveTime_RtcI2C();
+}
+
+// Возвращает достоверность и подтверждает, что встроенные часы идут, в момент now.
+bool ClockTimeTrusted(uint32_t now)
+{
+	uint16_t year;
+	uint8_t month, day, hour, minute, second;
+	const uint32_t irq = irqSave();
+	rtcSAM3X8.get_date(nullptr, &day, &month, &year);
+	rtcSAM3X8.get_time(&hour, &minute, &second);
+	const bool valid = !(RTC->RTC_VER & (RTC_VER_NVTIM | RTC_VER_NVCAL)) &&
+	                   ServiceDateValid(day, month, year) && hour < 24 && minute < 60 && second < 60;
+	const uint32_t wall = valid ? rtcSAM3X8.unixtime() : 0;
+	const bool trusted = clockTrust.Trusted(now, wall, valid);
+	irqRestore(irq);
+	return trusted;
+}
 
 // Установить внутренние часы. Интервалы защит и задержек считаются по времени работы (Uptime_s), от скачка часов
 // не зависят и сдвига не требуют (раздел 6.5) - поправка только пишется в журнал. При старте часы ещё не выставлены,
@@ -50,13 +88,14 @@ static byte packetBuffer[NTP_PACKET_SIZE+1];       // буфер, в котор�
 // Возвращает код ошибки
 int8_t set_time(void)
 {
-	journal.jprintf(" I2C RTC DS3232: %s\n", DecodeTimeDate(TimeToUnixTime(getTime_RtcI2C()),(char*) packetBuffer));   // Показать что i2c часы работают - показав текущее время
+	const uint32_t t = TimeToUnixTime(getTime_RtcI2C());
+	if(t) journal.jprintf(" I2C RTC DS3232: %s\n", DecodeTimeDate(t, (char*) packetBuffer));
 	journal.jprintf(" Init SAM3X8E RTC\n");
 	rtcSAM3X8.init();                             // Запуск внутренних часов
-	uint32_t t = TimeToUnixTime(getTime_RtcI2C());
 	if(!(HP.get_updateNTP() && set_time_NTP())) { // Обновить время по NTP
 		if(t) {
 			rtcSAM3X8.set_clock(t);                // Установить внутренние часы по i2c
+			ClockConfirmTime();
 			{ char d_[NOW_DATE_LEN], t_[NOW_TIME_LEN]; journal.jprintf(" Time updated from I2C RTC: %s %s\n", NowDateToStr(d_), NowTimeToStr(t_)); }
 		} else {
 			journal.jprintf("Error read I2C RTC\n");
@@ -177,12 +216,10 @@ boolean set_time_NTP(void)
 	}
 	if(flag > 0) {  // Обновление времени если оно получено
 		unsigned long lt = rtcSAM3X8.unixtime();
-		if(lt != secs) {
-			setClockLogged(secs);                   // обновить внутренние часы
-		}
+		setClockLogged(secs);
 		// обновились, можно и часы i2c обновить
-		setTime_RtcI2C(rtcSAM3X8.get_hours(), rtcSAM3X8.get_minutes(), rtcSAM3X8.get_seconds());
-		setDate_RtcI2C(rtcSAM3X8.get_days(), rtcSAM3X8.get_months(), rtcSAM3X8.get_years());
+		ClockConfirmTime();
+		saveTime_RtcI2C();
 		{ char d_[NOW_DATE_LEN], t_[NOW_TIME_LEN]; journal.jprintf("OK\n Set time from server: %s %s", NowDateToStr(d_), NowTimeToStr(t_)); }
 		journal.jprintf(", was: %02lu:%02lu:%02lu\n", lt % 86400L / 3600, lt % 3600 / 60, lt % 60);
 	}
@@ -290,8 +327,8 @@ boolean set_time_NTP(void)
 	if(flag) {  // Обновление времени если оно получено
 		setClockLogged(secs);                   // обновить внутренние часы
 		// обновились, можно и часы i2c обновить
-		setTime_RtcI2C(rtcSAM3X8.get_hours(), rtcSAM3X8.get_minutes(), rtcSAM3X8.get_seconds());
-		setDate_RtcI2C(rtcSAM3X8.get_days(), rtcSAM3X8.get_months(), rtcSAM3X8.get_years());
+		ClockConfirmTime();
+		saveTime_RtcI2C();
 		journal.jprintf_date("Set time from NTP server");
 	} else {
 		journal.jprintf_date("ERROR update time from NTP server!");
@@ -338,7 +375,8 @@ char* NowDateToStr(char *buf)
 static  const uint8_t dim[] = { 31,28,31,30,31,30,31,31,30,31,30,31 };
 unsigned long TimeToUnixTime(tmElements_t *t) //[V]*
 {
-	if(t->Year == 0) return 0;
+	if(!ServiceDateValid(t->Day, t->Month, t->Year) || t->Hour > 23 ||
+	   t->Minute > 59 || t->Second > 59) return 0;
 	uint16_t dc;
 	dc = t->Day;
 	for(uint8_t i = 0; i < (t->Month - 1); i++)	dc += dim[i];

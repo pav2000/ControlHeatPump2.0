@@ -21,6 +21,55 @@
 #include "src/log/RingChart.h"
 #include <Ethernet.h>              // Нужна для определения SPI_RATE в w5100.h
 
+// ---- Второй этап: защиты и сервисные предупреждения ----
+constexpr bool PRESS_PROT_LOW_ENABLED = false;  // Включить после проверки PEVA и выдержек на ТН.
+constexpr bool PRESS_PROT_HIGH_ENABLED = false; // Включить при установленном и проверенном PCON.
+constexpr int PRESS_PROT_LOW_CBAR = 400;        // Останов при ≤ 4,00 бар избыточного давления.
+constexpr int PRESS_PROT_HIGH_CBAR = 2200;      // Предварительный порог останова ≥ 22,00 бар.
+constexpr int PRESS_PROT_LOW_RECOVER_CBAR = 430;  // Пробная граница восстановления низкого давления.
+constexpr int PRESS_PROT_HIGH_RECOVER_CBAR = 2100; // Пробная граница допуска после аварии, давление должно быть ниже.
+constexpr unsigned long PRESS_PROT_LOW_STABILIZE_MS = 60000UL; // Пробная задержка после пуска и смены режима.
+constexpr unsigned long PRESS_PROT_LOW_CONFIRM_MS = 12000UL;  // Пробная выдержка низкого давления.
+constexpr unsigned long PRESS_PROT_HIGH_CONFIRM_MS = 4000UL;  // Пробная выдержка высокого давления, включая пуск.
+
+constexpr bool SUPERHEAT_WARN_ENABLED = true;             // Наблюдать перегрев на всасывании.
+constexpr int SUPERHEAT_LOW_CK = 200;                     // Нижний порог предупреждения ≤ 2,00 K.
+constexpr int SUPERHEAT_HIGH_CK = 1400;                   // Верхний порог предупреждения ≥ 14,00 K.
+constexpr unsigned long SUPERHEAT_LOW_CONFIRM_MS = 60000UL;   // Выдержка нижнего порога.
+constexpr unsigned long SUPERHEAT_HIGH_CONFIRM_MS = 180000UL; // Выдержка верхнего порога.
+constexpr unsigned long SUPERHEAT_STABILIZE_MS = 300000UL; // Пробные 5 минут после пуска и смены режима.
+constexpr int SUPERHEAT_HYSTERESIS_CK = 50;                // Пробный отступ 0,50 K для завершения эпизода.
+constexpr bool BOILER_TEMP_INTERLOCK_ENABLED = true; // Отключать ТЭН по действующему максимуму TBOILER.
+constexpr int BOILER_TEMP_RECOVER_MARGIN_CC = 50;    // Отступ восстановления от максимума, 0,50 °C.
+
+constexpr bool MQTT_WARN_ENABLED = true;    // Предупреждать по действующему MQTT_NUM_ERR_OFF.
+constexpr bool NOTIFY_WARN_ENABLED = true;  // Предупреждать при первом окончательном отказе по каналу.
+// Число повторов доставки задаёт действующий MAIL_RETRY_MAX.
+constexpr bool TIME_WARN_ENABLED = true;    // Следить за достоверностью часов.
+constexpr unsigned TIME_UNTRUSTED_CONFIRM_S = 300; // Выдержка без достоверного времени.
+
+constexpr bool HEAP_LOW_WARN_ENABLED = true;       // Наблюдать запас свободной памяти.
+constexpr int HEAP_LOW_BYTES = 4096;                // Предупреждение при запасе ниже 4 КиБ.
+constexpr int HEAP_RECOVER_BYTES = 6144;            // Восстановление при запасе от 6 КиБ.
+constexpr unsigned HEAP_LOW_CONFIRM_S = 60;        // Выдержка низкого запаса.
+constexpr unsigned HEAP_RECOVER_CONFIRM_S = 60;    // Выдержка восстановления.
+
+constexpr bool IO_BUS_WARN_ENABLED = true;          // Наблюдать устойчивые сбои SPI/DMA.
+constexpr unsigned IO_BUS_WINDOW_S = 60;            // Длительность окна наблюдения.
+constexpr unsigned IO_BUS_TIMEOUT_LIMIT = 3;        // Порог таймаутов шины за окно.
+constexpr unsigned IO_DMA_TIMEOUT_LIMIT = 3;        // Порог таймаутов DMA за окно.
+constexpr unsigned IO_DMA_OVERRUN_LIMIT = 3;        // Порог переполнений приёмника за окно.
+constexpr unsigned IO_BAD_WINDOWS = 2;              // Число окон подряд по одному счётчику.
+
+static_assert(PRESS_PROT_LOW_CBAR < PRESS_PROT_LOW_RECOVER_CBAR &&
+              PRESS_PROT_LOW_RECOVER_CBAR < PRESS_PROT_HIGH_RECOVER_CBAR &&
+              PRESS_PROT_HIGH_RECOVER_CBAR < PRESS_PROT_HIGH_CBAR, "Invalid pressure thresholds");
+static_assert(SUPERHEAT_LOW_CK < SUPERHEAT_HIGH_CK, "Invalid superheat thresholds");
+static_assert(SUPERHEAT_HYSTERESIS_CK > 0 &&
+              2 * SUPERHEAT_HYSTERESIS_CK < SUPERHEAT_HIGH_CK - SUPERHEAT_LOW_CK,
+              "Invalid superheat hysteresis");
+static_assert(HEAP_LOW_BYTES < HEAP_RECOVER_BYTES, "Invalid free memory thresholds");
+
 // ---------------------------------------------------------------------------
 // ПРОФИЛЬ ПЛАТЫ
 //

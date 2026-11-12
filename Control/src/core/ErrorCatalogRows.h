@@ -84,9 +84,8 @@ ERROR_DEF(NET, -58, INFRASTRUCTURE, "NET", Warning, "Сработал дейст
 
 ERROR_DEF(PRESS_PROT_LOW, -59, STAGE_TWO, "PRESS", Alarm, "Рабочее давление на стороне низкого давления устойчиво ниже порога защиты")
 ERROR_DEF(PRESS_PROT_HIGH, -60, STAGE_TWO, "PRESS", Alarm, "Рабочее давление на стороне высокого давления достигло порога защиты")
-ERROR_DEF(EEV_SUPERHEAT_LOW, -61, STAGE_TWO, "EEV", Alarm, "Перегрев хладагента устойчиво ниже аварийного предела")
+ERROR_DEF(EEV_SUPERHEAT_LOW, -61, STAGE_TWO, "EEV", Warning, "Подтверждён низкий перегрев хладагента на входе компрессора")
 ERROR_DEF(EEV_SUPERHEAT_HIGH, -62, STAGE_TWO, "EEV", Warning, "Перегрев хладагента устойчиво выше допустимого")
-ERROR_DEF(BOILER_OVERHEAT, -63, STAGE_TWO, "TEMP", Alarm, "Температура бойлера достигла отдельного порога защиты ГВС")
 ERROR_DEF(MQTT, -64, STAGE_TWO, "NET", Warning, "Подтверждён устойчивый отказ отправки MQTT")
 ERROR_DEF(NOTIFY, -65, STAGE_TWO, "NET", Warning, "Подтверждён отказ отправки по каналу почты или SMS")
 ERROR_DEF(TIME, -66, STAGE_TWO, "TIME", Warning, "Контроллер не располагает достоверным временем")

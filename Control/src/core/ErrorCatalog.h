@@ -39,7 +39,7 @@ enum class Group : uint8_t {
 	SETTINGS,      // Настройки, конфигурация и профили
 	STORAGE_SYSTEM,// Носители и системные ошибки
 	INFRASTRUCTURE,// Сеть и шины контроллера
-	STAGE_TWO      // Зарезервированные проверки второго этапа
+	STAGE_TWO      // Защиты и предупреждения второго этапа
 };
 
 enum class Registration : uint8_t {
@@ -61,6 +61,8 @@ struct Entry {
 
 // Возвращает запись для отрицательного кода из справочника, иначе nullptr.
 const Entry *Find(ErrCode code);
+// Возвращает запись по индексу index в порядке каталога, иначе nullptr.
+const Entry *At(uint8_t index);
 // Возвращает номер события для прежнего статуса или 0, если соответствия нет.
 ErrCode FromLegacy(ErrCode legacy);
 // Возвращает число строк справочника.

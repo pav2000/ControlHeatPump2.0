@@ -53,6 +53,7 @@ void Message::initMessage(uint8_t web_task)
   smtpSemLost=false;
   sendCh=0;
   sendRetry=0;
+  deliveryFailures = {};
   sendRetryTime=0;
   // Инициализация переменных
   IPAddress zeroIP(0, 0, 0, 0);
@@ -580,6 +581,14 @@ boolean Message::setTestSMS() // может запускаться из любо
   return setMessage(pMESSAGE_TESTSMS, (char*)"Тестовое уведомление, для проверки SMS", 0);
 }
 
+// Регистрирует окончательный результат доставки result для почты или SMS (ch).
+void Message::noteDelivery(uint8_t ch, NOTIFY_TRY result)
+{
+	if(!NOTIFY_WARN_ENABLED || result == NTRY_RETRY) return;
+	if(deliveryFailures.Update(ch, result == NTRY_OK))
+		HP.set_Warning(ErrorCatalog::kNOTIFY, ch == NCH_MAIL ? "MAIL" : "SMS", ch, nullptr, true);
+}
+
 // Послать уведомление согласно выбранных настроек сформированное setMessage
 // Каналы проходятся по маске sendCh: прошедший (или с постоянной ошибкой) снимается, с временной ошибкой ждёт повтора.
 // true - уведомление отправлено или его не было false - при отправке произошли ошибки
@@ -602,7 +611,9 @@ boolean Message::sendMessage()  // запуск из 0 потока
     for (i = 0; i < strlen(retMail); i++) if (retMail[i] == '=') retMail[i] = ':'; // замена знака = на : т.к. это запрещенный знак в запросах
     setRetTest(ok ? "Тестовое письмо отправлено на " : "Тестовое письмо НЕ отправлено на ", mess_SMTP_RCPTTO, retMail);
     // Ошибка с кодом 4xx или обрыв связи (smtpCode == 0) - временная, при 5xx нужна правка настроек
-    sendCh = Notify_AfterTry(sendCh, NCH_MAIL, Notify_TryResult(ok, smtpCode < 500, test));
+    const auto result = Notify_TryResult(ok, smtpCode < 500, test);
+    if(!test) noteDelivery(NCH_MAIL, result);
+    sendCh = Notify_AfterTry(sendCh, NCH_MAIL, result);
   }
 
   if ((!(GETBIT(messageSetting.flags, fMail))) && (cur().ms == pMESSAGE_TESTMAIL)) // Почта не разрешена а отправляется тестовое письмо
@@ -626,7 +637,9 @@ boolean Message::sendMessage()  // запуск из 0 потока
         break;
     }
     setRetTest(r == NTRY_OK ? "Тестовое SMS отправлено на номер " : "Тестовое SMS НЕ отправлено на номер ", mess_SMS_PHONE, retSMS);
-    sendCh = Notify_AfterTry(sendCh, NCH_SMS, Notify_TryResult(r == NTRY_OK, r == NTRY_RETRY, test));
+    const auto result = Notify_TryResult(r == NTRY_OK, r == NTRY_RETRY, test);
+    if(!test) noteDelivery(NCH_SMS, result);
+    sendCh = Notify_AfterTry(sendCh, NCH_SMS, result);
   }
 
   if ((!(GETBIT(messageSetting.flags, fSMS))) && (cur().ms == pMESSAGE_TESTSMS)) // SMS не разрешена а отправляется тестовое SMS
@@ -637,6 +650,10 @@ boolean Message::sendMessage()  // запуск из 0 потока
     journal.jprintf("Notify retry %d/%d in %d sec:%s%s\n", sendRetry, MAIL_RETRY_MAX, MAIL_RETRY_DELAY,
                     (sendCh & NCH_MAIL) ? " mail" : "", (sendCh & NCH_SMS) ? " SMS" : "");
     return false;
+  }
+  if(!test) {
+    if(sendCh & NCH_MAIL) noteDelivery(NCH_MAIL, NTRY_FAIL);
+    if(sendCh & NCH_SMS) noteDelivery(NCH_SMS, NTRY_FAIL);
   }
   finishCurrent();
   return true;

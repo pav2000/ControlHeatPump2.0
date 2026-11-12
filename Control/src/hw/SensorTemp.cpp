@@ -83,9 +83,12 @@ void sensorTemp::WatchIP()
 #endif
 }
 
-// Чтение датчиков температуры, возвращает код ошибки, делает все преобразования
-int8_t sensorTemp::Read() 
+// Читает температуру и возвращает код ошибки.
+// freshLocal, если передан, отмечает принятый проводной отсчёт или подставной отсчёт стенда.
+int8_t sensorTemp::Read(bool *freshLocal)
 {  
+	if(freshLocal) *freshLocal = false;
+	bool accepted = false;
 	if(!(GETBIT(flags, fPresent))) return OK;          // датчик запрещен в конфигурации ничего не делаем
 	WatchIP();                                         // потеря и возвращение удалённого датчика - в журнал; ТН при этом не останавливается
 	if(testMode!=NORMAL) lastTemp=cfg.testTemp;             // В режиме теста присвоить значение теста
@@ -144,6 +147,7 @@ int8_t sensorTemp::Read()
 				   if(nGap == 0 || !get_setup_flag(fTEMP_dont_log_errors))
 					   journal.jprintf_time("GAP %s t=%.2d, %s\n", name, ttemp, nGap == 0 ? "accept" : "skip");
 				}
+				accepted = err == OK && nGap == 0 && lastTemp != STARTTEMP;
 			}
 		}
 #endif
@@ -164,7 +168,19 @@ int8_t sensorTemp::Read()
 
 	// Проверка на ошибки именно здесь обрабатывются ошибки и передаются на верх
 	if(Temp<minTemp) { set_Error(err = ERR_MINTEMP, name); return err; }
-	if(Temp>maxTemp) { set_Error(err = ERR_MAXTEMP, name); return err; }
+	const int16_t limit = maxTemp;
+	if(cfg.number == TBOILER) {
+#ifdef DEMO
+		HP.observeBoilerTemperature(Temp, limit, true);
+#else
+		HP.observeBoilerTemperature(Temp, limit, accepted);
+#endif
+	}
+	if(Temp>limit) { set_Error(err = ERR_MAXTEMP, name); return err; }
+#ifdef DEMO
+	accepted = testMode != NORMAL;
+#endif
+	if(freshLocal) *freshLocal = accepted;
 	// дошли до сюда значит ошибок нет
 	return (err = OK);                                        // Новый цикл новые ошибки!! СБРОС ОШИБКИ
 }

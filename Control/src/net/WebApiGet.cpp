@@ -29,6 +29,7 @@
 #include "../core/HeatPump.h"     // HeatPump, HP, устройства и датчики
 #include "WebShared.h"    // Socket[], Watchdog_StatWeb, get_Counts
 #include "Network.h"      // initW5200, sendBufferRTOS, socketInfo, nameWiznet
+#include "../core/ServiceWarnings.h"
 #include "../log/Statistics.h"   // Stats, имена файлов статистики
 #include "../hw/Clock.h"        // get_NTP_result: итог последней синхронизации времени
 #include "../util/Util.h"         // _itoa, ftoa, dptoa, byteToHex, addressToHex
@@ -684,11 +685,11 @@ static const char *const apiErrorRegistration[] = {"ERROR", "WARN", "REQUIRED_AT
 // Пишет в o выбранную часть каталога с явными номерами и метаданными.
 static void api_put_errors(ApiOut *o, uint8_t part)
 {
-	const int from = part * API_ERR_PAGE + 1;
+	const int from = part * API_ERR_PAGE;
 	const int to = from + API_ERR_PAGE;
 	api_putc(o, '[');
-	for(int i = from; i < to && i <= ErrorCatalog::Count(); ++i) {
-		const auto &entry = *ErrorCatalog::Find(-i);
+	for(int i = from; i < to && i < ErrorCatalog::Count(); ++i) {
+		const auto &entry = *ErrorCatalog::At(i);
 		if(i != from) api_putc(o, ',');
 		api_put(o, "{\"code\":"); api_put_int(o, entry.code);
 		api_put(o, ",\"group\":"); api_put_str(o, apiErrorGroups[static_cast<uint8_t>(entry.group)]);
@@ -1300,7 +1301,7 @@ static int apiAct_reset_webstat(ApiOut *o, const char *) { memset(&webStat, 0, s
 // Счётчики шины SPI (вкладка «SPI&Web»). Отказы CMD18 не сбрасываются: по их росту SD_ReadMode пишет в журнал.
 static int apiAct_reset_spi(ApiOut *o, const char *)
 {
-	spiBusStat.dmaTimeouts = 0; spiBusStat.dmaOverruns = 0; spiBusStat.dmaLate = 0;
+	ServiceWarningsResetSpi();
 	sdBusyMaxMs = 0;
 	api_put(o, "\"ok\"");
 	return AE_OK;

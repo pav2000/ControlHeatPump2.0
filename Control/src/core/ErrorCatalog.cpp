@@ -31,12 +31,13 @@ static constexpr Entry catalog[] = {
 // Число записей, доступных по отрицательному коду.
 static constexpr size_t count = sizeof(catalog) / sizeof(catalog[0]);
 
-// Непрерывная нумерация гарантирует уникальность и прямой доступ по индексу.
-// Проверяет порядок и уникальность номеров начиная с index. Возвращает true при совпадении.
+// Проверяет уникальность и убывание отрицательных номеров начиная с index.
+// Возвращает true, если оставшиеся записи упорядочены.
 constexpr bool IsOrdered(size_t index)
 {
 	return index == count ||
-	       (catalog[index].code == -static_cast<int>(index) - 1 && IsOrdered(index + 1));
+	       (catalog[index].code < (index == 0 ? 0 : catalog[index - 1].code) &&
+	        IsOrdered(index + 1));
 }
 
 static_assert(IsOrdered(0), "Invalid error catalog order");
@@ -44,9 +45,18 @@ static_assert(IsOrdered(0), "Invalid error catalog order");
 // Возвращает запись по отрицательному коду или nullptr для отсутствующего кода.
 const Entry *Find(ErrCode code)
 {
-	const int index = -static_cast<int>(code) - 1;
-	if(index < 0 || static_cast<size_t>(index) >= count) return nullptr;
-	return &catalog[index];
+	if(code >= 0) return nullptr;
+	for(const auto &entry : catalog) {
+		if(entry.code == code) return &entry;
+		if(entry.code < code) break;
+	}
+	return nullptr;
+}
+
+// Возвращает запись по индексу index в порядке каталога, иначе nullptr.
+const Entry *At(uint8_t index)
+{
+	return index < count ? &catalog[index] : nullptr;
 }
 
 // Переход от прежних статусов к кодам событий по карте переноса. Ноль обозначает пропуск.

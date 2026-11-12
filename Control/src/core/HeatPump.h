@@ -35,6 +35,7 @@
 #include "../hw/VaconFC.h"
 #include "Scheduler.h"
 #include "WarningRecord.h"
+#include "PressureProtection.h"
 
 
 int32_t updatePID(int32_t errorPid, PID_STRUCT &pid, PID_WORK_STRUCT &pidw);
@@ -273,6 +274,13 @@ class HeatPump
     void vUpdate();                                          // Итерация по управлению всем ТН - старт-стоп
     void calculatePower();                                   // Вычисление мощностей контуров и КОП
     void eraseError();                                       // стереть последнюю ошибку
+    // Принимает температуру и максимум TBOILER в сотых °C, fresh подтверждает достоверный отсчёт.
+    // При перегреве блокирует нагрев ГВС и снимает все команды с ТЭНа.
+    void observeBoilerTemperature(int16_t temperature, int16_t limit, bool fresh);
+    // Возвращает true, пока действует температурная блокировка ГВС.
+    bool boilerHeatBlocked() const;
+    // Принимает свежесть отсчётов PEVA и PCON из цикла датчиков и регистрирует аварию давления.
+    void checkPressureProtection(bool lowFresh, bool highFresh);
     void process_error(void);
 
     inline int8_t get_errcode(){return error == OK ? OK : activeErrorCode;} // Получить код последней ошибки
@@ -593,6 +601,13 @@ class HeatPump
     MODE_COMP UpdateCool();               // Итерация охлаждение вход true - делаем, false - ТОЛЬКО проверяем выход что сделано или надо сделать
     MODE_COMP UpdateBoiler();             // Итерация управления бойлером возвращает что делать компрессору
     void compressorON();                  // попытка включить компрессор  с учетом всех защит
+    // Возвращает режим контура для PEVA и PCON или pOFF вне отопления и ГВС.
+    MODE_HP pressureWorkMode();
+    // Возвращает допуск пуска по свежему PCON и состоянию верхней защиты.
+    bool pressureAllowsStart();
+    PressureProtection pressureProtection; // Состояние защит давления и допуска повторного пуска.
+    volatile bool boilerTempBlocked = false; // Блокировка ГВС, читается из задач управления и веба.
+    int16_t boilerTripLimit = 0;             // Предел TBOILER при срабатывании, в сотых °C.
     void compressorOFF();                 // попытка выключить компрессор  с учетом всех защит
     boolean check_compressor_pause();     // проверка на паузу между включениями
     int8_t check_crc16_eeprom(int32_t addr, uint16_t size);// Проверить контрольную сумму в EEPROM для данных на выходе ошибка, длина определяется из заголовка

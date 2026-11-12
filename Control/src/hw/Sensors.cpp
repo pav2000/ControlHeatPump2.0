@@ -118,6 +118,7 @@ void ADC_Handler(void)
 		// Усреднение значений
 		adc->adc_sum = adc->adc_sum + adc->adc_lastVal - adc->adc_filter[adc->adc_last];   // Добавить новое значение, Убрать самое старое значение
 		adc->adc_filter[adc->adc_last] = adc->adc_lastVal;			                       // Запомнить новое значение
+		++adc->adc_samples;
 		if(adc->adc_last < adc->adc_filter_max) adc->adc_last++;
 		else {
 			// Порядок важен: читатель (sensorADC::Read) делит adc_sum на adc_last,
@@ -154,6 +155,7 @@ void sensorADC::initSensorADC(uint8_t sensor, uint8_t pinA, uint16_t filter_size
 	adc_last = 0;                                                                  // текущий индекс
 	adc_flagFull = false;                                                          // буфер полный
 	adc_lastVal = 0;                                                               // последнее считанное значение
+	adc_samples = adc_samples_read = 0;
 	clearBuffer();
 
 	testMode = NORMAL;                           // Значение режима тестирования
@@ -183,13 +185,19 @@ void sensorADC::initSensorADC(uint8_t sensor, uint8_t pinA, uint16_t filter_size
       SETBIT0(flags,fFull);                      // Буфер не полный
  }
   
-// чтение данных c аналогового датчика (АЦП) возвращает код ошибки, делает все преобразования
- int8_t sensorADC::Read()
+// Читает давление и возвращает код ошибки.
+// fresh, если передан, отмечает новый принятый отсчёт АЦП или подставной отсчёт стенда.
+ int8_t sensorADC::Read(bool *fresh)
  {
+	 if(fresh) *fresh = false;
+	 bool accepted = false;
 	 if(!(GETBIT(flags, fPresent))) return err;        // датчик запрещен в конфигурации ничего не делаем
 	 int16_t lastPress;
 	 if(testMode != NORMAL) {
 		 lastPress = cfg.testValue;                // В режиме теста
+#ifdef DEMO
+		 accepted = true;
+#endif
 	 } else {                                      // Чтение датчика
 #ifdef DEMO
 		 lastADC=random(1350,2500);                // В демо режиме генерим значение
@@ -209,6 +217,11 @@ void sensorADC::initSensorADC(uint8_t sensor, uint8_t pinA, uint16_t filter_size
 				 uint32_t primask = __get_PRIMASK();
 				 __disable_irq();
 				 s = adc_sum; n = adc_last; full = adc_flagFull; raw = adc_lastVal;
+				 if(fresh) {
+					 const uint32_t samples = adc_samples;
+					 accepted = samples != adc_samples_read;
+					 adc_samples_read = samples;
+				 }
 				 __set_PRIMASK(primask);
 			 }
 			 if(full) lastADC = s / (adc_filter_max + 1);
@@ -242,6 +255,7 @@ void sensorADC::initSensorADC(uint8_t sensor, uint8_t pinA, uint16_t filter_size
 		 return err;
 	 }
 	 // Дошли до сюда значит ошибок нет
+	 if(fresh) *fresh = accepted;
 	 err = OK;                                         // Новый цикл новые ошибки
 	 return err;
  }
@@ -559,10 +573,24 @@ int8_t devRelay::set_Relay(int8_t r, bool planned)
 {
 	if(!(flags & (1 << fPresent))) return ERR_DEVICE;  // Реле не установлено  и пытаемся его включить
 	const char *src = r == fR_StatusAllOff ? "all" : (r == fR_StatusManual || r == -fR_StatusManual) ? "manual" : "auto";
+#ifdef RBOILER
+	const bool boiler = BOILER_TEMP_INTERLOCK_ENABLED && number == RBOILER;
+#else
+	constexpr bool boiler = false;
+#endif
+	// Запрет, флаги и вывод ТЭНа меняются без переключения задач.
+	const uint32_t irq = boiler ? irqSave() : 0;
+	if(boiler && r > 0 && HP.boilerHeatBlocked()) {
+		irqRestore(irq);
+		return ERR_DEVICE;
+	}
 	flags = Relay_ApplyStatus(flags, r);
 	r = (flags & fR_StatusMask) != 0;
-	if(Relay == r) return OK;   // Ничего менять не надо выходим
-	HP.safety_check(relay_safety_out(number), r, name, src);   // межблокировки: пока только наблюдение
+	if(Relay == r) {
+		if(boiler) irqRestore(irq);
+		return OK;
+	}
+	if(!boiler) HP.safety_check(relay_safety_out(number), r, name, src); // Для ТЭНа бойлера SAFE_OTHER.
     Relay = r;                  // Все удачно, сохранить
 	if(testMode == NORMAL || testMode == HARD_TEST || (testMode == TEST && number != RCOMP)) {
 #ifndef RELAY_INVERT            // Нет инвертирования реле -  Влючение реле (Relay=true) соответсвует НИЗКИЙ уровень на выходе МК
@@ -573,6 +601,7 @@ int8_t devRelay::set_Relay(int8_t r, bool planned)
 #endif
 		digitalWriteDirect(pin, r);
 	}
+	if(boiler) irqRestore(irq);
 #ifdef RELAY_WAIT_SWITCH
 	uint8_t tasks_suspended = TaskSuspendAll();
 	delay(RELAY_WAIT_SWITCH);

@@ -159,7 +159,8 @@ void HeatPump::set_Warning(ErrorCatalog::Code code, const char *device, uint16_t
 		return;
 	}
 	journal.jprintf_time("%s\n", line);
-	message.setMessage(code == ErrorCatalog::kSD ? pMESSAGE_SD : pMESSAGE_WARNING, line, code, subject);
+	if(code != ErrorCatalog::kNOTIFY)
+		message.setMessage(code == ErrorCatalog::kSD ? pMESSAGE_SD : pMESSAGE_WARNING, line, code, subject);
 }
 
 // Межблокировки выходов (Safety.h). Этап наблюдения: отказ только пишется в журнал, переключение выполняет вызывающий.
@@ -658,11 +659,36 @@ void HeatPump::relayAllOFF()
   for(i=0;i<RNUMBER;i++)  dRelay[i].set_AllOFF();      // Выключить все реле, и включённые вручную тоже (6.2)
 }                               
 
+// Возвращает true, пока превышение температуры бойлера блокирует нагрев ГВС.
+bool HeatPump::boilerHeatBlocked() const
+{
+	return BOILER_TEMP_INTERLOCK_ENABLED && boilerTempBlocked;
+}
+
+// Обрабатывает температуру и максимум TBOILER в сотых °C. fresh разрешает восстановление.
+// При первом превышении блокирует ГВС и выключает ТЭН со всех источников.
+void HeatPump::observeBoilerTemperature(int16_t temperature, int16_t limit, bool fresh)
+{
+	if(!BOILER_TEMP_INTERLOCK_ENABLED) return;
+	if(temperature > limit) {
+		if(!boilerTempBlocked || limit < boilerTripLimit) boilerTripLimit = limit;
+		if(boilerTempBlocked) return;
+		boilerTempBlocked = true;
+#ifdef RBOILER
+		dRelay[RBOILER].set_AllOFF();
+#endif
+	} else if(fresh && boilerTempBlocked) {
+		const int recover = (limit < boilerTripLimit ? limit : boilerTripLimit) - BOILER_TEMP_RECOVER_MARGIN_CC;
+		if(temperature <= recover) boilerTempBlocked = false;
+	}
+}
+
 // Переключение на бойлер или обратно (true-бойлер false-отопление/охлаждение) возврат onBoiler
 // в зависимости от режима, не забываем менять onBoiler по нему определяется включение ГВС
 // Функция вызывается на работающем компрессоре
 boolean HeatPump::switchBoiler(boolean b)
 {
+	if(b && boilerHeatBlocked()) return false;
 	
 	journal.jprintf(" swBoiler(%d): %X, mW:%d\n", b, onBoiler, get_modWork());
 #ifdef R3WAY
@@ -1218,6 +1244,7 @@ boolean HeatPump::scheduleBoiler()
 // возврат что надо делать компрессору, функция НЕ управляет компрессором а только выдает необходимость включения компрессора
 MODE_COMP  HeatPump::UpdateBoiler()
 {
+	if(boilerHeatBlocked()) return pCOMP_OFF;
 #ifdef RBOILER  // управление дополнительным ТЭНом бойлера
 	if(boilerAddHeat()) { // Дополнительный нагреватель бойлера - нужно греть
 		if(get_State() == pOFF_HP || get_State() == pSTOPING_HP) { // Если ТН выключен или выключается
@@ -1746,6 +1773,7 @@ else if(dRelay[RHEAT].get_Relay()) dRelay[RHEAT].set_OFF();// есть пита�
 // В зависимости от входного параметра конфигурирует краны, выход true - разрешен запуск компрессора
 boolean HeatPump::configHP(MODE_HP conf)
 {
+	if((conf & pBOILER) && boilerHeatBlocked()) return false;
 	if(conf == pOFF) { // ЭТО может быть пауза! Выключить - установить положение как при включении ( перевод 4-х ходового производится после отключения компрессора (см compressorOFF()))
 		#ifdef RBOILER
 			if((GETBIT(Prof.Boiler.flags,fTurboBoiler))&&(dRelay[RBOILER].get_present())) dRelay[RBOILER].set_OFF();  // Выключить ТЭН бойлера в режиме турбо (догрев не работает)
@@ -1833,6 +1861,60 @@ boolean HeatPump::check_compressor_pause()
 	return compressor_in_pause = false;
 }
 
+// Возвращает режим измерения PEVA и PCON для схемы этого профиля.
+MODE_HP HeatPump::pressureWorkMode()
+{
+	const MODE_HP mode = get_modWork() & ~pCONTINUE;
+	return is_heating() && (mode == pHEAT || mode == pBOILER) ? mode : pOFF;
+}
+
+// Принимает признаки свежести PEVA и PCON и регистрирует подтверждённую аварию.
+// Верхняя защита проверяется первой и обновляет допуск пуска даже при останове.
+void HeatPump::checkPressureProtection(bool lowFresh, bool highFresh)
+{
+	const uint32_t now = GetTickCount();
+	constexpr uint32_t maxGapMs = 2 * TIME_READ_SENSOR; // Срок годности отсчёта давления.
+	const MODE_HP mode = pressureWorkMode();
+	const bool running = is_compressor_on();
+	if(PRESS_PROT_HIGH_ENABLED) {
+		const int pressure = sADC[PCON].get_Value();
+		const bool valid = highFresh && (mode != pOFF || (!running && is_heating()));
+		const uint32_t irq = irqSave();
+		const bool trip = pressureProtection.ObserveHigh(now, running && mode != pOFF, valid, pressure,
+			PRESS_PROT_HIGH_CBAR, PRESS_PROT_HIGH_RECOVER_CBAR, PRESS_PROT_HIGH_CONFIRM_MS, maxGapMs);
+		irqRestore(irq);
+		if(trip) {
+			char detail[48];
+			m_snprintf(detail, sizeof(detail), "%.2d бар >= %.2d бар", pressure, PRESS_PROT_HIGH_CBAR);
+			raise_Error(ERR_ANALOG_MAX, ErrorCatalog::kPRESS_PROT_HIGH, "PCON", {}, detail);
+			return;
+		}
+	}
+	if(PRESS_PROT_LOW_ENABLED) {
+		const bool confirmedRunning = running && (!dFC.get_present() || dFC.get_frequency() > 0);
+		const bool valid = lowFresh && (!dFC.get_present() || dFC.get_err() == OK);
+		const int pressure = sADC[PEVA].get_Value();
+		if(pressureProtection.ObserveLow(now, confirmedRunning ? mode : pOFF, get_startCompressor(), valid, pressure,
+		   PRESS_PROT_LOW_CBAR, PRESS_PROT_LOW_RECOVER_CBAR, PRESS_PROT_LOW_STABILIZE_MS,
+		   PRESS_PROT_LOW_CONFIRM_MS, maxGapMs)) {
+			char detail[48];
+			m_snprintf(detail, sizeof(detail), "%.2d бар <= %.2d бар", pressure, PRESS_PROT_LOW_CBAR);
+			raise_Error(ERR_ANALOG_MIN, ErrorCatalog::kPRESS_PROT_LOW, "PEVA", {}, detail);
+		}
+	}
+}
+
+// Возвращает допуск пуска по актуальному PCON и защёлке высокого давления.
+bool HeatPump::pressureAllowsStart()
+{
+	if(!PRESS_PROT_HIGH_ENABLED) return true;
+	const uint32_t irq = irqSave();
+	const bool allowed = pressureProtection.CanStart(GetTickCount(), pressureWorkMode() != pOFF,
+	                                                  PRESS_PROT_HIGH_CBAR, 2 * TIME_READ_SENSOR);
+	irqRestore(irq);
+	return allowed;
+}
+
 // Попытка включить компрессор  с учетом всех защит КОНФИГУРАЦИЯ уже установлена
 // Вход режим работы ТН
 // Возможно компрессор уже включен и происходит только смена режима
@@ -1842,6 +1924,8 @@ void HeatPump::compressorON()
 	if(get_State() == pOFF_HP || get_State() == pSTOPING_HP || error) return;  // ТН выключен или выключается выходим ничего не делаем!!!
 
 	if(is_compressor_on()) return;                                  // Компрессор уже работает
+	if((get_modWork() & pBOILER) && boilerHeatBlocked()) return;
+	if(!pressureAllowsStart()) return;
 	if(is_next_command_stop()) {
 		journal.jprintf(" Next command stop in queue, skip start");
 		return;
@@ -1966,7 +2050,13 @@ void HeatPump::compressorON()
 #ifndef FC_USE_RCOMP
 		if(dFC.get_present()) safety_check(SAFE_COMP, true, dFC.get_name(), "Modbus");   // инвертор пускается по шине, мимо реле RCOMP
 #endif
+		const bool boilerStart = (get_modWork() & pBOILER) != 0;
+		if(error || !pressureAllowsStart() || (boilerStart && boilerHeatBlocked())) return;
 	  	COMPRESSOR_ON;                                      // Включить компрессор
+		if(boilerStart && boilerHeatBlocked()) {
+			stopForError();
+			return;
+		}
 		if(error || dFC.get_err()) return; // Ошибка - выходим
 	} else { // if (get_errcode()==OK)
 		journal.jprintf(" EEV not set before start compressor!\n");

@@ -87,7 +87,7 @@ void clientMQTT::initMQTT(uint8_t web_task)
  stateNARMON=pMQTT_OK;                                     // Состояние передачи, с него начинается лестница реанимации
  stateMQTT=pMQTT_OK;
  numErrNARMON=0;                                           // Счетчики ошибок отправки подряд
- numErrMQTT=0;
+ mqttFailures = {};
  w5200_MQTT.setSock(W5200_SOCK_SYS);                       // Установить сокет с которым работаем
 }
 
@@ -181,55 +181,39 @@ uint16_t clientMQTT::get_crc16(uint16_t crc)
   return crc;
 }
 
-// Сброс числа ошибок отправки. Для народного мониторинга это ещё и возврат
-// с редкого периода: удачная отправка означает, что связь восстановилась.
-void clientMQTT::resetErrMQTT(boolean NM)
+// Завершает серию отказов НародМон и возвращает штатный период.
+void clientMQTT::noteNarodMonSuccess()
 {
- if (NM)
-     {
-     if(narmonSlow)
-         {
-         narmonSlow=false;
-         journal.jprintf_time((char*)BackService,get_narodMon_server());
-         }
-     numErrNARMON=0;
-     }
- else numErrMQTT=0;
+	if(narmonSlow) {
+		narmonSlow = false;
+		journal.jprintf_time((char*)BackService, get_narodMon_server());
+	}
+	numErrNARMON = 0;
 }
 
-// Еще одна ошибка отправки на MQTT параметр тип сервера true - народный мониторинг false MQTT
-uint16_t clientMQTT::updateErrMQTT(boolean NM)
+// Учитывает отказ НародМон, возвращает число отказов до порога редкого периода.
+uint16_t clientMQTT::noteNarodMonFailure()
 {
- if (NM)
-     {
-     // Отправка на народный мониторинг не выключается никогда. После серии
-     // неудач она уходит на редкий период и живёт так до восстановления связи;
-     // дальше неудачи не считаются, счётчик стоит на пороге. Пользовательский
-     // флаг fNarodMonUse НЕ ТРОГАЕМ - он принадлежит владельцу, а не нам.
-     numErrNARMON++;
-     if (numErrNARMON>=NARMON_NUM_ERR_SLOW)
-         {
-         if(!narmonSlow)
-             {
-             narmonSlow=true;
-             journal.jprintf_time((char*)SlowService,get_narodMon_server(),NARMON_SLOW/60);
-             }
-         numErrNARMON=NARMON_NUM_ERR_SLOW; // не растим дальше, в этом режиме неудачи не важны
-         }
-      return numErrNARMON;
-     }
- else
-     {
-     numErrMQTT++;
-     if (numErrMQTT>=MQTT_NUM_ERR_OFF)
-         {
-         SETBIT0(mqttSettintg.flags,fMqttUse);
-         journal.jprintf_time((char*)BlockService,get_mqtt_server());
-         numErrMQTT=0;// сбросить счетчик
-         }
-      return numErrMQTT;
-     }
-return 0;
+	if(numErrNARMON < NARMON_NUM_ERR_SLOW) ++numErrNARMON;
+	if(numErrNARMON >= NARMON_NUM_ERR_SLOW && !narmonSlow) {
+		narmonSlow = true;
+		journal.jprintf_time((char*)SlowService, get_narodMon_server(), NARMON_SLOW / 60);
+	}
+	return numErrNARMON;
+}
+
+// Учитывает итог result полного цикла, при достижении лимита отключает отправку.
+void clientMQTT::finishCycle(MqttResult result)
+{
+	if(!get_MqttUse() || !mqttFailures.Update(result, MQTT_NUM_ERR_OFF)) return;
+	if(MQTT_WARN_ENABLED && !mqttFailures.warned) {
+		const bool publish = result == MqttResult::Publish;
+		HP.set_Warning(ErrorCatalog::kMQTT, "MQTT", publish ? 2 : 1,
+		               publish ? "Отказ публикации" : "Отказ подключения", true);
+		mqttFailures.warned = true;
+	}
+	SETBIT0(mqttSettintg.flags, fMqttUse);
+	journal.jprintf_time((char*)BlockService, get_mqtt_server());
 }
 
 // Реанимация связи с народным мониторингом ПЕРЕД очередной попыткой соединения.
@@ -285,19 +269,17 @@ void clientMQTT::nextStateNARMON()
 }
 
 
-// Внутренная функция послать один топик, возврат удачно или нет послан топик, при не удаче запись в журнал
-// NM - true народный мониторинг, false обычный сервер
-// debug - выводить отладочные сообщения
-// link_close  = true - по завершению закрывать связь  false по завершению не закрывать связь (отсылка нескольких топиков)
-boolean clientMQTT::sendTopic(boolean NM, boolean debug, boolean link_close, const char *payload)
+// Публикует один топик, NM выбирает сервер, debug включает диагностику.
+// link_close закрывает связь, payload заменяет рабочий буфер. Возвращает итог отправки.
+MqttResult clientMQTT::sendTopic(boolean NM, boolean debug, boolean link_close, const char *payload)
 {
   TYPE_STATE_MQTT state;
   IPAddress tempIP;
   uint8_t i;
-  if(SemaphoreTake(xWebThreadSemaphore,(W5200_TIME_WAIT/portTICK_PERIOD_MS))==pdFALSE) {journal.jprintf((char*)cErrorMutex,__FUNCTION__,MutexWebThreadBusy);return false;} // Захват семафора потока или ОЖИДАНИЕ W5200_TIME_WAIT, если семафор не получен то выходим
+  if(SemaphoreTake(xWebThreadSemaphore,(W5200_TIME_WAIT/portTICK_PERIOD_MS))==pdFALSE) {journal.jprintf((char*)cErrorMutex,__FUNCTION__,MutexWebThreadBusy);return MqttResult::Skipped;} // Захват семафора потока или ОЖИДАНИЕ W5200_TIME_WAIT, если семафор не получен то выходим
  if (NM) state=stateNARMON; else state=stateMQTT;
 
- if (!linkStatusWiznet(false)) {journal.jprintf((char*)"sendTopic:no link.\n");  SemaphoreGive(xWebThreadSemaphore); return false;}// Нет связи выходим
+ if (!linkStatusWiznet(false)) {journal.jprintf((char*)"sendTopic:no link.\n");  SemaphoreGive(xWebThreadSemaphore); return MqttResult::Connect;}// Нет связи выходим
 
  if (!w5200_MQTT.connected())   // если нет соединения то возможно требуется реанимация
   {
@@ -332,14 +314,16 @@ boolean clientMQTT::sendTopic(boolean NM, boolean debug, boolean link_close, con
 // Попытка соединения - и определение что делаем дальше
          if (connect(NM))                                        // Попытка соединения
           {
-           w5200_MQTT.publish(topic, payload ? payload : temp);                              // Посылка данных топика
-           if (link_close) w5200_MQTT.disconnect();              // отсоединение если надо
-           if (debug) ShowSockRegisters(W5200_SOCK_SYS);         // выводим состояние регистров ЕСЛИ ОТЛАДКА
-
+           const bool published = w5200_MQTT.publish(topic, payload ? payload : temp);
+           if(link_close || !published) w5200_MQTT.disconnect();
+           if(debug) ShowSockRegisters(W5200_SOCK_SYS);
            SemaphoreGive(xWebThreadSemaphore);
-           resetErrMQTT(NM);                                     // Удачно - сбрасываем счетчик ошибок
-           updateState(NM,pMQTT_OK);
-           return true;
+           updateState(NM, published ? pMQTT_OK : pMQTT_SOCK);
+           if(NM) {
+               if(published) noteNarodMonSuccess();
+               else noteNarodMonFailure();
+           }
+           return published ? MqttResult::Ok : MqttResult::Publish;
           }
           else                                  // соединение не установлено
           {
@@ -354,11 +338,9 @@ boolean clientMQTT::sendTopic(boolean NM, boolean debug, boolean link_close, con
                case pMQTT_DNS:  updateState(NM,pMQTT_RES);  break;
                case pMQTT_RES:  updateState(NM,pMQTT_OK);   break;
                }
-           updateErrMQTT(NM);                             // Добавляем ошибку
-           return false;
+           if(NM) noteNarodMonFailure();                             // Добавляем ошибку
+           return MqttResult::Connect;
           }
-         SemaphoreGive(xWebThreadSemaphore);
- return false;
 }
  // Попытаться соеденится с сервером МЮТЕКС уже захвачен!!
 boolean clientMQTT::connect(boolean NM)

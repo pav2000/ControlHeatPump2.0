@@ -36,6 +36,9 @@
 
 #include "src/hw/Hardware.h"
 #include "src/core/HeatPump.h"
+#include "src/core/Freon.h"
+#include "src/core/SuperheatWarning.h"
+#include "src/core/ServiceWarnings.h"
 #include "src/hw/Nextion.h"
 #include "src/net/Message.h"
 #include "src/core/Profile.h"
@@ -1160,7 +1163,7 @@ void vWeb0(void *)
 			}
 			// Штатная отправка по времени. Период зависит от режима: после серии
 			// неудач подряд отправка уходит на редкий NARMON_SLOW и продолжается
-			// там до первой удачи - выключаться ей нельзя, см. updateErrMQTT.
+			// там до первой удачи - выключаться ей нельзя, см. noteNarodMonFailure.
 			if ((HP.clMQTT.get_NarodMonUse())&&(thisTime-narmont>(HP.clMQTT.get_NarodMonSlow()?NARMON_SLOW:TIME_NARMON)*1000UL)&&(active))
 			{
 				WEB_STORE_DEBUG_INFO(55);
@@ -1179,8 +1182,8 @@ void vWeb0(void *)
 			{
 				WEB_STORE_DEBUG_INFO(56);
 				mqttt=thisTime;
-				if(HP.clMQTT.get_TSUse()) sendThingSpeak(false);
-				else sendMQTT(false);
+				const auto result = HP.clMQTT.get_TSUse() ? sendThingSpeak(false) : sendMQTT(false);
+				HP.clMQTT.finishCycle(result);
 				active=false;
 			}
 #endif   // MQTT
@@ -1225,6 +1228,45 @@ void vWeb3(void *)
 }
 
 //////////////////////////////////////////////////////////////////////////
+#if defined(EEV_DEF) && defined(TCOMPIN)
+// Возвращает режим контроля перегрева при подтверждённой работе компрессора.
+// Ноль означает останов, переход на охлаждение или оттайку.
+static uint8_t superheatWorkMode()
+{
+	if(!HP.is_compressor_on() || !HP.is_heating()) return 0;
+	if(HP.dFC.get_present() && HP.dFC.get_frequency() <= 0) return 0;
+	const uint8_t mode = HP.get_modWork() & ~pCONTINUE;
+	return mode == pHEAT || mode == pBOILER ? mode : 0;
+}
+
+// Проверяет свежую пару TCOMPIN и PEVA для участка mode/start и пишет новый эпизод.
+// valid подтверждает чтение обоих датчиков. Значения передаются в сотых.
+static void checkSuctionSuperheat(uint8_t mode, uint32_t start, bool valid, int16_t suction, int16_t pressure)
+{
+	static SuperheatWarning monitor; // Состояние подтверждения в задаче датчиков.
+	static constexpr SuperheatLimits limits{ // Уставки и допустимый интервал между замерами.
+		SUPERHEAT_LOW_CK, SUPERHEAT_HIGH_CK, SUPERHEAT_HYSTERESIS_CK,
+		SUPERHEAT_LOW_CONFIRM_MS, SUPERHEAT_HIGH_CONFIRM_MS, SUPERHEAT_STABILIZE_MS,
+		2 * TIME_READ_SENSOR
+	};
+	int value = 0;
+	if(valid && mode) {
+		const int16_t saturation = Freon_PressToTemp(pressure);
+		valid = saturation > Freon_TempMin() && saturation < Freon_TempMax();
+		value = static_cast<int>(suction) - saturation;
+	}
+	const auto event = monitor.Update(limits, GetTickCount(), start, mode, valid, value);
+	if(event == SuperheatEvent::None) return;
+
+	const bool low = event == SuperheatEvent::Low;
+	char detail[48];
+	m_snprintf(detail, sizeof(detail), "%.2d K %s %.2d K", value, low ? "<=" : ">=",
+	           low ? limits.low : limits.high);
+	HP.set_Warning(low ? ErrorCatalog::kEEV_SUPERHEAT_LOW : ErrorCatalog::kEEV_SUPERHEAT_HIGH,
+	               "TCOMPIN", 0, detail, true);
+}
+#endif
+
 // Задача чтения датчиков
 void vReadSensor(void *)
 {
@@ -1243,12 +1285,31 @@ void vReadSensor(void *)
 		int8_t i;
 
 		ttime = GetTickCount();
+		bool suctionPressureFresh = false;
+		bool dischargePressureFresh = false;
+#if defined(EEV_DEF) && defined(TCOMPIN)
+		constexpr bool readSuctionFresh = SUPERHEAT_WARN_ENABLED || PRESS_PROT_LOW_ENABLED;
+#else
+		constexpr bool readSuctionFresh = PRESS_PROT_LOW_ENABLED;
+#endif
+#if defined(EEV_DEF) && defined(TCOMPIN)
+		const uint8_t suctionMode = SUPERHEAT_WARN_ENABLED ? superheatWorkMode() : 0;
+		const uint32_t suctionStart = HP.get_startCompressor();
+		bool suctionTempFresh = false;
+#endif
 		if(OW_scan_flags == 0) {
 #ifndef DEMO  // Если не демо
 			prtemp = HP.Prepare_Temp(0);
 #endif     // не DEMO
 		}
-		for(i = 0; i < ANUMBER; i++) HP.sADC[i].Read();                  // Прочитать данные с датчиков давления
+		for(i = 0; i < ANUMBER; i++) {
+			bool *fresh = nullptr;
+			if(readSuctionFresh && i == PEVA) fresh = &suctionPressureFresh;
+			if(PRESS_PROT_HIGH_ENABLED && i == PCON) fresh = &dischargePressureFresh;
+			HP.sADC[i].Read(fresh);
+		}
+		if(PRESS_PROT_LOW_ENABLED || PRESS_PROT_HIGH_ENABLED)
+			HP.checkPressureProtection(suctionPressureFresh, dischargePressureFresh);
 		for(i = 0; i < INUMBER; i++) HP.sInput[i].Read();                // Прочитать данные сухой контакт
 #ifdef SGENERATOR
 		if(GETBIT(HP.Option.flags2, f2BackupPowerAuto)) HP.check_fBackupPower();
@@ -1265,7 +1326,12 @@ void vReadSensor(void *)
 			uint8_t flags = 0;
 			for(i = 0; i < TNUMBER; i++) {                                   // Прочитать данные с температурных датчиков
 				if((prtemp & (1<<HP.sTemp[i].get_bus())) == 0) {
-					if(HP.sTemp[i].Read() == OK) flags |= HP.sTemp[i].get_setup_flags();
+#if defined(EEV_DEF) && defined(TCOMPIN)
+					const int8_t result = HP.sTemp[i].Read(SUPERHEAT_WARN_ENABLED && i == TCOMPIN ? &suctionTempFresh : nullptr);
+#else
+					const int8_t result = HP.sTemp[i].Read();
+#endif
+					if(result == OK) flags |= HP.sTemp[i].get_setup_flags();
 				}
 				_delay(1);     												// пауза
 			}
@@ -1318,6 +1384,16 @@ void vReadSensor(void *)
 				readFC = GetTickCount();
 				HP.dFC.get_readState();
 			}
+#if defined(EEV_DEF) && defined(TCOMPIN)
+		if(SUPERHEAT_WARN_ENABLED) {
+			const uint8_t mode = superheatWorkMode();
+			const uint32_t start = HP.get_startCompressor();
+			const bool valid = suctionTempFresh && suctionPressureFresh &&
+			                   (!HP.dFC.get_present() || HP.dFC.get_err() == OK) &&
+			                   suctionMode == mode && suctionStart == start;
+			checkSuctionSuperheat(mode, start, valid, HP.sTemp[TCOMPIN].get_rawTemp(), HP.sADC[PEVA].get_Value());
+		}
+#endif
 
 #ifdef DRV_EEV_L9333  // Опрос состяния драйвера ЭРВ
 		if (digitalReadDirect(PIN_STEP_DIAG)) // Перечитываем два раза
@@ -1349,6 +1425,7 @@ void vReadSensor(void *)
 				uint32_t t = TimeToUnixTime(getTime_RtcI2C());       // Прочитать время из часов i2c тут проблема
 				if(t) {
 					rtcSAM3X8.set_clock(t);                		 // Установить внутренние часы по i2c; интервалы по Uptime_s сдвига не требуют
+					ClockConfirmTime();
 					{ char d_[NOW_DATE_LEN], t_[NOW_TIME_LEN]; journal.jprintf((const char*) "Sync from I2C RTC: %s %s\n", NowDateToStr(d_), NowTimeToStr(t_)); }
 				} else {
 					journal.jprintf("Error read I2C RTC\n");
@@ -1726,6 +1803,7 @@ void vServiceHP(void *)
 		register uint32_t t = xTaskGetTickCount();
 		if(t - timer_sec >= 1000) { // 1 sec
 			Watchdog_Supervise(t);
+			ServiceWarningsPoll();
 			if(GPBR->SYS_GPBR[GPBR_BOOT] && t > BOOT_HEALTHY_S * 1000UL) GPBR->SYS_GPBR[GPBR_BOOT] = 0;   // проработали без перезагрузки - счёт аварийных подряд с нуля
 			{	// Счётчик повторных пусков: час работы без ошибок - попытки снова все (раньше обнулялся только ручным пуском)
 				static RepeatWatch repeat_watch = { 0 };

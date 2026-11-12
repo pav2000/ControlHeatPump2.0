@@ -23,6 +23,7 @@
 #define Message_h
 #include "../../Constant.h"                       // Вся конфигурация и константы проекта Должен быть первым !!!!
 #include "NotifyQueue.h"                          // очередь ожидающих уведомлений
+#include "../core/ServiceWarnings.h"
 
 // Константы
 #define LEN_TEMPBUF      256                // Длина рабочего буфера используемого для работы уведомлений
@@ -156,6 +157,8 @@ class Message
     const type_messageData &cur() { return pend[nq.cur]; }                   // отправляемое; только при busy()
     void    startCurrent();                                                  // новое отправляемое: каналы и повторы с начала (под запретом прерываний)
     void    finishCurrent();                                                 // отправка закончена: следующее из очереди
+    // Регистрирует окончательный исход result канала ch и обновляет его серию отказов.
+    void noteDelivery(uint8_t ch, NOTIFY_TRY result);
     boolean sendMail();                                                      // Отправить почту
     NOTIFY_TRY sendSMS();                                                    // Отправить SMS через sms.ru
     NOTIFY_TRY sendSMSC();                                                   // Отправить SMS через smsc.ru, smsc.ua
@@ -192,6 +195,7 @@ class Message
     boolean  smtpSemLost;                // семафор сети потерян: трогать сокет и отдавать семафор НЕЛЬЗЯ
     uint8_t  sendCh;                     // каналы отправляемого, которые ещё предстоит пройти (NCH_*)
     uint8_t  sendRetry;                  // сколько повторных попыток отправляемого уже сделано
+    NotifyFailureSeries deliveryFailures; // Состояние предупреждений почты и SMS.
     uint32_t sendRetryTime;              // время работы Uptime_s(), раньше которого повторять не начинаем
     char retTest[LEN_RETTEST];           // ПОСЛЕДНИЙ ответ от посылки тестового УВЕДОМЛЕНИЯ для экономии места он единый для писем и смс. К сожалению ответ возвращается в запросе от любого потока и поэтому должен храниться отдельно.
     uint16_t WorkFlags;
