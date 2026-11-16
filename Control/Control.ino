@@ -1719,6 +1719,11 @@ void vUpdateEEV(void *)
 				HP.dEEV.set_EEV(HP.dEEV.get_StartPos());
 			}
 		}
+		// DOP истёк, но переход на стартовую позицию ещё может продолжаться.
+		// Не рассчитывать первую коррекцию от промежуточного положения клапана.
+		while(HP.dEEV.stepperEEV.isBusy()) {
+			Watchdog_Sleep(WDT_UpdateEEV, TIME_EEV_BEFORE_PID);
+		}
 		HP.dEEV.resetPID();
 		// Рабочий цикл ПИД: пока компрессор работает, повторяем итерацию, не
 		// возвращаясь к ожиданию delayOnPid и не сбрасывая ПИД. Цикл явный (без goto

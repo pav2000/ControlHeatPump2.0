@@ -692,6 +692,20 @@ void HeatPump::observeBoilerTemperature(int16_t temperature, int16_t limit, bool
 boolean HeatPump::switchBoiler(boolean b)
 {
 	if(b && boilerHeatBlocked()) return false;
+	if(b != onBoiler) {            // Не переносить интеграл и предыдущую ошибку в другой режим
+		resetPID();
+#ifdef EEV_DEF
+		// Рабочее открытие ЭРВ зависит от режима ступенькой: отопление ~2,5 шага/Гц, ГВС заметно меньше.
+		// На переходе (по истории 14.11: 88 -> 51 Гц) ПИД закрывает эти шаги 12 минут, и всё это время
+		// перегрев около нуля, а на входе компрессора доходит до минуса. Ставим позицию своего режима сразу.
+		if(dEEV.get_present()) {
+			const uint16_t stp = dEEV.get_StartPos(b != false);   // режим берём из цели переключения, а не из modWork
+			journal.jprintf(" EEV mode change: start position %d steps\n", stp);
+			dEEV.set_EEV(stp);
+			dEEV.resetPID();       // после прыжка начинаем регулирование заново
+		}
+#endif
+	}
 	
 	journal.jprintf(" swBoiler(%d): %X, mW:%d\n", b, onBoiler, get_modWork());
 #ifdef R3WAY
@@ -2419,8 +2433,10 @@ int32_t updatePID(int32_t errorPid, PID_STRUCT &pid, PID_WORK_STRUCT &pidw)
 	if(pid.Ki != 0)// Расчет интегральной составляющей, если она не равна 0
 	{
 		pidw.sum += (int32_t) pid.Ki * errorPid;     // Интегральная составляющая, с накоплением, в СТО ТЫСЯЧНЫХ (градусы 100 и интегральный коэффициент 1000)
-		if(pidw.sum > pidw.max) pidw.sum = pidw.max; // Ограничение диапазона изменения ПИД интегральной составляющей, произведение в СТО ТЫСЯЧНЫХ
-		else if(pidw.sum < -pidw.max) pidw.sum = -pidw.max;
+		if(pidw.max > 0) {                           // max == 0: интегральная составляющая не ограничивается
+			if(pidw.sum > pidw.max) pidw.sum = pidw.max;
+			else if(pidw.sum < -pidw.max) pidw.sum = -pidw.max;
+		}
 	} else pidw.sum = 0;              // если Кi равен 0 то интегрирование не используем
 	newVal = pidw.sum;
 	dbgI = newVal;
@@ -2429,10 +2445,15 @@ int32_t updatePID(int32_t errorPid, PID_STRUCT &pid, PID_WORK_STRUCT &pidw)
 	else newVal += (int32_t) pid.Kp * errorPid;
 	dbgP = newVal - pidw.sum;
 	// Дифференциальная составляющая
-	newVal += (int32_t) pid.Kd * (pidw.pre_err - errorPid);// ДЕСЯТИТЫСЯЧНЫЕ Положительная составляющая - ошибка растет (воздействие надо увеличить)  Отрицательная составляющая - ошибка уменьшается (воздействие надо уменьшить)
+	// ДЕСЯТИТЫСЯЧНЫЕ. Положительная составляющая - ошибка растет (воздействие надо увеличить),
+	// отрицательная - ошибка уменьшается (воздействие надо уменьшить).
+	// Минус перед разностью: Kd хранится отрицательным, как Kp и Ki, - тогда при растущей ошибке
+	// (pre_err - errorPid < 0) воздействие РАСТЕТ. С плюсом D тормозил P вместо упреждения
+	// (проявлялось и в ПИД ЭРВ, и в ПИД частоты, но при Kd = 0 было незаметно).
+	newVal -= (int32_t) pid.Kd * (pidw.pre_err - errorPid);
 	if ((abs(newVal)>=pidw.max)&&(pidw.max>0)) pidw.sum=0; // Сброс интегральной составляющей при движении на один шаг (оптимизация классического ПИДа) 100000 Это один шаг
 
-	if(DBG_ON(DBG_PID)) { journal.jprintf("PID(%x): err:%d,pre_err:%d,sum:%d (%d,%d,%d). I:%d,P:%d,D:%d PID:%d\n", (unsigned)(uintptr_t)&pid, (int)errorPid, (int)pidw.pre_err, (int)dbgSum0, (int)pid.Kp, (int)pid.Ki, (int)pid.Kd, (int)dbgI, (int)dbgP, (int)(pid.Kd * (pidw.pre_err - errorPid)), (int)newVal); }
+	if(DBG_ON(DBG_PID)) { journal.jprintf("PID(%x): err:%d,pre_err:%d,sum:%d (%d,%d,%d). I:%d,P:%d,D:%d PID:%d\n", (unsigned)(uintptr_t)&pid, (int)errorPid, (int)pidw.pre_err, (int)dbgSum0, (int)pid.Kp, (int)pid.Ki, (int)pid.Kd, (int)dbgI, (int)dbgP, (int)(-(pid.Kd * (pidw.pre_err - errorPid))), (int)newVal); }
 	pidw.pre_err = errorPid; // запомнить предыдущую ошибку
 	return round_div_int32(newVal, 1000); // Учесть разрядность коэффициентов (ТЫСЯЧНЫЕ), выход в СОТЫХ
 }

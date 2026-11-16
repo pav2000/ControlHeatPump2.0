@@ -88,7 +88,7 @@ void devEEV::initEEV()
 	hybDefaults();                                      // Гибрид и старт по частоте: умолчания (выключены, флаги ниже)
 
 	// ЭРВ Времена и задержки
-	_data.delayOnPid = DEFAULT_DELAY_ON_PID; // Задержка включения EEV после включения компрессора (сек).  Точнее после выхода на рабочую позицию Общее время =delayOnPid+DelayStartPos
+	_data.delayOnPid = DEFAULT_DELAY_ON_PID; // Задержка начала регулирования после включения компрессора (сек). Первый такт - после DOP и завершения движения ЭРВ
 	_data.delayOn = DEFAULT_DELAY_ON; // Задержка между открытием (для старта) ЭРВ и включением компрессора, для выравнивания давлений (сек). Если ЭРВ закрывлось при остановке
 	_data.DelayStartPos = DEFAULT_DELAY_START_POS; // Время после старта компрессора когда EEV выходит на стартовую позицию - облегчение пуска вначале ЭРВ
 	_data.delayOff = DEFAULT_DELAY_OFF; // Задержка закрытия EEV после выключения насосов (сек). Время от команды стоп компрессора до закрытия ЭРВ = delayOffPump+delayOff
@@ -242,10 +242,10 @@ void devEEV::hybDefaults()
 }
 
 // Приоритет: по стартовой частоте -> по температуре подачи -> фиксированная StartPos
-uint16_t devEEV::get_StartPos()
+// boiler задаётся явно: при переключении режима на ходу modWork уже может быть новым, а частота ещё старой
+uint16_t devEEV::get_StartPos(bool boiler)
 {
 	if(GETBIT(_data.flags, fEEV_StartPosByFreq)) {
-		const bool boiler = (HP.get_modWork() & pBOILER) != 0;         // ГВС: свой коэффициент и стартовая частота ГВС
 		return eevhyb_start_pos(boiler ? _data.sphzb100 : _data.sphz100, boiler ? HP.dFC.get_startFreqBoiler() : HP.dFC.get_startFreq(), _data.minSteps, _data.maxSteps);
 	}
 	if(GETBIT(_data.flags, fEEV_StartPosByTemp)) {
@@ -254,6 +254,12 @@ uint16_t devEEV::get_StartPos()
 		else if(t >= EEV_START_POS_HIGH_TEMP) return _data.PosAtHighTemp;
 		return (int32_t)_data.StartPos - (t - EEV_START_POS_LOW_TEMP) * (_data.StartPos - _data.PosAtHighTemp) / (EEV_START_POS_HIGH_TEMP - EEV_START_POS_LOW_TEMP);
 	} else return _data.StartPos;
+}
+
+// По текущему режиму работы ТН
+uint16_t devEEV::get_StartPos()
+{
+	return get_StartPos((HP.get_modWork() & pBOILER) != 0);
 }
 
 // Перевод правила из RULE_EEV в постоянную нумерацию OverheatCalc.
@@ -364,6 +370,8 @@ void devEEV::resetPID()
 	// Инициализировать служебные переменные
 	pidw.sum = 0;
 	pidw.pre_err = 0;
+	pidRemainder100 = 0;
+	pidFirst = true;                       // первый такт - без D: pre_err ещё не отражает реальную ошибку
 	pidw.max = EEV_MAX_INT_PID * 1000*100; // максимальное воздействие интегральной составляющей на ПИД
 	EevHybridParams hp;
 	hybParams(&hp);
@@ -418,7 +426,29 @@ int8_t devEEV::Update(void) //boolean fHeating)
 		} else {                                   // ПИД
 			newEEV = _data.tOverheat - Overheat;   // Расчет ошибки для пида
 			pidw.Kp_dmin=_data.pid_zone;           // передать параметр - уменьшение пропорциональной при определенной ошибке
-			newEEV = updatePID(newEEV, _data.pid, pidw)/100; // Рассчитать итерацию: Перевод в шаги (выход ПИДА в сотых) + округление вниз
+			// Первый такт после пуска или смены режима: pre_err обнулён, и D посчитал бы, что ошибка
+			// выросла из нуля, - это ложный импульс Kd*e/100 шагов на закрытие ровно на провале
+			// перегрева. Начинаем с текущей ошибки, то есть на первом такте работает только P.
+			if(pidFirst) { pidw.pre_err = newEEV; pidFirst = false; }
+			// ---- 15.11.2026: ПЕРЕНОС ДРОБНОЙ ЧАСТИ ШАГА ОТКЛЮЧЁН (возврат к поведению до 13.11) ----
+			// Было с 13.11: к выходу ПИД прибавлялся остаток pidRemainder100, то есть дробная часть
+			// хода переносилась на следующий такт. Из-за этого вентиль перестал «замирать» на малых
+			// ошибках: при Kp 1.0 и ошибке 0.5 K команда 0.5 шага раньше отбрасывалась целиком, а с
+			// переносом стала давать шаг через такт. Вентиль получил непрерывную модуляцию, и на
+			// малой частоте (ночь, 42 Гц, открытие 15-18 % хода) контур потерял устойчивость.
+			// Данные 15.11: перегрев ходит 2.8-4.4 K с периодом 19-20 мин, клапан 15 шагов за цикл.
+			// На тех же 42 Гц до 13.11 (28 ночных участков в истории) при том же открытии размах был
+			// 0.4-0.8 K, а клапан проходил 2-4 шага ЗА НОЧЬ - он стоял, и автоколебания не возникало.
+			// Перенос дроби сам по себе верен (он убирает мёртвую зону на рампах), но он снял ту
+			// неявную мёртвую зону, которая до этого гасила колебания на границе устойчивости.
+			// Плата за возврат: у цели появляется мёртвая зона порядка 1/Kp (при Kp 1.0 около +-0.5 K),
+			// на рампах добавится 0.5-1 K отставания. Устойчивость важнее, поэтому плата принята.
+			// Вернуть обратно: раскомментировать три строки ниже и удалить новую строку с updatePID.
+			// const int32_t pidOut100 = updatePID(newEEV, _data.pid, pidw) + pidRemainder100;
+			// newEEV = pidOut100 / 100;               // целые шаги, дробная часть отбрасывается к нулю
+			// pidRemainder100 = pidOut100 % 100;      // переносить только дробную часть: -99..99 сотых шага
+			const int32_t pidOut100 = updatePID(newEEV, _data.pid, pidw);
+			newEEV = pidOut100 / 100;               // целые шаги, дробная часть отбрасывается к нулю
 			if ((abs(newEEV)>_data.pid_max)&&(_data.pid_max>0)) {if (newEEV>0) newEEV=currentEEV+_data.pid_max; else newEEV=currentEEV-_data.pid_max;} else newEEV+=currentEEV;
 			// Проверка управляющего воздействия, возможно отказ ЭРВ
 		}

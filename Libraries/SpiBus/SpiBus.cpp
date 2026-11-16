@@ -69,6 +69,24 @@ static inline bool dmac_channel_transfer_done(uint32_t ch) { return (DMAC->DMAC_
 static bool spi_wait_status(uint32_t mask, uint32_t *observed = nullptr)
 {
 	const uint32_t started = millis();
+	uint32_t spin = 0;
+	for(;;) {
+		const uint32_t status = SPI0->SPI_SR;
+		if(observed) *observed |= status;
+		if(status & mask) return true;
+		if((++spin & 0xFF) == 0 && millis() - started > SPIBUS_DMA_TIMEOUT) {
+			const uint32_t last = SPI0->SPI_SR;
+			if(observed) *observed |= last;
+			if(last & mask) return true;  // статус мог появиться, пока проверяли время
+			spiBusStat.busTimeouts++;
+			return false;
+		}
+	}
+}
+/*
+static bool spi_wait_status(uint32_t mask, uint32_t *observed = nullptr)
+{
+	const uint32_t started = millis();
 	for(;;) {
 		const uint32_t status = SPI0->SPI_SR;
 		if(observed) *observed |= status;
@@ -82,7 +100,7 @@ static bool spi_wait_status(uint32_t mask, uint32_t *observed = nullptr)
 		}
 	}
 }
-
+*/
 // Запуск приёма SPI -> память
 static void spiDmaRX(uint8_t *dst, uint16_t count)
 {
@@ -187,22 +205,34 @@ uint8_t spiBusScbr(SpiDev d)
 	return spiDev[d].port ? (spiDev[d].csr & SPI_CSR_SCBR_Msk) >> SPI_CSR_SCBR_Pos : 0;
 }
 
+// Сбой байтового обмена: поднять все CS и привести SPI0/DMAC в исходное состояние.
+// Следующий spiBusSelect() снова настроит канал под нужное устройство.
+static void spiBusRecover()
+{
+	spiBusDeselectAll();
+	spiBusInit();
+}
+
 // pav2000 Передаёт байт b и при успехе пишет принятый байт в received, если указатель задан.
 // Возвращает SPIBUS_OK или код сбоя.
 uint8_t spiBusXfer(uint8_t b, uint8_t *received)
 {
 	Spi *pSpi = SPI0;
-	pSpi->SPI_TDR = b;
 	uint32_t observed = 0;
-	const bool ready = spi_wait_status(SPI_SR_RDRF, &observed);
-	const uint8_t data = ready ? pSpi->SPI_RDR : 0;
-	uint8_t status = ready ? SPIBUS_OK : SPIBUS_TIMEOUT;
-	if(observed & SPI_SR_OVRES) {
-		status |= SPIBUS_OVERRUN;
-		spiBusStat.dmaOverruns++;
+	pSpi->SPI_TDR = b;
+	if(!spi_wait_status(SPI_SR_RDRF, &observed)) {
+		spiBusRecover();
+		return SPIBUS_TIMEOUT;
 	}
-	if(status == SPIBUS_OK && received) *received = data;
-	return status;
+	// Читать RDR нужно ВСЕГДА, даже если received == nullptr:
+	// иначе RDRF останется и следующий обмен сдвинется на байт.
+	const uint8_t data = pSpi->SPI_RDR;
+	if(observed & SPI_SR_OVRES) {
+		spiBusStat.dmaOverruns++;
+		return SPIBUS_OVERRUN;
+	}
+	if(received) *received = data;
+	return SPIBUS_OK;
 }
 
 // pav2000 Передаёт n байтов из buf по SPI и отбрасывает ответ. Возвращает SPIBUS_OK или код сбоя.

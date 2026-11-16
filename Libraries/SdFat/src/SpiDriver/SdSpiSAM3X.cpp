@@ -54,7 +54,8 @@ void SdSpiAltDriver::deactivate() {
 //------------------------------------------------------------------------------
 /** SPI receive a byte */
 uint8_t SdSpiAltDriver::receive() {
-  return spiBusXfer(0XFF);
+  uint8_t b = 0xFF;
+  return spiBusXfer(0xFF, &b) == SPIBUS_OK ? b : 0xFF;
 }
 //------------------------------------------------------------------------------
 /** SPI receive multiple bytes */
@@ -64,7 +65,7 @@ uint8_t SdSpiAltDriver::receive(uint8_t* buf, size_t n) {
 //------------------------------------------------------------------------------
 /** SPI send a byte */
 void SdSpiAltDriver::send(uint8_t b) {
-  spiBusXfer(b);
+  (void)spiBusXfer(b, nullptr);
 }
 //------------------------------------------------------------------------------
 void SdSpiAltDriver::send(const uint8_t* buf , size_t n) {
