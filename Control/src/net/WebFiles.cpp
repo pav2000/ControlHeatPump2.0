@@ -783,8 +783,8 @@ bool get_binEEPROM(uint8_t thread)
 	return true;
 }
 
-// Готовит файл полностью до отправки HTTP 200, чтобы отказ чтения
-// или неверная длина секции не превращались в скачанный обрезанный файл.
+// Собирает настройки, профили и расписание в buffer ёмкостью capacity до отправки.
+// Возвращает число подготовленных байтов либо отрицательный код.
 static int32_t read_binSettings(uint8_t *buffer, uint16_t capacity)
 {
 	SettingsLock lock(HP.saving);
@@ -821,6 +821,7 @@ static int32_t read_binSettings(uint8_t *buffer, uint16_t capacity)
 	return scheduleOffset + scheduleSize;
 }
 
+// Отправляет settings.bin в сокет потока thread. Возвращает true после полной отправки.
 bool get_binSettings(uint8_t thread)
 {
 	char *buffer = Socket[thread].outBuf;

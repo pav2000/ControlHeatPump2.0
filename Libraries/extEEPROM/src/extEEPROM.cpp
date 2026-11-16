@@ -124,10 +124,8 @@ byte extEEPROM::begin(unsigned int twiFreq)
     return Wire.endTransmission(0);
 }
 
-//Write bytes to external EEPROM.
-//If the I/O would extend past the top of the EEPROM address space,
-//a status of EEPROM_ADDR_ERR is returned. For I2C errors, the status
-//from the Arduino Wire library is passed back through to the caller.
+// pav2000 Записывает nBytes байтов из values в EEPROM от адреса addr.
+// Возвращает 0 при успехе, EEPROM_ADDR_ERR для неверных аргументов или статус Wire.
 byte extEEPROM::write(uint32_t addr, byte *values, uint32_t nBytes)
 {
     uint8_t ctrlByte;       //control byte (I2C device address & chip/block select bits)
@@ -175,8 +173,8 @@ byte extEEPROM::write(uint32_t addr, byte *values, uint32_t nBytes)
     return txStatus;
 }
 
-// Read bytes from external EEPROM.
-// Success return 0, if read less than ordered return 1, otherwise error number
+// pav2000 Читает nBytes байтов EEPROM от адреса addr в values.
+// Возвращает 0 при успехе, 1 при коротком чтении, EEPROM_ADDR_ERR или статус Wire.
 byte extEEPROM::read(uint32_t addr, byte *values, uint32_t nBytes)
 {
     byte ctrlByte;

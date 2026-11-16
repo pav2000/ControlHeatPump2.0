@@ -116,11 +116,8 @@ static int16_t nm_read_line(EthernetClient &c, char *buf, uint16_t size, uint32_
 	}
 }
 
-// Посылка данных на народный мониторинг по TCP протоколу.
-// debug  true - выводить в консоль информацию о посылаемых данных false - нет вывода
-// Возврат: true  - повторять НЕ надо: пакет принят сервером, либо сервер ответил ошибкой протокола
-//                  ("При сообщениях об ошибках НЕ ПОВТОРЯТЬ!"), либо отправка невозможна в принципе;
-//          false - пакет НЕ доставлен (нет линка, нет соединения, нет ответа) - имеет смысл повторить.
+// Отправляет данные в «Народный мониторинг» по TCP, debug включает подробный вывод.
+// Возвращает true, если повтор не требуется, или false при временном отказе доставки.
 boolean sendNarodMon2022(boolean debug)
 {
 	uint8_t i;
@@ -244,7 +241,8 @@ boolean sendNarodMon2022(boolean debug)
 		return false;
 	}
 
-	if(tTCP.write((const uint8_t *)HP.clMQTT.root, strlen(HP.clMQTT.root)) == 0) {
+	const size_t rootSize = strlen(HP.clMQTT.root);
+	if(tTCP.write((const uint8_t *)HP.clMQTT.root, rootSize) != rootSize) {
 		journal.jprintf("sendNarodMon2022: send error\n");
 		tTCP.stop();                                 // Сокет закрыть обязательно, иначе останется занятым
 		HP.clMQTT.noteNarodMonFailure();

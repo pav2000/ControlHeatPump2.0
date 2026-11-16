@@ -421,6 +421,7 @@ static bool        keyWasDownAtBoot = false;// кнопка была нажат�
 static bool        keyOnOffReady = false;
 static uint32_t    keyReleasedAt = 0;
 
+// Инициализирует контроллер, загружает данные EEPROM и запускает задачи FreeRTOS.
 void setup() {
 	// 1. Инициализация
 	// Баг разводки дуе (вероятность). Есть проблема с инициализацией spi.  Ручками прописываем
@@ -1552,7 +1553,7 @@ static void relayAct(devRelay &r, uint8_t act)
 }
 
 //////////////////////////////////////////////////////////////////////////
-// Задача Управление тепловым насосом (Tasks.xHandleUpdate) "UpdateHP"
+// Задача UpdateHP управляет ТН, выбирает расписание и профиль. Параметр FreeRTOS не используется.
  void vUpdate( void * )
 {
 	#ifdef RPUMPB

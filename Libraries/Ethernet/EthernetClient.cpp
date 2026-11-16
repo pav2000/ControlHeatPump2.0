@@ -21,7 +21,8 @@ uint16_t EthernetClient::_srcport = 1024;
 EthernetClient::EthernetClient() : _sock(MAX_SOCK_NUM) {
 }
 
-EthernetClient::EthernetClient(uint8_t sock) : _sock(sock) {
+// pav2000 Привязывает клиент к сокету sock; недопустимый номер обозначает отсутствие соединения.
+EthernetClient::EthernetClient(uint8_t sock) : _sock(sock < MAX_SOCK_NUM ? sock : MAX_SOCK_NUM) {
 }
 
 int EthernetClient::connect(const char* host, uint16_t port) {
@@ -40,54 +41,17 @@ int EthernetClient::connect(const char* host, uint16_t port) {
   }
 }
 
-int EthernetClient::connect(IPAddress ip, uint16_t port) {
-  _offset = 0;
-  if (_sock != MAX_SOCK_NUM) {
- //   Serial.println("EXCEPTION: Not all sockets are available");
-    return 0;
-   }
-  for (int i = 0; i < MAX_SOCK_NUM; i++) {
-    if (!W5100.sockUsable(i)) continue;      // сокет с нулевым буфером передачи (раскладка NetLayout.h)
-    uint8_t s = W5100.readSnSR(i);
-    if (s == SnSR::CLOSED || s == SnSR::FIN_WAIT || s == SnSR::CLOSE_WAIT) {
-      _sock = i;
-      break;
-    }
+// pav2000 Выбирает свободный сокет и подключается к ip:port. Возвращает 1 при успехе, иначе 0.
+int EthernetClient::connect(IPAddress ip, uint16_t port)
+{
+  if (_sock != MAX_SOCK_NUM) return 0;
+  for (SOCKET sock = 0; sock < MAX_SOCK_NUM; ++sock) {
+    uint8_t status;
+    if (W5100.sockUsable(sock) && W5100.readSnSR(sock, status) &&
+        (status == SnSR::CLOSED || status == SnSR::FIN_WAIT || status == SnSR::CLOSE_WAIT))
+      return connect(ip, port, sock);
   }
-
-  if (_sock == MAX_SOCK_NUM) {
-//    Serial.println("EXCEPTION: No sockets were available!");
-    return 0;
-    }
-
-  _srcport++;
-  if (_srcport == 0) _srcport = 1024;  // порт последовательно увеличиваем до 65345 потом 1024
-  socket(_sock, SnMR::TCP, _srcport, 0);
-// socket(_sock, SnMR::TCP, _srcport, SnMR::ND); //pav2000
-
-  if (!::connect(_sock, rawIPAddress(ip), port)) {
-    _sock = MAX_SOCK_NUM;
-//    Serial.println("EXCEPTION: in Ethernet connect library");
-    return 0;
-  }
-//   Serial.println(ip);
-
-  uint32_t start = millis();
-  while (status() != SnSR::ESTABLISHED) {
-    RTOS_delay(1);
-
-    if (status() == SnSR::CLOSED) {
-      _sock = MAX_SOCK_NUM;
-//      Serial.println("EXCEPTION: Socket was closed after being established");
-      return 0;
-    }
-    if(millis() - start > ETHERNET_CONNECT_TIMEOUT) {
-        _sock = MAX_SOCK_NUM;
-    	return 0; // timeout
-    }
-  }
-
-  return 1;
+  return 0;
 }
 
 // Открыть клиента по NAME DNS на конкретный сокет, сокет перед этим сбрасывается
@@ -103,118 +67,102 @@ int EthernetClient::connect(const char *host, uint16_t port,uint8_t sock)// pav2
   else { return ret; }
 }
 
-// Открыть клиента  по IP на конкретный сокет, сокет перед этим сбрасывается
-int EthernetClient::connect(IPAddress ip, uint16_t port,uint8_t sock)// pav2000
- {
+// pav2000 Переоткрывает сокет sock и подключается к ip:port. Возвращает 1 при установлении TCP-соединения, иначе 0.
+int EthernetClient::connect(IPAddress ip, uint16_t port, uint8_t sock)
+{
   _offset = 0;
-   // Сброс сокета  возможно после сброса нужна задержка для выполения сброса???
-  W5100.execCmdSn(sock, Sock_CLOSE);
-  W5100.writeSnMR(sock, 0x00);
-  W5100.writeSnIR(sock, 0xFF);
-  _sock=sock;  // Запомнить сокет
-  _srcport++;
-  if (_srcport == 0) _srcport = 1024;
-  socket(_sock, SnMR::TCP, _srcport, 0);   // инициализировать сокет
-
-  if (!::connect(_sock, rawIPAddress(ip), port)) { // соединение сокета
-    _sock = MAX_SOCK_NUM;
-     return 0;
+  _bufferFailed = false;
+  if (++_srcport == 0) _srcport = 1024;
+  if (socket(sock, SnMR::TCP, _srcport, 0) && ::connect(sock, rawIPAddress(ip), port)) {
+    const uint32_t started = millis();
+    do {
+      uint8_t status;
+      if (!W5100.readSnSR(sock, status) || status == SnSR::CLOSED) break;
+      if (status == SnSR::ESTABLISHED) {
+        _sock = sock;
+        return 1;
+      }
+      RTOS_delay(1);
+    } while (millis() - started <= ETHERNET_CONNECT_TIMEOUT);
   }
-//   Serial.println(ip);
-
-  uint32_t start = millis();
-  while (status() != SnSR::ESTABLISHED) {
-    RTOS_delay(1);
-
-    if (status() == SnSR::CLOSED) {
-      _sock = MAX_SOCK_NUM;
-      return 0;
-    }
-    if(millis() - start > ETHERNET_CONNECT_TIMEOUT) {  // timeout
-        _sock = MAX_SOCK_NUM;
-    	return 0;
-    }
-  }
-  return 1;
+  close(sock);
+  _sock = MAX_SOCK_NUM;
+  return 0;
 }
 
 size_t EthernetClient::write(uint8_t b) {
   return write(&b, 1);
 }
 
-size_t EthernetClient::write(const uint8_t *buf, size_t size) {
+// pav2000 Отправляет size байтов из buf и возвращает число подтверждённых байтов.
+// При buf == nullptr и size == 0 отправляет накопленный буфер и возвращает 1 при успехе, иначе 0.
+size_t EthernetClient::write(const uint8_t *buf, size_t size)
+{
+  const uint16_t buffered = _offset;
+  const bool failed = _bufferFailed;
   _offset = 0;
-  if (_sock == MAX_SOCK_NUM) {
-    setWriteError();
-    return 0;
+  _bufferFailed = false;
+  size_t sent = 0;
+  if (size) {
+    sent = send(_sock, buf, size > UINT16_MAX ? UINT16_MAX : size);
+    if (sent != size) setWriteError();
+  } else if (!buf) {
+    // DNS и HTTP-время используют write(nullptr, 0) для отправки буфера.
+    sent = !failed && buffered && sendBuffered(_sock, buffered) ? 1 : 0;
+    if (!sent) setWriteError();
   }
-  if(!send(_sock, buf, size)) {
-    setWriteError();
-    return 0;
-  }
-  return size ? size : 1;
+  return sent;
 }
 
+// pav2000 Копирует до size байтов из buffer в буфер TX без отправки. Возвращает число скопированных байтов.
 size_t EthernetClient::write_buffer(const uint8_t *buffer, size_t size)
 {
-  uint16_t bytes_written = bufferData(_sock, _offset, buffer, size);
-  _offset += bytes_written;
-  return bytes_written;
+  if (_bufferFailed || !size) return 0;
+  const uint16_t count = bufferData(_sock, _offset, buffer, size > UINT16_MAX ? UINT16_MAX : size);
+  _offset += count;
+  if (count != size) {
+    _bufferFailed = true;
+    setWriteError();
+  }
+  return count;
 }
 
-// Data stored in the flash memory
+// pav2000 Копирует до size байтов из buffer в памяти программы в буфер TX. Возвращает число скопированных байтов.
 size_t EthernetClient::write_buffer_flash(const uint8_t *buffer, size_t size)
 {
-	uint8_t b;
-	uint16_t i = 0;
-	for(; i < size; i++) {
-		b = buffer[i];
-		if(bufferData(_sock, _offset, &b, 1) != 1) break;
-		_offset++;
-	}
-	return i;
+  return write_buffer(buffer, size); // SpiBus использует опрос для памяти программы
 }
 
-size_t EthernetClient::write_buffer(uint8_t b)
+// pav2000 Добавляет byte в буфер TX. Возвращает 1 при успехе, иначе 0.
+size_t EthernetClient::write_buffer(uint8_t byte)
 {
-  uint8_t wb = b;
-  if(bufferData(_sock, _offset, &wb, 1) == 1) {
-	  _offset++;
-	  return 1;
-  } else return 0;
+  return write_buffer(&byte, 1);
 }
 
-int EthernetClient::available() {
-  if (_sock != MAX_SOCK_NUM)
-    return W5100.getRXReceivedSize(_sock);
-  return 0;
+// pav2000 Возвращает число доступных байтов в RX текущего сокета или 0 при сбое.
+int EthernetClient::available()
+{
+  return W5100.getRXReceivedSize(_sock);
 }
 
-int EthernetClient::read() {
-  uint8_t b;
-  if ( recv(_sock, &b, 1) > 0 )
-  {
-    // recv worked
-    return b;
-  }
-  else
-  {
-    // No data available
-    return -1;
-  }
+// pav2000 Извлекает один байт из RX, возвращает его значение или -1 при отсутствии данных или сбое.
+int EthernetClient::read()
+{
+  uint8_t byte;
+  return read(&byte, 1) == 1 ? byte : -1;
 }
 
-int EthernetClient::read(uint8_t *buf, size_t size) {
-  return recv(_sock, buf, size);
+// pav2000 Читает до size байтов в buf. Возвращает число байтов или отрицательный код состояния RX.
+int EthernetClient::read(uint8_t *buf, size_t size)
+{
+  return recv(_sock, buf, size > INT16_MAX ? INT16_MAX : size);
 }
 
-int EthernetClient::peek() {
-  uint8_t b;
-  // Unlike recv, peek doesn't check to see if there's any data available, so we must
-  if (!available())
-    return -1;
-  ::peek(_sock, &b);
-  return b;
+// pav2000 Возвращает следующий байт RX без извлечения или -1 при отсутствии данных или сбое.
+int EthernetClient::peek()
+{
+  uint8_t byte;
+  return ::peek(_sock, &byte) ? byte : -1;
 }
 
 void EthernetClient::flush() {
@@ -256,15 +204,17 @@ void EthernetClient::stopEnd() {
   _sock = MAX_SOCK_NUM;
 }
 
+// pav2000 Возвращает 1, если текущий сокет ещё активен или в CLOSE_WAIT остались данные, иначе 0.
 uint8_t EthernetClient::connected() {
   if (_sock == MAX_SOCK_NUM) return 0;
   
 //  uint8_t s = status();              // pav2000
 //  return !(s == SnSR::LISTEN || s == SnSR::CLOSED || s == SnSR::FIN_WAIT || /
 //    (s == SnSR::CLOSE_WAIT && !available()));
-  uint8_t s = W5100.readSnSR(_sock); // pav2000 немного ускорим и стек уменьшим
-  return !(s == SnSR::LISTEN || s == SnSR::CLOSED || s == SnSR::FIN_WAIT ||
-    (s == SnSR::CLOSE_WAIT && !W5100.getRXReceivedSize(_sock)));
+  uint8_t status;
+  return W5100.readSnSR(_sock, status) &&
+         !(status == SnSR::LISTEN || status == SnSR::CLOSED || status == SnSR::FIN_WAIT ||
+           (status == SnSR::CLOSE_WAIT && !W5100.getRXReceivedSize(_sock)));
 }
 
 uint8_t EthernetClient::status() {
@@ -290,9 +240,9 @@ int EthernetClient::get_freeTX() {
    return 0;
 }
 
-// Возврат объема данных в буфере  на чтение
-int EthernetClient::get_ReceivedSizeRX() {
-    if (_sock != MAX_SOCK_NUM)
-        return W5100.getRXReceivedSize(_sock);
-   return 0;
+// pav2000 Возвращает подтверждённое число байтов в RX текущего сокета или -1 при сбое.
+int EthernetClient::get_ReceivedSizeRX()
+{
+  uint16_t count;
+  return W5100.getRXReceivedSize(_sock, count) ? count : -1;
 }

@@ -172,6 +172,9 @@ uint16_t Profile::cache_crc_of(const ProfileSlot &sl)
 //
 // Незаписанный слот в поток не попадает: иначе в скачиваемый settings.bin утекли бы
 // байты, лежавшие в его ячейках.
+
+// Определяет формат области профилей по заголовку.
+// Возвращает 1 для нового формата, 0 для старого либо отрицательный код.
 int8_t Profile::region_format(void)
 {
 	uint8_t hdr[REC_HDR_SIZE];
@@ -182,6 +185,8 @@ int8_t Profile::region_format(void)
 	return ERR_BAD_LEN_PROFILE;
 }
 
+// Определяет длину области профилей на носителе, учитывая version для старых слотов.
+// Возвращает число байтов или отрицательный код чтения либо проверки.
 int32_t Profile::region_len(uint8_t version)
 {
 	const int8_t format = region_format();
@@ -194,6 +199,8 @@ int32_t Profile::region_len(uint8_t version)
 	return size > 0 && size <= I2C_SCHEDULER_EEPROM - I2C_PROFILE_EEPROM ? size : ERR_BAD_LEN_PROFILE;
 }
 
+// Проверяет кеш и сохраняет его в EEPROM новым форматом.
+// Возвращает число записанных байтов либо отрицательный код.
 int16_t Profile::save_region(void)
 {
 	if(cache_load_error != OK) {
@@ -236,6 +243,8 @@ xErr:
 	return ERR_SAVE_PROFILE;
 }
 
+// Проверяет каркас области профилей. Если loaded передан, читает слоты и проверяет CRC,
+// отмечая прочитанные слоты в loaded. Возвращает длину области либо отрицательный код.
 int32_t Profile::scan_region(uint8_t *loaded)
 {
 	uint32_t addr = I2C_PROFILE_EEPROM;
@@ -302,6 +311,8 @@ uint8_t Profile::cache_copy(int8_t num)
 	return 0;
 }
 
+// Активирует слот num из кеша. Возвращает OK для принятого или пустого слота,
+// отрицательный код при неверном номере, незагруженном кеше или ошибке CRC.
 int8_t Profile::cache_activate(int8_t num)
 {
 	if(cache_load_error != OK) return err = cache_load_error;
@@ -316,15 +327,16 @@ int8_t Profile::cache_activate(int8_t num)
 	return OK;
 }
 
-// Прочитать все слоты из EEPROM в кеш. Читается по одному блоку, как это
-// делает load(), - общий буфер здесь не используется намеренно: он занят
-// ответом веб-запроса всякий раз, когда сохранение идёт из морды.
+// Помечает все слоты кеша недоступными. cause — код отказа для следующих операций.
 void Profile::invalidate_cache(int8_t cause)
 {
 	cache_load_error = cause;
 	memset(cache_magic, PROFILE_EMPTY, sizeof(cache_magic));
 }
 
+// Читает профили из EEPROM и публикует кеш после проверки всей области.
+// Возвращает OK либо отрицательный код и оставляет кеш недоступным при отказе.
+// Читает отдельными блоками, чтобы сохранить буфер веб-ответа.
 int8_t Profile::cache_load_all(void)
 {
 	invalidate_cache(ERR_LOAD_PROFILE);
@@ -347,6 +359,8 @@ int8_t Profile::cache_load_all(void)
 	return OK;
 }
 
+// Читает слоты формата 147 в кеш и отмечает проверенные слоты в loaded.
+// Возвращает OK либо отрицательный код чтения или CRC.
 int8_t Profile::cache_load_fixed(uint8_t *loaded)
 {
 	// Слоты 5..9 старой раскладки сюда не попадают: цикл идёт до нового
@@ -389,9 +403,9 @@ int8_t Profile::cache_load_fixed(uint8_t *loaded)
 //
 // Чистое чтение: запись идёт только в новом формате и только по сохранению,
 // поэтому читателю писать нечего.
-//
-// Слоты читаются по одному, без общего буфера: cache_load_all вызывается и
-// после восстановления настроек из файла, а там Socket[0].outBuf занят.
+
+// Читает слоты до формата 147 по размерам sz и отмечает проверенные слоты в loaded.
+// Возвращает OK либо отрицательный код чтения или CRC.
 int8_t Profile::cache_load_legacy(const LegacyProfileSizes &sz, uint8_t *loaded)
 {
 	uint8_t tmp[128];                       // самый длинный старый блок - 120 байт
@@ -437,8 +451,7 @@ int8_t Profile::cache_load_legacy(const LegacyProfileSizes &sz, uint8_t *loaded)
 	return bad ? ERR_CRC16_PROFILE : OK;
 }
 
-// Обновить слот кеша из активных членов. Вызывается после успешной записи
-// профиля в EEPROM, чтобы кеш не разошёлся с носителем.
+// Копирует активный профиль в слот num и обновляет его CRC при доступном кеше.
 void Profile::cache_store(int8_t num)
 {
 	if(cache_load_error != OK) return;
@@ -629,8 +642,8 @@ boolean Profile::set_slot_meta(int8_t num, const char *field, char *val, bool de
 	return true;
 }
 
-// Копия слота src в слот dst. Возврат: 1 - сделано, 0 - нельзя (dst - текущий профиль,
-// src == dst), -1 - исходный слот пуст или номер неверный.
+// Копирует профиль src в слот dst. Возвращает 1 при успехе, 0 при конфликте,
+// -1 при неверном номере или пустом источнике либо ошибку загрузки кеша.
 int8_t Profile::copy_slot(int8_t src, int8_t dst)
 {
 	if(cache_load_error != OK) return cache_load_error;
@@ -670,7 +683,7 @@ char *Profile::get_info(char *c,int8_t num)
     return c;
 }
 
-// стереть профайл num из еепром  (ставится признак пусто, данные не стираются)
+// Удаляет слот num из области EEPROM. Возвращает длину профиля либо код отказа.
 int32_t Profile::erase(int8_t num)
 {
    // Отдельный слот в потоке не стереть: освобождаем его в кеше и
@@ -957,6 +970,7 @@ static int api_get_slot(uint8_t hook, uint8_t dev, ApiOut *o)
 	HP.Prof.api_slot_get(dev, hook, o);
 	return AE_OK;
 }
+// Меняет поле hook слота dev на значение val. Возвращает статус веб-API.
 static int api_set_slot(uint8_t hook, uint8_t dev, const char *val)
 {
 	static const char *const field[] = { 0, prof_NAME_PROFILE, prof_NOTE_PROFILE, prof_ENABLE_PROFILE };

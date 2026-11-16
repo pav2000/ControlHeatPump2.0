@@ -547,7 +547,8 @@ char *web_fill_tag_select(char *str, const char *select, uint8_t selected)
 	return str;
 }
 
-// memcpy: <size[uint8_t: 1|2]><struct>
+// Декодирует запись между курсором p и end. При успехе сдвигает p,
+// записывает длину в len и возвращает адрес данных. При неполной записи возвращает nullptr.
 const uint8_t *settings_legacy_record(const uint8_t *&p, const uint8_t *end, uint16_t &len)
 {
 	if(p == end) return nullptr;
@@ -564,6 +565,8 @@ const uint8_t *settings_legacy_record(const uint8_t *&p, const uint8_t *end, uin
 	return data;
 }
 
+// Читает очередную запись старого хвоста от p до end, учитывая текущий tag и tagLimit.
+// Продвигает p, обновляет tag и len, возвращает данные либо nullptr при неполной записи.
 const uint8_t *settings_legacy_next(const uint8_t *&p, const uint8_t *end, uint16_t &len,
                                    int16_t &tag, int16_t tagLimit)
 {
@@ -590,6 +593,8 @@ const uint8_t *settings_legacy_next(const uint8_t *&p, const uint8_t *end, uint1
 	return data;
 }
 
+// Проверяет каркас старого блока от p до end. tagLimit ограничивает теги, lastArrayTag — теги массивов.
+// Возвращает true, если записи целы и у элементов массивов есть номер.
 bool settings_legacy_valid(const uint8_t *p, const uint8_t *end, int16_t tagLimit, int16_t lastArrayTag)
 {
 	uint16_t len;
@@ -605,6 +610,8 @@ bool settings_legacy_valid(const uint8_t *p, const uint8_t *end, int16_t tagLimi
 	return true; // старые блоки могли закончиться сразу после последней записи
 }
 
+// Читает запись от *from до end, копирует в to не больше to_size байтов.
+// Возвращает true и продвигает *from при успехе. При неполной записи курсор и назначение сохраняются.
 bool load_struct(void *to, const uint8_t **from, const uint8_t *end, uint16_t to_size)
 {
 	uint16_t size;
@@ -866,6 +873,8 @@ bool settings_len_ok(uint16_t size, int32_t avail)
 	return (int32_t) size + 2 <= avail;                         // поле длины + size байт обязаны уместиться в принятое
 }
 
+// Читает префикс длины из buffer, где доступно avail байтов.
+// Возвращает полный размер блока с префиксом либо 0 при недостатке данных.
 uint32_t settings_file_block_size(const uint8_t *buffer, int32_t avail)
 {
 	if(!buffer || avail < (int32_t)sizeof(uint16_t)) return 0;
@@ -873,6 +882,8 @@ uint32_t settings_file_block_size(const uint8_t *buffer, int32_t avail)
 	return settings_len_ok(size, avail) ? size + sizeof(size) : 0;
 }
 
+// Проверяет записи между p и p_max до end_tag. max_tag ограничивает известные теги.
+// Записывает число записей и признаки ошибок в s.
 void settings_scan(const uint8_t *p, const uint8_t *p_max, uint16_t end_tag, uint16_t max_tag, SettingsScan *s)
 {
 	memset(s, 0, sizeof(*s));
@@ -888,6 +899,8 @@ void settings_scan(const uint8_t *p, const uint8_t *p_max, uint16_t end_tag, uin
 	}
 }
 
+// Проверяет профильные записи между p и p_max до end_tag. tag — тег записи, rec_len — длина,
+// max_slots — предел номеров. Записывает длину и признаки ошибок в s.
 void profile_scan(const uint8_t *p, const uint8_t *p_max, uint16_t tag, uint16_t end_tag,
                   uint16_t rec_len, uint8_t max_slots, ProfileScan *s)
 {

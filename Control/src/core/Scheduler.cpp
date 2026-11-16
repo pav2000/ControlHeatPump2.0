@@ -184,13 +184,14 @@ uint8_t Scheduler::web_set_param(char *param, char *val)
 	return OK;
 }
 
-// Записать настройки в eeprom i2c, если число меньше 0 это код ошибки
+// Берёт замок настроек и сохраняет расписание. Возвращает OK либо код отказа.
 int8_t Scheduler::save(void)
 {
     SettingsLock lock(HP.saving);
     return lock ? save_locked() : ERR_I2C_BUSY;
 }
 
+// Записывает и проверяет расписание при уже взятом замке. Возвращает OK либо код отказа.
 int8_t Scheduler::save_locked(void)
 {
     // Пишем всегда НОВЫМ форматом: область опознаёт себя сама, поэтому
@@ -244,8 +245,8 @@ static bool unpack_old(Scheduler_Data *d, const uint8_t *src)
 	return lost;
 }
 
-// Считать настройки в память по адресу из eeprom i2c, если число меньше 0 это код ошибки
-// Запись в EEPROM может быть и прежней длины (9 календарей) - тогда лишнее отбрасывается.
+// Читает расписание из EEPROM в data для экспорта или применяет при пустом data.
+// version задаёт эпоху старого формата, 0 использует текущую. Возвращает длину либо код отказа.
 int16_t Scheduler::load(uint8_t *data, uint8_t version)
 {
 	journal.jprintf(" Scheduler ");
@@ -307,10 +308,8 @@ int16_t Scheduler::load(uint8_t *data, uint8_t version)
 	return ret;
 }
 
-// Считать настройки из буфера (секция файла настроек).
-// avail - сколько байт после начала данных есть в файле; hint - длина данных
-// из заголовка записи, либо 0, если заголовка нет (файл прежней выгрузки).
-// Длина без подсказки определяется по контрольной сумме: сначала нынешняя, затем прежняя.
+// Проверяет секцию расписания в buf длиной avail, учитывая hint из заголовка, если он задан.
+// Возвращает длину данных без CRC либо 0 при отказе.
 uint16_t Scheduler::file_data_len(const uint8_t *buf, uint16_t avail, uint16_t hint)
 {
 #ifndef LOAD_VERIFICATION
@@ -331,6 +330,8 @@ uint16_t Scheduler::file_data_len(const uint8_t *buf, uint16_t avail, uint16_t h
 	return len;
 }
 
+// Загружает расписание из buf длиной avail, hint задаёт ожидаемую длину или 0.
+// Возвращает OK либо код ошибки формата или CRC.
 int8_t Scheduler::loadFromBuf(byte *buf, uint16_t avail, uint16_t hint)
 {
 	const uint16_t len = file_data_len(buf, avail, hint);
@@ -355,7 +356,8 @@ uint16_t Scheduler::get_crc16(uint8_t *data)
 	return crc;
 }
 
-// Считывает адрес данных и длину из одного снимка заголовка.
+// Читает заголовок расписания из EEPROM. Возвращает OK с адресом base и длиной len
+// либо код ошибки чтения или размера.
 int8_t Scheduler::read_region(uint32_t &base, uint16_t &len)
 {
 	uint8_t hdr[REC_HDR_SIZE];
@@ -369,6 +371,7 @@ int8_t Scheduler::read_region(uint32_t &base, uint16_t &len)
 	return OK;
 }
 
+// Сверяет CRC данных EEPROM по адресу base и длине len. Возвращает OK либо код отказа.
 int8_t Scheduler::check_crc16_eeprom(uint32_t base, uint16_t len)
 {
 	uint16_t crc2, crc = 0xFFFF;

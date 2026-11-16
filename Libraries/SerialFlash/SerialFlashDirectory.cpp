@@ -76,7 +76,9 @@ struct Directory {
 	uint32_t names;
 	uint32_t data;
 
+	// pav2000 Возвращает адрес хеша записи каталога с номером index.
 	uint32_t hashAddress(uint16_t index) const { return HeaderSize + index * 2u; }
+	// pav2000 Возвращает адрес описателя записи каталога с номером index.
 	uint32_t entryAddress(uint16_t index) const { return hashAddress(slots) + index * EntrySize; }
 };
 
@@ -86,6 +88,7 @@ struct Entry {
 	uint32_t name;
 };
 
+// pav2000 Читает каталог в dir и инициализирует его на чистой памяти. Возвращает статус операции.
 Status readDirectory(Directory &dir)
 {
 	uint32_t header[2];
@@ -107,6 +110,7 @@ Status readDirectory(Directory &dir)
 	return Status::Ok;
 }
 
+// pav2000 Возвращает 16-битный хеш имени filename в диапазоне 1…65534.
 uint16_t filenameHash(const char *filename)
 {
 	uint32_t hash = 2166136261;
@@ -117,6 +121,7 @@ uint16_t filenameHash(const char *filename)
 	return (hash % 0xFFFEu) + 1; // 0 и 0xffff зарезервированы
 }
 
+// pav2000 Читает и проверяет запись index каталога dir, результат помещает в entry. Возвращает статус.
 Status readEntry(const Directory &dir, uint16_t index, Entry &entry)
 {
 	if (index >= dir.slots) return Status::Corrupt;
@@ -129,8 +134,8 @@ Status readEntry(const Directory &dir, uint16_t index, Entry &entry)
 	return Status::Ok;
 }
 
-// length включает завершающий ноль. При поиске по имени проверяем всю
-// строку, даже если часть букв уже не совпала с искомым именем.
+// pav2000 Читает имя от addr до конца области имён dir, при наличии сверяет с expected.
+// Записывает длину с нулём в length и возвращает статус чтения и совпадения.
 Status scanName(const Directory &dir, uint32_t addr, const char *expected, uint32_t &length)
 {
 	char buf[16];
@@ -150,7 +155,8 @@ Status scanName(const Directory &dir, uint32_t addr, const char *expected, uint3
 	return Status::Corrupt;
 }
 
-// При отсутствии имени index указывает на первый свободный слот или конец.
+// pav2000 Ищет filename в каталоге dir и заполняет index и entry при совпадении.
+// Возвращает статус. При отсутствии имени или совпадения index указывает на свободный слот или конец.
 Status findEntry(const Directory &dir, const char *filename, uint16_t &index, Entry &entry)
 {
 	const uint16_t hash = filename ? filenameHash(filename) : 0;
@@ -173,6 +179,8 @@ Status findEntry(const Directory &dir, const char *filename, uint16_t &index, En
 	return Status::NotFound;
 }
 
+// pav2000 Находит начало свободных областей данных и имён для слота index каталога dir.
+// Пишет адреса в address и name и возвращает статус.
 Status nextSpace(const Directory &dir, uint16_t index, uint32_t &address, uint32_t &name)
 {
 	if (index >= dir.slots) return Status::Full;
@@ -190,6 +198,7 @@ Status nextSpace(const Directory &dir, uint16_t index, uint32_t &address, uint32
 	return Status::Ok;
 }
 
+// pav2000 Округляет value вверх до кратного align. Возвращает false при переполнении, иначе true.
 bool alignUp(uint32_t &value, uint32_t align)
 {
 	const uint32_t rem = value % align;
@@ -200,6 +209,7 @@ bool alignUp(uint32_t &value, uint32_t align)
 	return true;
 }
 
+// pav2000 Проверяет, что length байтов от address равны 0xFF. Возвращает статус чтения и проверки.
 Status checkErased(uint32_t address, uint32_t length)
 {
 	uint8_t data[16];
@@ -214,6 +224,7 @@ Status checkErased(uint32_t address, uint32_t length)
 	return Status::Ok;
 }
 
+// pav2000 Сохраняет status в out, если он передан. Возвращает true для Status::Ok.
 bool report(SerialFlashStatus *out, Status status)
 {
 	if (out) *out = status;
@@ -221,6 +232,7 @@ bool report(SerialFlashStatus *out, Status status)
 }
 } // namespace
 
+// pav2000 Ищет файл filename и возвращает его дескриптор или пустой файл. Записывает статус в out, если он передан.
 SerialFlashFile SerialFlashChip::open(const char *filename, SerialFlashStatus *out)
 {
 	SerialFlashFile file;
@@ -237,17 +249,20 @@ SerialFlashFile SerialFlashChip::open(const char *filename, SerialFlashStatus *o
 	return file;
 }
 
+// pav2000 Возвращает true, если файл filename найден и его запись в каталоге читается.
 bool SerialFlashChip::exists(const char *filename)
 {
 	return (bool)open(filename);
 }
 
+// pav2000 Удаляет запись файла filename из каталога. Возвращает true при успехе.
 bool SerialFlashChip::remove(const char *filename)
 {
 	SerialFlashFile file = open(filename);
 	return remove(file);
 }
 
+// pav2000 Удаляет запись file из каталога и сбрасывает дескриптор. Возвращает true при успехе.
 bool SerialFlashChip::remove(SerialFlashFile &file)
 {
 	if (!file) return false;
@@ -268,6 +283,7 @@ bool SerialFlashChip::remove(SerialFlashFile &file)
 	return true;
 }
 
+// pav2000 Возвращает размер свободной области данных или 0. Записывает статус в out, если он передан.
 uint32_t SerialFlashChip::free_size(SerialFlashStatus *out)
 {
 	Directory dir;
@@ -285,6 +301,8 @@ uint32_t SerialFlashChip::free_size(SerialFlashStatus *out)
 	return report(out, status) ? Capacity - address : 0;
 }
 
+// pav2000 Создаёт файл filename с длиной length и выравниванием align, при 0 выравнивает адрес на 256 байтов.
+// Возвращает код SerialFlashStatus.
 int8_t SerialFlashChip::create(const char *filename, uint32_t length, uint32_t align)
 {
 	if (!filename || !*filename) return (int8_t)Status::Invalid;
@@ -333,6 +351,8 @@ int8_t SerialFlashChip::create(const char *filename, uint32_t length, uint32_t a
 	return (int8_t)Status::Ok;
 }
 
+// pav2000 Возвращает true для следующего файла, записывая имя в filename ёмкостью capacity и размер в filesize.
+// При наличии out записывает статус, в том числе NotFound в конце каталога.
 bool SerialFlashChip::readdir(char *filename, uint32_t capacity, uint32_t &filesize, SerialFlashStatus *out)
 {
 	if (!filename || !capacity) return report(out, Status::Invalid);
@@ -364,6 +384,7 @@ bool SerialFlashChip::readdir(char *filename, uint32_t capacity, uint32_t &files
 	return report(out, Status::NotFound);
 }
 
+// pav2000 Стирает блоки, занятые выровненным файлом. Возвращает true после завершения всех операций.
 bool SerialFlashFile::erase()
 {
 	const uint32_t block = SerialFlash.blockSize();

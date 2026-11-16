@@ -76,6 +76,7 @@ uint16_t calc_crc16(unsigned char * pcBlock, unsigned short len, uint16_t crc = 
 uint16_t _crc16(uint16_t crc, uint8_t a);             // побайтно, для потоковых расчётов
 // Читатели старого формата. При неполной записи курсор и назначение не меняются.
 const uint8_t *settings_legacy_record(const uint8_t *&p, const uint8_t *end, uint16_t &len);
+// Читает запись от p до end с учётом tag и tagLimit, обновляет len. Возвращает данные или nullptr.
 const uint8_t *settings_legacy_next(const uint8_t *&p, const uint8_t *end, uint16_t &len,
                                    int16_t &tag, int16_t tagLimit);
 bool settings_legacy_valid(const uint8_t *p, const uint8_t *end, int16_t tagLimit, int16_t lastArrayTag);

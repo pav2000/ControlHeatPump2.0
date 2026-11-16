@@ -128,43 +128,14 @@ public:
   // сброса: init() зовут и resetWiznet, и каждый Ethernet.begin, раскладка должна переживать все вызовы.
   void setLayoutMode(uint8_t mode) { layoutMode = mode; }
   bool sockUsable(uint8_t s) { return NetLayout_Usable(layoutMode, s); }   // сокеты с нулевым буфером не используются (веб, клиенты, UDP)
-  /**
-   * @brief	This function is being used for copy the data form Receive buffer of the chip to application buffer.
-   * 
-   * It calculate the actual physical address where one has to read
-   * the data from Receive buffer. Here also take care of the condition while it exceed
-   * the Rx memory uper-bound of socket.
-   */
-  void read_data(SOCKET s, volatile uint16_t src, volatile uint8_t * dst, uint16_t len);
-  
-  /**
-   * @brief	 This function is being called by send() and sendto() function also. 
-   * 
-   * This function read the Tx write pointer register and after copy the data in buffer update the Tx write pointer
-   * register. User should read upper byte first and lower byte later to get proper value.
-   */
-  void send_data_processing(SOCKET s, const uint8_t *data, uint16_t len);
-  /**
-   * @brief A copy of send_data_processing that uses the provided ptr for the
-   *        write offset.  Only needed for the "streaming" UDP API, where
-   *        a single UDP packet is built up over a number of calls to
-   *        send_data_processing_ptr, because TX_WR doesn't seem to get updated
-   *        correctly in those scenarios
-   * @param ptr value to use in place of TX_WR.  If 0, then the value is read
-   *        in from TX_WR
-   * @return New value for ptr, to be used in the next call
-   */
-// FIXME Update documentation
-  void send_data_processing_offset(SOCKET s, uint16_t data_offset, const uint8_t *data, uint16_t len);
-
-  /**
-   * @brief	This function is being called by recv() also.
-   * 
-   * This function read the Rx read pointer register
-   * and after copy the data from receive buffer update the Rx write pointer register.
-   * User should read upper byte first and lower byte later to get proper value.
-   */
-  void recv_data_processing(SOCKET s, uint8_t *data, uint16_t len, uint8_t peek = 0);
+  uint16_t txCapacity(SOCKET s) const;
+  static const uint16_t RX_CAPACITY = 2048; // init() выделяет 2 КиБ на сокет
+  bool read_data(SOCKET s, uint16_t ptr, uint8_t *dst, uint16_t len);
+  bool readRx(SOCKET s, uint8_t *dst, uint16_t len, bool peek = false);
+  bool consumeRx(SOCKET s, uint16_t ptr, uint16_t len);
+  bool bufferTx(SOCKET s, uint16_t offset, const uint8_t *data, uint16_t len);
+  bool commitTx(SOCKET s, uint16_t len);
+  bool startSend(SOCKET s);
 
   inline void setGatewayIp(uint8_t *_addr);
   inline void getGatewayIp(uint8_t *_addr);
@@ -186,8 +157,12 @@ public:
 
   bool execCmdSn(SOCKET s, SockCMD _cmd);
   
-  uint16_t getTXFreeSize(SOCKET s);
-  uint16_t getRXReceivedSize(SOCKET s);
+  bool getTXFreeSize(SOCKET s, uint16_t &size);
+  bool getRXReceivedSize(SOCKET s, uint16_t &size);
+  // pav2000 Возвращает свободное место TX сокета s в байтах или 0 при сбое.
+  uint16_t getTXFreeSize(SOCKET s) { uint16_t size = 0; return getTXFreeSize(s, size) ? size : 0; }
+  // pav2000 Возвращает число доступных байтов RX сокета s или 0 при сбое.
+  uint16_t getRXReceivedSize(SOCKET s) { uint16_t size = 0; return getRXReceivedSize(s, size) ? size : 0; }
   
 
   // W5500 Registers
@@ -195,7 +170,9 @@ public:
 private:
   static uint8_t  write(uint16_t _addr, uint8_t _cb, uint8_t _data);
   static uint16_t write(uint16_t _addr, uint8_t _cb, const uint8_t *buf, uint16_t len);
-  static uint8_t  read(uint16_t _addr, uint8_t _cb );
+  // pav2000 Читает байт по адресу addr с управляющим байтом cb. Возвращает значение или 0 при сбое.
+  static uint8_t read(uint16_t addr, uint8_t cb) { uint8_t value = 0; return readByte(addr, cb, value) ? value : 0; }
+  static bool readByte(uint16_t addr, uint8_t cb, uint8_t &value);
   static uint16_t read(uint16_t _addr, uint8_t _cb, uint8_t *buf, uint16_t len);
   
 #define __GP_REGISTER8(name, address)             \
@@ -247,45 +224,41 @@ public:
   // W5500 Socket registers
   // ----------------------
 private:
-  static inline uint8_t readSn(SOCKET _s, uint16_t _addr);
-  static inline uint8_t writeSn(SOCKET _s, uint16_t _addr, uint8_t _data);
-  static inline uint16_t readSn(SOCKET _s, uint16_t _addr, uint8_t *_buf, uint16_t len);
-  static inline uint16_t writeSn(SOCKET _s, uint16_t _addr, uint8_t *_buf, uint16_t len);
+  static bool stableSize(SOCKET s, uint16_t address, uint16_t limit, uint16_t &size);
+  static inline uint16_t readSn(SOCKET s, uint16_t addr, uint8_t *buf, uint16_t len);
+  static inline uint16_t writeSn(SOCKET s, uint16_t addr, const uint8_t *buf, uint16_t len);
 
+// pav2000 Создаёт функции для регистра name по address. Чтение и запись принимают сокет и байт,
+// проверяемые варианты возвращают статус обмена, упрощённое чтение возвращает байт или 0.
+#define __SOCKET_REGISTER8(name, address)                              \
+  static bool write##name(SOCKET s, uint8_t value) {                   \
+    return s < SOCKETS && write(address, 0x0C + (s << 5), value);      \
+  }                                                                   \
+  static bool read##name(SOCKET s, uint8_t &value) {                   \
+    return s < SOCKETS && readByte(address, 0x08 + (s << 5), value);   \
+  }                                                                   \
+  static uint8_t read##name(SOCKET s) {                               \
+    uint8_t value = 0; return read##name(s, value) ? value : 0;             \
+  }
 
-#define __SOCKET_REGISTER8(name, address)                    \
-  static inline void write##name(SOCKET _s, uint8_t _data) { \
-    writeSn(_s, address, _data);                             \
-  }                                                          \
-  static inline uint8_t read##name(SOCKET _s) {              \
-    return readSn(_s, address);                              \
+// pav2000 Создаёт функции для 16-битного регистра name по address. Чтение и запись принимают сокет и значение,
+// проверяемые варианты возвращают статус обмена, упрощённое чтение возвращает значение или 0.
+#define __SOCKET_REGISTER16(name, address)                            \
+  static bool write##name(SOCKET s, uint16_t value) {                  \
+    const uint8_t bytes[] = {uint8_t(value >> 8), uint8_t(value)};      \
+    return writeSn(s, address, bytes, sizeof(bytes)) == sizeof(bytes); \
+  }                                                                   \
+  static bool read##name(SOCKET s, uint16_t &value) {                  \
+    uint8_t bytes[2];                                                 \
+    if(readSn(s, address, bytes, sizeof(bytes)) != sizeof(bytes)) return false; \
+    value = (uint16_t(bytes[0]) << 8) | bytes[1];                       \
+    return true;                                                      \
+  }                                                                   \
+  static uint16_t read##name(SOCKET s) {                              \
+    uint16_t value = 0; return read##name(s, value) ? value : 0;            \
   }
-#if defined(REL_GR_KURUMI) || defined(REL_GR_KURUMI_PROTOTYPE)  
-#define __SOCKET_REGISTER16(name, address)                   \
-  static void write##name(SOCKET _s, uint16_t _data) {       \
-    writeSn(_s, address,   _data >> 8);                      \
-    writeSn(_s, address+1, _data & 0xFF);                    \
-  }                                                          \
-  static uint16_t read##name(SOCKET _s) {                    \
-    uint16_t res = readSn(_s, address);                      \
-    uint16_t res2 = readSn(_s,address + 1);                  \
-    res = res << 8;                                          \
-    res2 = res2 & 0xFF;                                      \
-    res = res | res2;                                        \
-    return res;                                              \
-  }
-#else
-#define __SOCKET_REGISTER16(name, address)                   \
-  static void write##name(SOCKET _s, uint16_t _data) {       \
-    writeSn(_s, address,   _data >> 8);                      \
-    writeSn(_s, address+1, _data & 0xFF);                    \
-  }                                                          \
-  static uint16_t read##name(SOCKET _s) {                    \
-    uint16_t res = readSn(_s, address);                      \
-    res = (res << 8) + readSn(_s, address + 1);              \
-    return res;                                              \
-  }
-#endif  
+// pav2000 Создаёт функции чтения и записи массива регистра name по address.
+// Они принимают сокет и буфер на size байтов и возвращают размер успешного обмена.
 #define __SOCKET_REGISTER_N(name, address, size)             \
   static uint16_t write##name(SOCKET _s, uint8_t *_buff) {   \
     return writeSn(_s, address, _buff, size);                \
@@ -330,9 +303,6 @@ public:
   static const uint16_t SSIZE = 2048; // Max Tx buffer size
   uint8_t layoutMode;   // NL_MODE_*, 0 - прежняя раскладка (глобальный объект инициализируется нулями)
 private:
-  static const uint16_t RSIZE = 2048; // Max Rx buffer size
-
-private:
 #if defined(ARDUINO_ARCH_AVR)
 #if defined(__AVR_ATmega1280__) || defined(__AVR_ATmega2560__) || defined(__AVR_ATmega1284P__)
   inline static void initSS()    { DDRB  |=  _BV(4); };
@@ -361,24 +331,14 @@ private:
 
 extern W5500Class W5100;
 
-uint8_t W5500Class::readSn(SOCKET _s, uint16_t _addr) {
-    uint8_t cntl_byte = (_s<<5)+0x08;
-    return read(_addr, cntl_byte);
+// pav2000 Читает len байтов из регистров сокета s по адресу addr в buf. Возвращает len при успехе, иначе 0.
+uint16_t W5500Class::readSn(SOCKET s, uint16_t addr, uint8_t *buf, uint16_t len) {
+  return s < SOCKETS ? read(addr, 0x08 + (s << 5), buf, len) : 0;
 }
 
-uint8_t W5500Class::writeSn(SOCKET _s, uint16_t _addr, uint8_t _data) {
-    uint8_t cntl_byte = (_s<<5)+0x0C;
-    return write(_addr, cntl_byte, _data);
-}
-
-uint16_t W5500Class::readSn(SOCKET _s, uint16_t _addr, uint8_t *_buf, uint16_t _len) {
-    uint8_t cntl_byte = (_s<<5)+0x08;
-    return read(_addr, cntl_byte, _buf, _len );
-}
-
-uint16_t W5500Class::writeSn(SOCKET _s, uint16_t _addr, uint8_t *_buf, uint16_t _len) {
-    uint8_t cntl_byte = (_s<<5)+0x0C;
-    return write(_addr, cntl_byte, _buf, _len);
+// pav2000 Записывает len байтов из buf в регистры сокета s по адресу addr. Возвращает len при успехе, иначе 0.
+uint16_t W5500Class::writeSn(SOCKET s, uint16_t addr, const uint8_t *buf, uint16_t len) {
+  return s < SOCKETS ? write(addr, 0x0C + (s << 5), buf, len) : 0;
 }
 
 void W5500Class::getGatewayIp(uint8_t *_addr) {

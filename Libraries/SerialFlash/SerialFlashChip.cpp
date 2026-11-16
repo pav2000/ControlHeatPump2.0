@@ -50,6 +50,7 @@ uint32_t SerialFlashChip::Capacity = 0;
 static uint8_t nextEraseDie, eraseDieCount, resumeCommand;
 static uint32_t eraseDieSize;
 
+// pav2000 Передаёт чипу однобайтовую команду cmd. Возвращает true при успешном обмене SPI.
 static bool command(uint8_t cmd)
 {
 	CSASSERT();
@@ -58,6 +59,8 @@ static bool command(uint8_t cmd)
 	return ok;
 }
 
+// pav2000 Пишет в h команду cmd и адрес addr. При addr32 использует 4 байта адреса, иначе 3.
+// Возвращает длину заголовка.
 static uint8_t addressHeader(uint8_t *h, uint8_t cmd, uint32_t addr, bool addr32)
 {
 	uint8_t n = 0;
@@ -69,6 +72,7 @@ static uint8_t addressHeader(uint8_t *h, uint8_t cmd, uint32_t addr, bool addr32
 	return n;
 }
 
+// pav2000 Разрешает запись в чип. Возвращает true при успешной передаче команды.
 static bool writeEnable()
 {
 	if (!command(0x06)) return false;
@@ -76,6 +80,7 @@ static bool writeEnable()
 	return true;
 }
 
+// pav2000 Читает состояние чипа командой, выбранной по flags. Возвращает статус обмена, в done пишет признак готовности.
 static bool readReady(uint8_t flags, bool &done)
 {
 	const bool cmd70 = flags & FLAG_STATUS_CMD70;
@@ -88,6 +93,7 @@ static bool readReady(uint8_t flags, bool &done)
 	return ok;
 }
 
+// pav2000 Возобновляет приостановленную операцию. Возвращает true при успехе или отсутствии отложенной команды.
 static bool resumeOperation()
 {
 	if (!resumeCommand) return true;
@@ -96,6 +102,7 @@ static bool resumeOperation()
 	return true;
 }
 
+// pav2000 Запускает стирание кристалла по адресу addr. Возвращает true при успешной передаче команды.
 static bool startDieErase(uint32_t addr)
 {
 	if (!writeEnable()) return false;
@@ -107,6 +114,8 @@ static bool startDieErase(uint32_t addr)
 	return ok;
 }
 
+// pav2000 Проверяет текущую операцию и при необходимости запускает стирание следующего кристалла.
+// Возвращает статус обмена, в done пишет признак завершения всех операций.
 bool SerialFlashChip::pollReady(bool &done)
 {
 	done = false;
@@ -128,12 +137,14 @@ bool SerialFlashChip::pollReady(bool &done)
 	return true;
 }
 
+// pav2000 Возвращает true, если чип завершил операции и обмен SPI прошёл успешно.
 bool SerialFlashChip::ready()
 {
 	bool done;
 	return pollReady(done) && done;
 }
 
+// pav2000 Ждёт готовности чипа до timeout мс. Возвращает true при готовности, false при сбое или тайм-ауте.
 bool SerialFlashChip::wait(uint32_t timeout)
 {
 	const uint32_t started = millis();
@@ -145,8 +156,9 @@ bool SerialFlashChip::wait(uint32_t timeout)
 	}
 }
 
-// Заголовок чтения Fast Read 0Bh: команда, адрес (3 байта или 4 в режиме 32-битных адресов), пустой байт. Прежняя
-// команда 03h у W25Q32 ограничена 50 МГц (у части марок 33 МГц), 0Bh - 104/133 МГц; цена - один байт на вызов.
+// pav2000 Формирует в h заголовок Fast Read с адресом addr и пустым байтом.
+// При addr32 использует 4 байта адреса, иначе 3. Возвращает длину заголовка.
+// Fast Read 0Bh допускает более высокую частоту SPI, чем 03h.
 uint8_t SerialFlashChip::readHeader(uint8_t *h, uint32_t addr, bool addr32)
 {
 	uint8_t n = addressHeader(h, 0x0B, addr, addr32);
@@ -154,6 +166,8 @@ uint8_t SerialFlashChip::readHeader(uint8_t *h, uint32_t addr, bool addr32)
 	return n;
 }
 
+// pav2000 Читает len байтов от addr в buf, при необходимости приостанавливая текущую операцию.
+// Возвращает true при успешном чтении и возобновлении операции.
 bool SerialFlashChip::read(uint32_t addr, void *buf, uint32_t len)
 {
 	if (addr > Capacity || len > Capacity - addr || (len && !buf)) return false;
@@ -207,6 +221,7 @@ bool SerialFlashChip::read(uint32_t addr, void *buf, uint32_t len)
 	return resumeOperation() && ok;
 }
 
+// pav2000 Записывает len байтов из buf по адресу addr страницами. Возвращает true после завершения всех страниц.
 bool SerialFlashChip::write(uint32_t addr, const void *buf, uint32_t len)
 {
 	if (addr > Capacity || len > Capacity - addr || (len && !buf)) return false;
@@ -232,6 +247,7 @@ bool SerialFlashChip::write(uint32_t addr, const void *buf, uint32_t len)
 	return true;
 }
 
+// pav2000 Запускает полное стирание чипа. Возвращает true при успешном запуске.
 bool SerialFlashChip::eraseAll()
 {
 	uint8_t id[5];
@@ -253,6 +269,7 @@ bool SerialFlashChip::eraseAll()
 	return command(0xC7);
 }
 
+// pav2000 Запускает стирание блока с выровненным адресом addr. Возвращает true при успешном запуске.
 bool SerialFlashChip::eraseBlock(uint32_t addr)
 {
 	if (addr >= Capacity || blockSize() > Capacity - addr || (addr % blockSize())) return false;
@@ -277,6 +294,7 @@ bool SerialFlashChip::eraseBlock(uint32_t addr)
 //#define FLAG_DIFF_SUSPEND	0x04	// uses 2 different suspend commands
 //#define FLAG_256K_BLOCKS	0x10	// has 256K erase blocks
 
+// pav2000 Настраивает SPI с выводом CS pin, определяет ёмкость и режим адресации. Возвращает true при успешной настройке.
 bool SerialFlashChip::begin(uint8_t pin)
 {
 	spiBusInit();                                  // без SD в конфигурации шину до сети никто не поднимет
@@ -309,16 +327,19 @@ bool SerialFlashChip::begin(uint8_t pin)
 	return true;
 }
 
+// pav2000 Ждёт готовности и переводит чип в сон. Возвращает true при успешном обмене.
 bool SerialFlashChip::sleep()
 {
 	return wait() && command(0xB9);
 }
 
+// pav2000 Посылает команду выхода из сна. Возвращает true при успешном обмене.
 bool SerialFlashChip::wakeup()
 {
 	return command(0xAB);
 }
 
+// pav2000 Читает идентификатор чипа в buf ёмкостью 5 байтов. Возвращает true, если считано 3 байта или 5 для Spansion.
 bool SerialFlashChip::readID(uint8_t *buf)
 {
 	if (!buf || !wait()) return false;
@@ -333,7 +354,8 @@ bool SerialFlashChip::readID(uint8_t *buf)
 	return ok;
 }
 
-bool SerialFlashChip::readSerialNumber(uint8_t *buf) // needs room for 8 bytes
+// pav2000 Читает 8 байтов серийного номера в buf. Возвращает true при успешном обмене.
+bool SerialFlashChip::readSerialNumber(uint8_t *buf)
 {
 	if (!buf || !wait()) return false;
 	const uint8_t header[] = {0x4B, 0, 0, 0, 0};

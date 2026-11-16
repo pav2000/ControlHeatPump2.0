@@ -30,9 +30,9 @@ void    spiBusSelect(SpiDev d);                               // настрой�
 void    spiBusDeselect(SpiDev d);                             // CS вверх
 void    spiBusDeselectAll();                                  // CS вверх у всех настроенных устройств (бывшие SPI_switch*())
 uint8_t spiBusScbr(SpiDev d);                                 // текущий делитель устройства (SCK = 84 МГц / делитель), 0 - не настроено
-// При отказе принятый байт не меняется. nullptr означает отбросить принятый байт.
+// pav2000 Передаёт b и пишет ответ в received, если указатель задан. Возвращает SPIBUS_OK или код сбоя.
 uint8_t spiBusXfer(uint8_t b, uint8_t *received);
-// Старый контракт W5500 и SdFat до передачи статуса в их интерфейсы.
+// pav2000 Передаёт b и возвращает принятый байт или 0 при сбое.
 inline uint8_t spiBusXfer(uint8_t b)
 {
 	uint8_t received = 0;

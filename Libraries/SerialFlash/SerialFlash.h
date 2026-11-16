@@ -87,6 +87,7 @@ public:
 		if (address > 0) return true;
 		return false;
 	}
+	// pav2000 Читает до rdlen байтов в buf с текущей позиции файла. Возвращает число прочитанных байтов или 0 при сбое.
 	uint32_t read(void *buf, uint32_t rdlen) {
 		const uint32_t remaining = available();
 		if (!address || !remaining) return 0;
@@ -95,6 +96,7 @@ public:
 		offset += rdlen;
 		return rdlen;
 	}
+	// pav2000 Записывает до wrlen байтов из buf с текущей позиции файла. Возвращает число записанных байтов или 0 при сбое.
 	uint32_t write(const void *buf, uint32_t wrlen) {
 		const uint32_t remaining = available();
 		if (!address || !remaining) return 0;

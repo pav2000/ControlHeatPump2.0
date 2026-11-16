@@ -49,16 +49,16 @@
 // вызовет, и на носителе окажется смесь форматов. Читатель старого формата
 // остаётся - он в SettingsLegacy.cpp и удаляется отдельно, через год.
 
-// Копирование с правилом усечения, тем же, что у load_struct: берём
-// сколько есть, но не больше, чем ждём. Это и есть совместимость при росте
-// структуры с конца - в обе стороны.
+// Копирует из from в to не более have доступных и want ожидаемых байтов.
+// При пустом to пропускает запись, при короткой записи сохраняет хвост назначения.
 static void copy_min(void *to, const uint8_t *from, uint16_t have, uint16_t want)
 {
 	if(to) memcpy(to, from, have <= want ? have : want);
 }
 
-// Чтение тела блока с CRC. Для файла capacity включает поле длины,
-// для EEPROM это ёмкость буфера, куда читается тело.
+// Читает тело с CRC в buffer из EEPROM или сдвигает buffer к телу файла при from_RAM.
+// capacity — ёмкость буфера или длина файла, newFormat выбирает проверку пролога.
+// Возвращает OK с размером тела в size либо код отказа.
 static int8_t read_settings_block(uint8_t *&buffer, uint16_t capacity, uint8_t from_RAM,
                                   bool newFormat, uint16_t &size)
 {
@@ -83,7 +83,8 @@ static int8_t read_settings_block(uint8_t *&buffer, uint16_t capacity, uint8_t f
 	return OK;
 }
 
-// Считать настройки из I2C или файла. На выходе длина блока или отрицательный код ошибки.
+// Загружает старый формат. buffer и capacity задают буфер EEPROM или файл при from_RAM.
+// Возвращает длину блока с префиксом и CRC либо отрицательный код.
 int32_t HeatPump::load(uint8_t *buffer, uint16_t capacity, uint8_t from_RAM)
 {
 	uint16_t size;
@@ -221,6 +222,8 @@ void HeatPump::dbg_before_save()
 	Dbg_Pack(dbgFlags, &Option.dbg, &Option.dbg2);
 }
 
+// Записывает профили, расписание и настройки, при saveCounters также моточасы.
+// Возвращает длину блока настроек либо отрицательный код, включая занятость.
 int32_t HeatPump::save_all(bool saveCounters)
 {
 	// Условие - ПОРОГ: конверсия нужна, только если данные старого каркаса.
@@ -337,7 +340,8 @@ void HeatPump::load_warn(int8_t code, uint8_t from_RAM)
 	if(!from_RAM) set_Error(code, (char*)nameHeatPump);
 }
 
-// Расписание, кеш профилей и текущий профиль: общий итог для обоих читателей.
+// Загружает расписание и кеш профилей, активирует выбранный профиль.
+// Возвращает OK либо первую локальную ошибку, записанную в детали аварии загрузки.
 int8_t HeatPump::load_parts(void)
 {
 	const int16_t schedule = Schdlr.load();
@@ -353,6 +357,8 @@ int8_t HeatPump::load_parts(void)
 	return result;
 }
 
+// Загружает новый формат. buffer и capacity задают буфер EEPROM или файл при from_RAM.
+// Возвращает длину блока с префиксом и CRC либо отрицательный код.
 int32_t HeatPump::load_new(uint8_t *buffer, uint16_t capacity, uint8_t from_RAM)
 {
 	uint16_t size;
@@ -544,7 +550,8 @@ xNotEqual:
 	return OK;
 }
 
-// чтение счетчиков теплового насоса в ЕЕПРОМ
+// Читает моточасы из EEPROM и обновляет оба снимка после полного чтения.
+// Возвращает OK, код отсутствия заголовка либо код ошибки чтения.
 int8_t HeatPump::load_motoHour()          
 {
 	type_motoHour loaded{};
@@ -572,8 +579,7 @@ int8_t HeatPump::load_motoHour()
 	journal.printf(" Load counters OK, read: %d bytes\n", sizeof(motoHour));
 	return OK;
 }
-// Сброс сезонного счетчика моточасов
-// параметр true - сброс всех счетчиков
+// Сбрасывает сезонные счётчики, при full также общие. Возвращает статус записи моточасов.
 int8_t HeatPump::resetCount(boolean full)
 {
 	motohour_reset(motoHour, full, rtcSAM3X8.unixtime(),

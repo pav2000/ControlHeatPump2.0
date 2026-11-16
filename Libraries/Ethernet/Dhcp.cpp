@@ -251,134 +251,93 @@ void DhcpClass::send_DHCP_MESSAGE(uint8_t messageType, uint16_t secondsElapsed)
     _dhcpUdpSocket.endPacket();
 }
 
+// pav2000 Ждёт ответ до responseTimeout мс и сохраняет ID в transactionId.
+// Возвращает тип DHCP-сообщения, 0 при неверном ответе или 255 при тайм-ауте.
 uint8_t DhcpClass::parseDHCPResponse(unsigned long responseTimeout, uint32_t& transactionId)
 {
-    uint8_t type = 0;
-    uint8_t opt_len = 0;
-     
-    unsigned long startTime = millis();
-
-    while(_dhcpUdpSocket.parsePacket() <= 0)
-    {
-        if((millis() - startTime) > responseTimeout)
-        {
-            return 255;
-        }
+    const unsigned long started = millis();
+    while (_dhcpUdpSocket.parsePacket() <= 0) {
+        if (millis() - started > responseTimeout) return 255;
         delay(50);
     }
-    // start reading in the packet
-    RIP_MSG_FIXED fixedMsg;
-    _dhcpUdpSocket.read((uint8_t*)&fixedMsg, sizeof(RIP_MSG_FIXED));
-  
-    if(fixedMsg.op == DHCP_BOOTREPLY && _dhcpUdpSocket.remotePort() == DHCP_SERVER_PORT)
-    {
-        transactionId = ntohl(fixedMsg.xid);
-        if(memcmp(fixedMsg.chaddr, _dhcpMacAddr, 6) != 0 || (transactionId < _dhcpInitialTransactionId) || (transactionId > _dhcpTransactionId))
-        {
-            // Need to read the rest of the packet here regardless
-            _dhcpUdpSocket.flush();
-            return 0;
-        }
 
-        memcpy(_dhcpLocalIp, fixedMsg.yiaddr, 4);
-
-        // Skip to the option part
-        // Doing this a byte at a time so we don't have to put a big buffer
-        // on the stack (as we don't have lots of memory lying around)
-        for (int i =0; i < (240 - (int)sizeof(RIP_MSG_FIXED)); i++)
-        {
-            _dhcpUdpSocket.read(); // we don't care about the returned byte
-        }
-
-        while (_dhcpUdpSocket.available() > 0) 
-        {
-            switch (_dhcpUdpSocket.read()) 
-            {
-                case endOption :
-                    break;
-                    
-                case padOption :
-                    break;
-                
-                case dhcpMessageType :
-                    opt_len = _dhcpUdpSocket.read();
-                    type = _dhcpUdpSocket.read();
-                    break;
-                
-                case subnetMask :
-                    opt_len = _dhcpUdpSocket.read();
-                    _dhcpUdpSocket.read(_dhcpSubnetMask, 4);
-                    break;
-                
-                case routersOnSubnet :
-                    opt_len = _dhcpUdpSocket.read();
-                    _dhcpUdpSocket.read(_dhcpGatewayIp, 4);
-                    for (int i = 0; i < opt_len-4; i++)
-                    {
-                        _dhcpUdpSocket.read();
-                    }
-                    break;
-                
-                case dns :
-                    opt_len = _dhcpUdpSocket.read();
-                    _dhcpUdpSocket.read(_dhcpDnsServerIp, 4);
-                    for (int i = 0; i < opt_len-4; i++)
-                    {
-                        _dhcpUdpSocket.read();
-                    }
-                    break;
-                
-                case dhcpServerIdentifier :
-                    opt_len = _dhcpUdpSocket.read();
-                    if( *((uint32_t*)_dhcpDhcpServerIp) == 0 || 
-                        IPAddress(_dhcpDhcpServerIp) == _dhcpUdpSocket.remoteIP() )
-                    {
-                        _dhcpUdpSocket.read(_dhcpDhcpServerIp, sizeof(_dhcpDhcpServerIp));
-                    }
-                    else
-                    {
-                        // Skip over the rest of this option
-                        while (opt_len--)
-                        {
-                            _dhcpUdpSocket.read();
-                        }
-                    }
-                    break;
-
-                case dhcpT1value : 
-                    opt_len = _dhcpUdpSocket.read();
-                    _dhcpUdpSocket.read((uint8_t*)&_dhcpT1, sizeof(_dhcpT1));
-                    _dhcpT1 = ntohl(_dhcpT1);
-                    break;
-
-                case dhcpT2value : 
-                    opt_len = _dhcpUdpSocket.read();
-                    _dhcpUdpSocket.read((uint8_t*)&_dhcpT2, sizeof(_dhcpT2));
-                    _dhcpT2 = ntohl(_dhcpT2);
-                    break;
-
-                case dhcpIPaddrLeaseTime :
-                    opt_len = _dhcpUdpSocket.read();
-                    _dhcpUdpSocket.read((uint8_t*)&_dhcpLeaseTime, sizeof(_dhcpLeaseTime));
-                    _dhcpLeaseTime = ntohl(_dhcpLeaseTime);
-                    _renewInSec = _dhcpLeaseTime;
-                    break;
-
-                default :
-                    opt_len = _dhcpUdpSocket.read();
-                    // Skip over the rest of this option
-                    while (opt_len--)
-                    {
-                        _dhcpUdpSocket.read();
-                    }
-                    break;
-            }
-        }
+    RIP_MSG_FIXED fixed;
+    if (_dhcpUdpSocket.read((uint8_t*)&fixed, sizeof(fixed)) != sizeof(fixed) ||
+        fixed.op != DHCP_BOOTREPLY || _dhcpUdpSocket.remotePort() != DHCP_SERVER_PORT) {
+        _dhcpUdpSocket.flush();
+        return 0;
+    }
+    const uint32_t id = ntohl(fixed.xid);
+    if (memcmp(fixed.chaddr, _dhcpMacAddr, 6) || id < _dhcpInitialTransactionId || id > _dhcpTransactionId) {
+        _dhcpUdpSocket.flush();
+        return 0;
     }
 
-    // Need to skip to end of the packet regardless here
-    _dhcpUdpSocket.flush();
+    // pav2000 Читает и отбрасывает count байтов DHCP-пакета. Возвращает true при полном чтении.
+    const auto skip = [this](int count) {
+        uint8_t scratch[16];
+        while (count > 0) {
+            const int chunk = count > (int)sizeof(scratch) ? sizeof(scratch) : count;
+            if (_dhcpUdpSocket.read(scratch, chunk) != chunk) return false;
+            count -= chunk;
+        }
+        return true;
+    };
 
+    uint8_t type = 0, mask[4], gateway[4], dnsIp[4], server[4];
+    memcpy(mask, _dhcpSubnetMask, 4);
+    memcpy(gateway, _dhcpGatewayIp, 4);
+    memcpy(dnsIp, _dhcpDnsServerIp, 4);
+    memcpy(server, _dhcpDhcpServerIp, 4);
+    uint32_t t1 = _dhcpT1, t2 = _dhcpT2, lease = _dhcpLeaseTime;
+    bool leaseSeen = false;
+    bool valid = skip(240 - sizeof(fixed));
+    while (valid && _dhcpUdpSocket.available() > 0) {
+        const int option = _dhcpUdpSocket.read();
+        if (option == endOption) break;
+        if (option == padOption) continue;
+        if (option < 0) { valid = false; break; }
+        const int length = _dhcpUdpSocket.read();
+        if (length < 0 || length > _dhcpUdpSocket.available()) { valid = false; break; }
+
+        uint8_t *dest = nullptr;
+        int used = 4;
+        switch (option) {
+        case dhcpMessageType: dest = &type; used = 1; break;
+        case subnetMask: dest = mask; break;
+        case routersOnSubnet: dest = gateway; break;
+        case dns: dest = dnsIp; break;
+        case dhcpServerIdentifier:
+            if (!(server[0] || server[1] || server[2] || server[3]) ||
+                IPAddress(server) == _dhcpUdpSocket.remoteIP()) dest = server;
+            break;
+        case dhcpT1value: dest = (uint8_t*)&t1; break;
+        case dhcpT2value: dest = (uint8_t*)&t2; break;
+        case dhcpIPaddrLeaseTime: dest = (uint8_t*)&lease; break;
+        default: break;
+        }
+        if (!dest) used = 0;
+        if (length < used || (used && _dhcpUdpSocket.read(dest, used) != used) || !skip(length - used)) {
+            valid = false;
+            break;
+        }
+        if (option == dhcpT1value) t1 = ntohl(t1);
+        if (option == dhcpT2value) t2 = ntohl(t2);
+        if (option == dhcpIPaddrLeaseTime) { lease = ntohl(lease); leaseSeen = true; }
+    }
+    _dhcpUdpSocket.flush();
+    if (!valid || !type) return 0;
+
+    transactionId = id;
+    memcpy(_dhcpLocalIp, fixed.yiaddr, 4);
+    memcpy(_dhcpSubnetMask, mask, 4);
+    memcpy(_dhcpGatewayIp, gateway, 4);
+    memcpy(_dhcpDnsServerIp, dnsIp, 4);
+    memcpy(_dhcpDhcpServerIp, server, 4);
+    _dhcpT1 = t1;
+    _dhcpT2 = t2;
+    _dhcpLeaseTime = lease;
+    if (leaseSeen) _renewInSec = lease;
     return type;
 }
 

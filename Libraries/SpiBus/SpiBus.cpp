@@ -64,6 +64,8 @@ static inline void dmac_channel_disable(uint32_t ch) { DMAC->DMAC_CHDR = DMAC_CH
 static inline void dmac_channel_enable(uint32_t ch) { DMAC->DMAC_CHER = DMAC_CHER_ENA0 << ch; }
 static inline bool dmac_channel_transfer_done(uint32_t ch) { return (DMAC->DMAC_CHSR & (DMAC_CHSR_ENA0 << ch)) ? false : true; }
 
+// pav2000 Ждёт установки хотя бы одного бита mask в регистре состояния SPI.
+// При наличии observed накапливает прочитанные флаги. Возвращает true, если дождался флага.
 static bool spi_wait_status(uint32_t mask, uint32_t *observed = nullptr)
 {
 	const uint32_t started = millis();
@@ -185,6 +187,8 @@ uint8_t spiBusScbr(SpiDev d)
 	return spiDev[d].port ? (spiDev[d].csr & SPI_CSR_SCBR_Msk) >> SPI_CSR_SCBR_Pos : 0;
 }
 
+// pav2000 Передаёт байт b и при успехе пишет принятый байт в received, если указатель задан.
+// Возвращает SPIBUS_OK или код сбоя.
 uint8_t spiBusXfer(uint8_t b, uint8_t *received)
 {
 	Spi *pSpi = SPI0;
@@ -201,6 +205,7 @@ uint8_t spiBusXfer(uint8_t b, uint8_t *received)
 	return status;
 }
 
+// pav2000 Передаёт n байтов из buf по SPI и отбрасывает ответ. Возвращает SPIBUS_OK или код сбоя.
 uint8_t spiBusSend(const uint8_t *buf, size_t n)
 {
 	if(!n) return SPIBUS_OK;
@@ -234,6 +239,7 @@ uint8_t spiBusSend(const uint8_t *buf, size_t n)
 	return SPIBUS_OK;
 }
 
+// pav2000 Читает n байтов SPI в buf, передавая 0xFF. Возвращает SPIBUS_OK или код сбоя.
 uint8_t spiBusRec(uint8_t *buf, size_t n)
 {
 	Spi *pSpi = SPI0;

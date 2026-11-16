@@ -75,7 +75,8 @@ int8_t DNSClient::getHostByName(const char* aHostname, IPAddress& aResult)
 	return getHostByName(aHostname, aResult, MAX_SOCK_NUM);
 }
 
-//  использовать конкретный сокет для запроса dns, aHostname в ОЗУ!
+// pav2000 Определяет IP для aHostname через сокет sock и записывает его в aResult.
+// Возвращает 1 при успехе или код ошибки DNS.
 int8_t DNSClient::getHostByName(const char* aHostname, IPAddress& aResult, uint8_t sock)
 {
     int8_t ret = 0;
@@ -101,7 +102,10 @@ int8_t DNSClient::getHostByName(const char* aHostname, IPAddress& aResult, uint8
 			} else {
 				ret = iUdp.begin((1024+(millis() & 0xF)), sock);
 			}
-			if(ret > 0) ret = iUdp.beginPacket(iDNSServer, DNS_PORT);
+			if(ret > 0 && !iUdp.beginPacket(iDNSServer, DNS_PORT)) {
+				iUdp.stop();
+				ret = CONNECT_ERROR;
+			}
 		}
 		if(ret == 0) ret = CONNECT_ERROR;
 		if(ret > 0) {

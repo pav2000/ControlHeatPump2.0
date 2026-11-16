@@ -8,6 +8,7 @@
  */
 
 #include "ICMPPing.h"
+#include <utility/socket.h>
 #include <util.h>
 
 #ifdef ICMPPING_INSERT_YIELDS
@@ -175,80 +176,57 @@ ICMPEchoReply ICMPPing::operator()(const IPAddress& addr, int nRetries)
     return reply;
 }
 
+// pav2000 Отправляет ICMP-запрос echoReq на адрес addr. Возвращает SUCCESS или SEND_TIMEOUT.
 Status ICMPPing::sendEchoRequest(const IPAddress& addr, const ICMPEcho& echoReq)
 {
     // I wish there were a better way of doing this, but if we use the uint32_t
     // cast operator, we're forced to (1) cast away the constness, and (2) deal
     // with an endianness nightmare.
     uint8_t addri [] = {addr[0], addr[1], addr[2], addr[3]};
-    W5100.writeSnDIPR(_socket, addri);
-    W5100.writeSnTTL(_socket, 128);
-    // The port isn't used, becuause ICMP is a network-layer protocol. So we
-    // write zero. This probably isn't actually necessary.
-    W5100.writeSnDPORT(_socket, 0);
-
-    uint8_t serialized [sizeof(ICMPEcho)];
+    alignas(uint32_t) uint8_t serialized[sizeof(ICMPEcho)];
     echoReq.serialize(serialized);
 
-    W5100.send_data_processing(_socket, serialized, sizeof(ICMPEcho));
-    W5100.execCmdSn(_socket, Sock_SEND);
+    if (W5100.writeSnDIPR(_socket, addri) != 4 || !W5100.writeSnTTL(_socket, 128) ||
+        !W5100.writeSnDPORT(_socket, 0) ||
+        bufferData(_socket, 0, serialized, sizeof(serialized)) != sizeof(serialized) ||
+        !W5100.commitTx(_socket, sizeof(serialized)) || !W5100.startSend(_socket))
+        return SEND_TIMEOUT;
 
-    while ((W5100.readSnIR(_socket) & SnIR::SEND_OK) != SnIR::SEND_OK) 
-    {
-        if (W5100.readSnIR(_socket) & SnIR::TIMEOUT)
-        {
-            W5100.writeSnIR(_socket, (SnIR::SEND_OK | SnIR::TIMEOUT));
-            return SEND_TIMEOUT;
-        }
-
+    const icmp_time_t started = millis();
+    do {
+        uint8_t irq;
+        if (!W5100.readSnIR(_socket, irq) || (irq & SnIR::TIMEOUT)) break;
+        if (irq & SnIR::SEND_OK)
+            return W5100.writeSnIR(_socket, SnIR::SEND_OK) ? SUCCESS : SEND_TIMEOUT;
         ICMPPING_DOYIELD();
-    }
-    W5100.writeSnIR(_socket, SnIR::SEND_OK);
-    return SUCCESS;
+    } while (millis() - started < ping_timeout);
+    return SEND_TIMEOUT;
 }
 
+// pav2000 Ищет ответ для echoReq и адреса addr. Записывает полученные данные и статус в echoReply.
 void ICMPPing::receiveEchoReply(const ICMPEcho& echoReq, const IPAddress& addr, ICMPEchoReply& echoReply)
 {
     icmp_time_t start = millis();
     while (millis() - start < ping_timeout)
     {
 
-        if (W5100.getRXReceivedSize(_socket) < 1)
+        uint8_t source[4];
+        alignas(uint32_t) uint8_t serialized[sizeof(ICMPEcho)]{};
+        const uint16_t received = recvfrom(_socket, serialized, sizeof(serialized), source, nullptr);
+        if (received < 8)
         {
-        	// take a break, maybe let platform do
-        	// some background work (like on ESP8266)
-        	ICMPPING_DOYIELD();
-        	continue;
+            ICMPPING_DOYIELD();
+            continue;
         }
-
-        // ah! we did receive something... check it out.
-
-        uint8_t ipHeader[6];
-		uint8_t buffer = W5100.readSnRX_RD(_socket);
-		W5100.read_data(_socket, (uint16_t) buffer, ipHeader, sizeof(ipHeader));
-		buffer += sizeof(ipHeader);
-		for (int i = 0; i < 4; ++i)
-			echoReply.addr[i] = ipHeader[i];
-		uint8_t dataLen = ipHeader[4];
-		dataLen = (dataLen << 8) + ipHeader[5];
-
-		uint8_t serialized[sizeof(ICMPEcho)];
-		if (dataLen > sizeof(ICMPEcho))
-			dataLen = sizeof(ICMPEcho);
-		W5100.read_data(_socket, (uint16_t) buffer, serialized, dataLen);
-		echoReply.data.deserialize(serialized);
-
-		buffer += dataLen;
-		W5100.writeSnRX_RD(_socket, buffer);
-		W5100.execCmdSn(_socket, Sock_RECV);
-
-		echoReply.ttl = W5100.readSnTTL(_socket);
+        echoReply.addr = source;
+        echoReply.data.deserialize(serialized);
+        echoReply.ttl = W5100.readSnTTL(_socket);
 
 		// Since there aren't any ports in ICMP, we need to manually inspect the response
 		// to see if it originated from the request we sent out.
 		switch (echoReply.data.icmpHeader.type) {
 		case ICMP_ECHOREP: {
-			if (echoReply.data.id == echoReq.id
+			if (received >= 12 && echoReply.data.id == echoReq.id
 					&& echoReply.data.seq == echoReq.seq) {
 				echoReply.status = SUCCESS;
 				return;
@@ -258,6 +236,8 @@ void ICMPPing::receiveEchoReply(const ICMPEcho& echoReq, const IPAddress& addr, 
 		case TIME_EXCEEDED: {
 			uint8_t * sourceIpHeader = echoReply.data.payload;
 			unsigned int ipHeaderSize = (sourceIpHeader[0] & 0x0F) * 4u;
+			if (ipHeaderSize < 20 || ipHeaderSize + 8 > sizeof(echoReply.data.payload) ||
+			    ipHeaderSize + 16 > received) break;
 			uint8_t * sourceIcmpHeader = echoReply.data.payload + ipHeaderSize;
 
 			// The destination ip address in the originating packet's IP header.
@@ -266,8 +246,8 @@ void ICMPPing::receiveEchoReply(const ICMPEcho& echoReq, const IPAddress& addr, 
 			if (!(sourceDestAddress == addr))
 				continue;
 
-			uint16_t sourceId = ntohs(*(uint16_t * )(sourceIcmpHeader + 4));
-			uint16_t sourceSeq = ntohs(*(uint16_t * )(sourceIcmpHeader + 6));
+			uint16_t sourceId = _makeUint16(sourceIcmpHeader[4], sourceIcmpHeader[5]);
+			uint16_t sourceSeq = _makeUint16(sourceIcmpHeader[6], sourceIcmpHeader[7]);
 
 			if (sourceId == echoReq.id && sourceSeq == echoReq.seq) {
 				echoReply.status = BAD_RESPONSE;

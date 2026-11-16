@@ -43,7 +43,7 @@ static SpiWarningSample readSpiWarningSample()
 	return sample;
 }
 
-// Проверяет время, свободную память и SPI/DMA из одного контекста раз в секунду.
+// Проверяет память и статистику SPI, публикует подтверждённые сервисные предупреждения.
 void ServiceWarningsPoll()
 {
 	const uint32_t now = Uptime_s();

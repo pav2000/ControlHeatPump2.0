@@ -12,41 +12,45 @@ EthernetServer::EthernetServer(uint16_t port)
 {
   _port = port;
 }
-// Смена порта веб сервера
-void EthernetServer::begin(uint16_t port)   //pav2000
+// pav2000 Устанавливает TCP-порт port и переоткрывает первый сокет, на котором удаётся начать прослушивание.
+void EthernetServer::begin(uint16_t port)
 {
   _port = port;
 //  begin();
-  for (int sock = 0; sock < MAX_SOCK_NUM; sock++) {
-      close(sock);
-      EthernetClient client(sock);
-      socket(sock, SnMR::TCP, _port, 0);
-      listen(sock);
+  for (SOCKET sock = 0; sock < MAX_SOCK_NUM; ++sock) {
+    close(sock);
+    EthernetClass::_server_port[sock] = 0;
+    if (socket(sock, SnMR::TCP, _port, 0) && listen(sock)) {
       EthernetClass::_server_port[sock] = _port;
-      break;
+      return;
+    }
   }
 }
 
+// pav2000 Запускает прослушивание настроенного TCP-порта на первом подходящем сокете.
 void EthernetServer::begin()
 {
-  for (int sock = 0; sock < MAX_SOCK_NUM; sock++) {
-    EthernetClient client(sock);
-    if (client.status() == SnSR::CLOSED) {
-      socket(sock, SnMR::TCP, _port, 0);
-      listen(sock);
+  for (SOCKET sock = 0; sock < MAX_SOCK_NUM; ++sock) {
+    uint8_t status;
+    if (W5100.sockUsable(sock) && W5100.readSnSR(sock, status) && status == SnSR::CLOSED &&
+        socket(sock, SnMR::TCP, _port, 0) && listen(sock)) {
       EthernetClass::_server_port[sock] = _port;
-      break;
+      return;
     }
-  }  
+  }
 }
 #ifdef FAST_LIB  // Переделка
-void EthernetServer::begin_(int sock) {
-   EthernetClient client(sock);
-   if (client.status() == SnSR::CLOSED) {
-            socket(sock, SnMR::TCP, _port, 0);
-            listen(sock);
-       EthernetClass::_server_port[sock] = _port;
-    }
+// pav2000 Запускает прослушивание настроенного TCP-порта на закрытом сокете sock.
+void EthernetServer::begin_(int sock)
+{
+  uint8_t status;
+  if (!W5100.readSnSR(sock, status) || status != SnSR::CLOSED) return;
+  if (socket(sock, SnMR::TCP, _port, 0) && listen(sock))
+    EthernetClass::_server_port[sock] = _port;
+  else {
+    EthernetClass::_server_port[sock] = 0;
+    close(sock);
+  }
 }
 #endif
 #ifdef FAST_LIB  // Переделка
@@ -92,38 +96,26 @@ void EthernetServer::accept()
 }
 #endif
 #ifdef FAST_LIB  // Переделка
-EthernetClient EthernetServer::available_(int sock) {
-  int listening = 0;             // pav2000 убрал вызовы функции работаю через регистры
-  EthernetClient client(sock);
-
-  if (EthernetClass::_server_port[sock] == _port) {
-    if (W5100.readSnSR(sock) == SnSR::LISTEN) {
-      listening = 1;
-    }
-    else if (W5100.readSnSR(sock) == SnSR::CLOSE_WAIT && !W5100.getRXReceivedSize(sock)) {
-      client.stop();
-    }
-  }
-  if (!listening) begin_(sock);
-
+// pav2000 Проверяет соединение на сокете sock. Возвращает клиент с готовыми данными или пустой клиент.
+EthernetClient EthernetServer::available_(int sock)
+{
+  if (sock < 0 || sock >= MAX_SOCK_NUM) return EthernetClient();
+  uint8_t status;
+  if (!W5100.readSnSR(sock, status)) return EthernetClient();
+  if (status == SnSR::CLOSED) begin_(sock);
   if (EthernetClass::_server_port[sock] == _port &&
-      (W5100.readSnSR(sock) == SnSR::ESTABLISHED ||
-       W5100.readSnSR(sock) == SnSR::CLOSE_WAIT)) {
-    if (W5100.getRXReceivedSize(sock)) {
-      return client;
+      (status == SnSR::ESTABLISHED || status == SnSR::CLOSE_WAIT)) {
+    uint16_t size;
+    if (W5100.getRXReceivedSize(sock, size)) {
+      if (size) return EthernetClient(sock);
+      if (status == SnSR::CLOSE_WAIT) {
+        EthernetClient client(sock);
+        client.stop();
+        begin_(sock);
+      }
     }
   }
-
-//  accept_(sock);    // pav2000 старая версия
-//  EthernetClient client(sock);
-//  if (EthernetClass::_server_port[sock] == _port &&
-//      (client.status() == SnSR::ESTABLISHED ||
-//       client.status() == SnSR::CLOSE_WAIT)) {
-//    if (client.available()) {
-//      return client;
-//    }
-//  }
-  return EthernetClient(MAX_SOCK_NUM);
+  return EthernetClient();
 }
 #else
 EthernetClient EthernetServer::available()

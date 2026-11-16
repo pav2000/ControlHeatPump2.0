@@ -192,6 +192,8 @@ void HeatPump::stopForError()
 	if(is_compressor_on() && compressor_emergency_off()) set_stopCompressor();
 }
 
+// Останавливает компрессор при аварийном code и регистрирует первую аварию от device.
+// При code == OK ничего не делает.
 void set_Error(int8_t code, char *device)
 {
 	if(code == OK) return;

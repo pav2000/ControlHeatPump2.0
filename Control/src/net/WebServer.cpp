@@ -104,12 +104,12 @@ static void webStatSample()
 }
 
 
-// Закрытие соединения: DISCON, затем ожидание CLOSED до секунды. На время ожидания замок сети отдаётся (раньше stop() держал его весь RTT, 35 мс по VPN, и
-// остальные потоки стояли). Socket[thread].sock остаётся за потоком до конца, чтобы сокет не подобрали другой поток и checkSockStatus.
-// false - замок не вернулся (fLOCK_LOST): шина и сокет чужие, трогать их нельзя.
-// SEM-HOLD: xWebThreadSemaphore - отдаёт замок вызывающего на ожидание и берёт его обратно
+// Закрывает сокет потока thread, освобождая замок на время ожидания.
+// Возвращает false при отмене запроса, потере замка или смене владельца сокета.
+// SEM-HOLD: xWebThreadSemaphore — на успешном выходе замок остаётся у вызывающего.
 static bool closeSocketRTOS(uint8_t thread)
 {
+	if(GETBIT(Socket[thread].flags, fABORT_SOCK)) return false;
 	EthernetClient &c = Socket[thread].client;
 	const uint32_t generation = networkGeneration;
 	c.stopBegin();
@@ -133,6 +133,7 @@ static bool closeSocketRTOS(uint8_t thread)
 	return true;
 }
 
+// Обслуживает запросы веб-потока thread и освобождает обработанные сокеты.
 void web_server(uint8_t thread)
 {
 	int32_t len;
@@ -178,13 +179,15 @@ void web_server(uint8_t thread)
 			while(Socket[thread].client.connected()) {
 				// Ставить вот сюда
 				WEB_STORE_DEBUG_INFO(10);
-				if(Socket[thread].client.available()) {
-					len = Socket[thread].client.get_ReceivedSizeRX();                  // получить длину входного пакета
-					if(len > W5200_MAX_LEN) {
-						journal.jprintf("WEB:Big packet: %d - truncated!\n", (int)(len));
-						len = W5200_MAX_LEN; // Ограничить размером в максимальный размер пакета w5200
-					}
-					if(Socket[thread].client.read(Socket[thread].inBuf, len) != len) {
+				len = Socket[thread].client.get_ReceivedSizeRX();
+				if(len < 0) {
+					journal.jprintf("WEB: RX size read error\n");
+					break;
+				}
+				if(len > 0) {
+					if(len > W5200_MAX_LEN) len = W5200_MAX_LEN;
+					len = Socket[thread].client.read(Socket[thread].inBuf, len);
+					if(len <= 0) {
 						journal.jprintf("WEB:Read error\n");
 						break;
 					}
@@ -412,7 +415,7 @@ static void webTestSpi(uint8_t thread)
 	                (unsigned) t.reg8_ns, (unsigned) t.reg16_ns, (unsigned) t.open_us, (unsigned) t.read16_ns, (unsigned) sdBusyMaxMs);
 }
 
-//  Чтение файла с SD или его генерация
+// Отправляет файл filename с выбранного носителя или генерирует его для сокета потока thread.
 void readFileSD(char *filename, uint8_t thread)
 {
 	int n;
@@ -744,38 +747,65 @@ static int32_t uploadWriteSD(void *file, const uint8_t *p, int32_t n)
 	return w;
 }
 
-// Приём тела файла: первые buf_len байт уже в ptr, остальное дочитывается из сокета. Один цикл для обоих носителей.
-// Пакеты читаются в Socket[thread].inBuf: всё, что указывает в него (имя файла из заголовка), после приёма затёрто.
-// Каждый принятый пакет отмечает наблюдателя: медленный канал - не зависание (С-7). Возвращает, принят ли файл ровно lenFile байт.
-static bool uploadReceive(uint8_t thread, const uint8_t *ptr, int32_t buf_len, int32_t lenFile, UploadWrite wr, void *file)
+// Принимает lenFile байтов в потоке thread. Первые buf_len байтов уже в ptr.
+// wr пишет данные в file, trackWebUpload включает отметки активности загрузки морды.
+// Возвращает true только после записи ровно lenFile байтов.
+static bool uploadReceive(uint8_t thread, const uint8_t *ptr, int32_t buf_len, int32_t lenFile,
+                          UploadWrite wr, void *file, bool trackWebUpload = true)
 {
-	if(buf_len > lenFile) { journal.jprintf("%d bytes over length ", (int)(buf_len - lenFile)); return false; }   // Н-30
+	if(buf_len < 0 || buf_len > lenFile) {
+		journal.jprintf("Upload: invalid initial length %d of %d\n", (int)buf_len, (int)lenFile);
+		return false;
+	}
 	if(buf_len > 0 && wr(file, ptr, buf_len) != buf_len) return false;
 	int32_t got = buf_len;
 	uint16_t numPoint = 0;
-	uint32_t tIdle = millis();                                                         // последний принятый пакет
+	uint32_t tIdle = millis();
 	while(got < lenFile) {
-		_delay(2);                                                                     // время на приход данных
-		int32_t n = Socket[thread].client.get_ReceivedSizeRX();
-		if(n == 0) {
+		_delay(2);
+		if((uint32_t)(millis() - tIdle) > WEB_UPLOAD_IDLE_MS) {
+			journal.jprintf("idle timeout ");
+			break;
+		}
+		const int32_t available = Socket[thread].client.get_ReceivedSizeRX();
+		if(available < 0) break;
+		if(available == 0) {
 			if(!Socket[thread].client.connected()) break;
-			if((uint32_t)(millis() - tIdle) > WEB_UPLOAD_IDLE_MS) { journal.jprintf("idle timeout "); break; }   // клиент замолчал
 			continue;
 		}
+		if(available > lenFile - got) {
+			journal.jprintf("Upload: data exceeds Content-Length\n");
+			return false;
+		}
+		const int32_t capacity = sizeof(Socket[thread].inBuf);
+		const int32_t requested = available < capacity ? available : capacity;
+		// Чтение перезаписывает inBuf вместе с указателями на данные заголовка.
+		const int32_t count = Socket[thread].client.read(Socket[thread].inBuf, requested);
+		if(count == SOCKET_RX_EMPTY) continue;
+		if(count <= 0 || count > requested) break;
+		if(wr(file, Socket[thread].inBuf, count) != count) return false;
+		got += count;
 		tIdle = millis();
-		WebUpload_Alive(&webUpload, tIdle);
+		if(trackWebUpload) WebUpload_Alive(&webUpload, tIdle);
 		Watchdog_AliveHere();
-		if(got + n > lenFile) { journal.jprintf("%d bytes over length ", (int)(got + n - lenFile)); return false; }
-		Socket[thread].client.read(Socket[thread].inBuf, n);
-		if(wr(file, Socket[thread].inBuf, n) != n) return false;
-		got += n;
-		if(++numPoint >= 20) { numPoint = 0; journal.jprintf("."); }                 // точка на 30 кб приема (20 пакетов по 1540)
+		if(++numPoint >= 20) { numPoint = 0; journal.jprintf("."); }
 	}
-	if(got != lenFile) journal.jprintf("%db of %d, ", (int) got, (int) lenFile);
+	if(got != lenFile) journal.jprintf("%db of %d, ", (int)got, (int)lenFile);
 	return got == lenFile;
 }
 
-// Файл заливки на SPI Flash; недописанный удаляется (место не освобождается, но мусор не отдаётся)
+// Копирует n байтов из p по курсору, переданному через file.
+// Продвигает курсор и возвращает число скопированных байтов.
+static int32_t uploadWriteBuffer(void *file, const uint8_t *p, int32_t n)
+{
+	uint8_t *&out = *static_cast<uint8_t **>(file);
+	memcpy(out, p, n);
+	out += n;
+	return n;
+}
+
+// Загружает nameFile длиной lenFile в SPI Flash из потока thread. Первые buf_len байтов в ptr.
+// Возвращает true после полной записи, при отказе пытается удалить недописанный файл.
 static bool uploadFileFlash(uint8_t thread, const char *nameFile, const uint8_t *ptr, int32_t buf_len, int32_t lenFile)
 {
 	spiBusDeselectAll();
@@ -813,9 +843,8 @@ static bool uploadFileSD(uint8_t thread, const char *nameFile, const uint8_t *pt
 	return ok;
 }
 
-// Область профилей в файле настроек: длина вместе с END и контрольной суммой или -1, если область негодна. Проверка
-// ничего не записывает, поэтому идёт до применения настроек и до записи в EEPROM: испорченная область (чужая раскладка
-// слота, обрубленный файл, неверная сумма) на носителе сломала бы профили при ближайшей загрузке.
+// Проверяет секцию профилей между ptr и file_end. version задаёт раскладку старых слотов.
+// Возвращает длину секции с END и CRC либо -1 при отказе.
 static int32_t fileProfilesLen(const uint8_t *ptr, const uint8_t *file_end, uint8_t version)
 {
 	int32_t len;
@@ -850,16 +879,9 @@ static int32_t fileProfilesLen(const uint8_t *ptr, const uint8_t *file_end, uint
 	return len;
 }
 
-// Разбор и обработка POST запроса inPtr входная строка использует outBuf для хранения файла настроек!
-// Сейчас реализована загрузка настроек и загрузка веб морды в спи диск
-// Возврат тип ответа (потом берется из массива строк)
-//
-// SEM-HOLD: xWebThreadSemaphore
-// Замок удерживается на выходе по замыслу, а не по недосмотру: он одолжен
-// у web_server(), который держит его на всё обслуживание запроса и сам же
-// отдаёт, поэтому parserPOST не имеет права его отдавать - отдача из неё
-// освободила бы шину SPI из-под владельца. Под этим замком меняется и
-// состояние заливки морды (webUpload).
+// Разбирает size байтов POST из inPtr потока thread. При импорте настроек использует outBuf.
+// Возвращает индекс ответа из postRet.
+// SEM-HOLD: xWebThreadSemaphore — замок принадлежит вызывающему.
 TYPE_RET_POST parserPOST(uint8_t thread, uint16_t size)
 {
 	byte *ptr, *pStart;
@@ -896,7 +918,12 @@ xLenErr:
 		journal.jprintf("Upload: %s - length not found!\n", nameFile);
 		return pLOAD_ERR;
 	}
-	lenFile = atoi((char*) pStart);	// получить длину
+	while(*pStart == ' ' || *pStart == '\t') ++pStart;
+	char *end;
+	const unsigned long contentLength = strtoul((char*)pStart, &end, 10);
+	while(*end == ' ' || *end == '\t') ++end;
+	if(*pStart < '0' || *pStart > '9' || *end || contentLength > INT32_MAX) goto xLenErr;
+	lenFile = contentLength;
 	// все нашлось, можно обрабатывать
 	buf_len = size - (ptr - (byte *) Socket[thread].inBuf);                  // длина (остаток) данных (файла) в буфере
 	// В зависимости от имени файла (Title)
@@ -909,38 +936,18 @@ xLenErr:
 			return pSETTINGS_BUSY;
 		}
 		WEB_STORE_DEBUG_INFO(52);
-		int32_t len;
-		// Тело файла может прийти НЕ в первом пакете: при xhr.send(file) браузер отправляет
-		// заголовки и данные отдельно, и в первом пакете остаются одни заголовки. Поэтому
-		// сначала собираем в outBuf всё, что лежит после заголовков (возможно, 0 байт), и
-		// дочитываем остальное, а маркер HEADER_BIN ищем уже в собранных данных.
-		// buf_len знаковый, а memcpy принимает size_t: отрицательная длина
-		// превратилась бы в ~4 ГБ и затёрла бы всю память.
-		if(buf_len < 0 || buf_len > (int32_t) sizeof(Socket[thread].outBuf)) {
-			journal.jprintf("Upload: bad data length %d!\n", (int) buf_len);
+		if(lenFile > (int32_t)sizeof(Socket[thread].outBuf)) return pSETTINGS_MEM;
+		uint8_t *out = (uint8_t*)Socket[thread].outBuf;
+		if(!uploadReceive(thread, ptr, buf_len, lenFile, uploadWriteBuffer, &out, false))
 			return pSETTINGS_ERR;
-		}
-		memcpy(Socket[thread].outBuf, ptr, buf_len);                            // данные после заголовков (в первом пакете)
-		while(1)  // Чтение остальных бинарных данных по сети
-		{
-			for(uint8_t i = 0; i < 255; i++) {
-				if(!Socket[thread].client.available()) _delay(1); else break; // ждем получение пакета
-			}
-			if(!Socket[thread].client.available()) break;                                          // пакета нет - выходим
-			len = Socket[thread].client.get_ReceivedSizeRX();                                      // получить длину входного пакета
-			if(len > W5200_MAX_LEN) len = W5200_MAX_LEN;                                   		// Ограничить размером в максимальный размер пакета w5200
-			if(buf_len + len > (int32_t)sizeof(Socket[thread].outBuf)) return pSETTINGS_MEM;     // проверить длину если не влезает то выходим
-			const int got = Socket[thread].client.read((uint8_t*)Socket[thread].outBuf + buf_len, len);
-			if(got <= 0) return pSETTINGS_ERR;
-			buf_len += got;
-		}
+		buf_len = lenFile;
 		{   // Поиск маркера HEADER_BIN в собранных данных (бинарно-безопасный, строка не завершена нулём)
 			const int32_t ml = sizeof(HEADER_BIN) - 1;
 			int32_t k = -1;
 			for(int32_t n = 0; n + ml <= buf_len; n++)
 				if(memcmp(Socket[thread].outBuf + n, HEADER_BIN, ml) == 0) { k = n + ml; break; }
 			if(k < 0) {                                                          // заголовок не найден
-				journal.jprintf("Upload: Wrong save format: %s! (received %d bytes)\n", nameFile, (int) buf_len);
+				journal.jprintf("Upload: Wrong save format: %s! (received %d bytes)\n", SETTINGS, (int) buf_len);
 				return pSETTINGS_ERR;
 			}
 			buf_len -= k;                                                        // дальше идут бинарные данные, без текстового заголовка
@@ -979,7 +986,7 @@ xLenErr:
 		if(!HP.beginEEVService()) return pSETTINGS_BUSY;
 		struct SettingsEEVGuard { ~SettingsEEVGuard() { HP.endEEVService(); } } eevGuard;
 #endif
-		len = newFormat ? HP.load_new(ptr, block, 1) : HP.load(ptr, block, 1);
+		const int32_t len = newFormat ? HP.load_new(ptr, block, 1) : HP.load(ptr, block, 1);
 		if(len <= 0) return pSETTINGS_ERR;
 		ptr += block;
 		if(writeEEPROM_I2C(I2C_PROFILE_EEPROM, ptr, profilesLen)) {

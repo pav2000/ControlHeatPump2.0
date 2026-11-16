@@ -35,62 +35,53 @@
 /* Constructor */
 EthernetUDP::EthernetUDP() : _sock(MAX_SOCK_NUM) {}
 
-/* Start EthernetUDP socket, listening at local port PORT */
-uint8_t EthernetUDP::begin(uint16_t port) {
-  if (_sock != MAX_SOCK_NUM)
-    return 0;
-  for (int i = 0; i < MAX_SOCK_NUM; i++) {
-    if (!W5100.sockUsable(i)) continue;      // сокет с нулевым буфером передачи (раскладка NetLayout.h)
-    uint8_t s = W5100.readSnSR(i);
-   //  Serial.print("W5100.readSnSR(i)=0x"); Serial.println(s,HEX);
-      if (s == SnSR::CLOSED || s == SnSR::FIN_WAIT) {
-      _sock = i;
-      break;
-    }
+// pav2000 Открывает свободный сокет UDP на порту port. Возвращает 1 при успехе, иначе 0.
+uint8_t EthernetUDP::begin(uint16_t port)
+{
+  if (_sock != MAX_SOCK_NUM) return 0;
+  for (uint8_t s = 0; s < MAX_SOCK_NUM; ++s) {
+    uint8_t status;
+    if (W5100.sockUsable(s) && W5100.readSnSR(s, status) &&
+        (status == SnSR::CLOSED || status == SnSR::FIN_WAIT)) return begin(port, s);
   }
+  return 0;
+}
 
-  if (_sock == MAX_SOCK_NUM)
-    return 0;
-
+// pav2000 Переоткрывает UDP-сокет sock на порту port. Возвращает 1 при успехе, иначе 0.
+uint8_t EthernetUDP::begin(uint16_t port, uint8_t sock)
+{
+  if (_sock != sock) stop();
+  _sock = MAX_SOCK_NUM;
+  _remaining = _offset = 0;
+  _packetReady = false;
+  if (!socket(sock, SnMR::UDP, port, 0)) return 0;
   _port = port;
-  _remaining = 0;
-  socket(_sock, SnMR::UDP, _port, 0);
-
+  _sock = sock;
   return 1;
 }
-// Инициализация конкретного сокета под UDP сокет сбрасывасется   pav2000
- uint8_t EthernetUDP::begin(uint16_t port,uint8_t sock) {
-  // Сброс сокета
-  W5100.execCmdSn(sock, Sock_CLOSE);
-  W5100.writeSnMR(sock, 0x00);
-  W5100.writeSnIR(sock, 0xFF);
-  // Программирование на UDP
-  _port = port;
-  _remaining = 0;
-  _sock=sock;
-  socket(_sock, SnMR::UDP, _port, 0);
-  return 1;
- }
-/* return number of bytes available in the current packet,
-   will return zero if parsePacket hasn't been called yet */
-int EthernetUDP::available() {
+
+// pav2000 Возвращает число непрочитанных байтов текущей датаграммы.
+int EthernetUDP::available()
+{
   return _remaining;
 }
 
-/* Release any resources being used by this EthernetUDP instance */
+// pav2000 Закрывает текущий сокет и сбрасывает состояние приёма и отправки.
 void EthernetUDP::stop()
 {
-  if (_sock == MAX_SOCK_NUM)
-    return;
-
-  close(_sock);
-
-  EthernetClass::_server_port[_sock] = 0;
+  if (_sock != MAX_SOCK_NUM) {
+    close(_sock);
+    EthernetClass::_server_port[_sock] = 0;
+  }
   _sock = MAX_SOCK_NUM;
+  _remaining = _offset = 0;
+  _packetReady = false;
 }
 
+// pav2000 Готовит UDP-пакет для host:port после запроса DNS. Возвращает 1 при успехе, 0 при сбое или код DNS.
 int EthernetUDP::beginPacket(const char *host, uint16_t port)
 {
+  _packetReady = false;
   // Look up the host first
   int ret = 0;
   DNSClient dns;
@@ -105,46 +96,41 @@ int EthernetUDP::beginPacket(const char *host, uint16_t port)
   }
 }
 
+// pav2000 Готовит текущий сокет к отправке UDP-пакета на ip:port. Возвращает 1 при успехе, иначе 0.
 int EthernetUDP::beginPacket(IPAddress ip, uint16_t port)
 {
   _offset = 0;
-  return startUDP(_sock, rawIPAddress(ip), port);
-}
-//  Отсылка пакета  по IP используя конкретный сокет
-int EthernetUDP::beginPacket(IPAddress ip, uint16_t port,uint8_t sock)
-{
-  _offset = 0;
-  _sock=sock;
-  socket(_sock, SnMR::UDP, _port, 0);
-  return startUDP(_sock, rawIPAddress(ip), port);
+  _packetReady = startUDP(_sock, rawIPAddress(ip), port);
+  return _packetReady;
 }
 
-
-// Начать создание пакета для отправки на удаленный хост (с указаниме используемого сокета), определенный в хосте и порту
-// Возвращает 1 в случае успеха, 0 если возникла проблема с разрешением имени хоста или порта
-// Не забываем что использование DNS на том же сокете сбивает настройки сокета
-int EthernetUDP::beginPacket(const char *host,uint16_t port, uint8_t sock)
+// pav2000 Открывает сокет sock и готовит UDP-пакет для ip:port. Возвращает 1 при успехе, иначе 0.
+int EthernetUDP::beginPacket(IPAddress ip, uint16_t port, uint8_t sock)
 {
- // Look up the host first
-  int ret = 0;
-  DNSClient dns;
-  IPAddress remote_addr;
+  return begin(_port, sock) && beginPacket(ip, port);
+}
 
-  dns.begin(Ethernet.dnsServerIP());
-  ret = dns.getHostByName(host, remote_addr,sock);
-  Serial.println(remote_addr);
-  if (ret == 1) {
-      _sock=sock;
-      socket(_sock, SnMR::UDP, _port, 0);   // Обновить настройки сокета они затерлись после dns
-      return beginPacket(remote_addr, port);
-   } else {
-    return ret;
+// pav2000 Использует sock для DNS и подготовки UDP-пакета к host:port. Возвращает 1 при успехе, 0 при сбое или код DNS.
+int EthernetUDP::beginPacket(const char *host, uint16_t port, uint8_t sock)
+{
+  _packetReady = false;
+  if (_sock == sock) {
+    _sock = MAX_SOCK_NUM; // DNS закрывает этот сокет
+    _remaining = 0;
   }
+  DNSClient dns;
+  IPAddress remote;
+  dns.begin(Ethernet.dnsServerIP());
+  const int result = dns.getHostByName(host, remote, sock);
+  return result == 1 ? beginPacket(remote, port, sock) : result;
 }
 
+// pav2000 Отправляет подготовленный UDP-пакет. Возвращает 1 при подтверждении отправки, иначе 0.
 int EthernetUDP::endPacket()
 {
-  return sendUDP(_sock);
+  const bool ready = _packetReady;
+  _packetReady = false;
+  return ready && sendUDP(_sock, _offset);
 }
 
 size_t EthernetUDP::write(uint8_t byte)
@@ -152,111 +138,64 @@ size_t EthernetUDP::write(uint8_t byte)
   return write(&byte, 1);
 }
 
+// pav2000 Добавляет до size байтов из buffer в UDP-пакет. Возвращает число записанных байтов и помечает неполный пакет.
 size_t EthernetUDP::write(const uint8_t *buffer, size_t size)
 {
-  uint16_t bytes_written = bufferData(_sock, _offset, buffer, size);
-  _offset += bytes_written;
-  return bytes_written;
+  if (!_packetReady || !size) return 0;
+  const uint16_t count = bufferData(_sock, _offset, buffer, size > UINT16_MAX ? UINT16_MAX : size);
+  _offset += count;
+  if (count != size) {
+    _packetReady = false;
+    setWriteError();
+  }
+  return count;
 }
 
+// pav2000 Отбрасывает остаток прошлого пакета и читает заголовок следующего.
+// Возвращает длину данных или 0, если пакет пуст, недоступен или чтение не удалось.
 int EthernetUDP::parsePacket()
 {
-  // discard any remaining bytes in the last packet
   flush();
+  if (_remaining || _sock == MAX_SOCK_NUM) return 0;
 
-  if (W5100.getRXReceivedSize(_sock) > 0)
-  {
-    //HACK - hand-parse the UDP packet using TCP recv method
-    uint8_t tmpBuf[8];
-    int ret =0; 
-    //read 8 header bytes and get IP and port from it
-    ret = recv(_sock,tmpBuf,8);
-    if (ret > 0)
-    {
-      _remoteIP = tmpBuf;
-      _remotePort = tmpBuf[4];
-      _remotePort = (_remotePort << 8) + tmpBuf[5];
-      _remaining = tmpBuf[6];
-      _remaining = (_remaining << 8) + tmpBuf[7];
-
-      // When we get here, any remaining bytes are the data
-      ret = _remaining;
-    }
-    return ret;
-  }
-  // There aren't any packets available
-  return 0;
+  uint8_t address[4];
+  uint16_t port;
+  const int16_t size = recvUdpHeader(_sock, address, port);
+  if (size < 0) return 0;
+  _remoteIP = address;
+  _remotePort = port;
+  _remaining = size;
+  return size;
 }
 
+// pav2000 Извлекает и возвращает один байт текущей датаграммы или -1 при отсутствии данных или сбое.
 int EthernetUDP::read()
 {
   uint8_t byte;
-
-  if ((_remaining > 0) && (recv(_sock, &byte, 1) > 0))
-  {
-    // We read things without any problems
-    _remaining--;
-    return byte;
-  }
-
-  // If we get here, there's no data available
-  return -1;
+  return read(&byte, 1) == 1 ? byte : -1;
 }
 
-int EthernetUDP::read(unsigned char* buffer, size_t len)
+// pav2000 Извлекает до len байтов текущей датаграммы в buffer. Возвращает число байтов или -1 при отсутствии чтения.
+int EthernetUDP::read(unsigned char *buffer, size_t len)
 {
-
-  if (_remaining > 0)
-  {
-
-    int got;
-
-    if (_remaining <= len)
-    {
-      // data should fit in the buffer
-      got = recv(_sock, buffer, _remaining);
-    }
-    else
-    {
-      // too much data for the buffer, 
-      // grab as much as will fit
-      got = recv(_sock, buffer, len);
-    }
-
-    if (got > 0)
-    {
-      _remaining -= got;
-      return got;
-    }
-
-  }
-
-  // If we get here, there's no data available or recv failed
-  return -1;
-
+  if (!_remaining || !len) return -1;
+  const int got = recv(_sock, buffer, len < _remaining ? len : _remaining);
+  if (got <= 0) return -1;
+  _remaining -= got;
+  return got;
 }
 
+// pav2000 Возвращает следующий байт текущей датаграммы без извлечения или -1 при отсутствии данных или сбое.
 int EthernetUDP::peek()
 {
-  uint8_t b;
-  // Unlike recv, peek doesn't check to see if there's any data available, so we must.
-  // If the user hasn't called parsePacket yet then return nothing otherwise they
-  // may get the UDP header
-  if (!_remaining)
-    return -1;
-  ::peek(_sock, &b);
-  return b;
+  uint8_t byte;
+  return _remaining && ::peek(_sock, &byte) ? byte : -1;
 }
 
+// pav2000 Отбрасывает остаток текущей датаграммы. При сбое сохраняет счётчик для повторной попытки.
 void EthernetUDP::flush()
 {
-  // could this fail (loop endlessly) if _remaining > 0 and recv in read fails?
-  // should only occur if recv fails after telling us the data is there, lets
-  // hope the w5100 always behaves :)
-
-  while (_remaining)
-  {
-    read();
-  }
+  uint8_t status;
+  if (_remaining && W5100.readSnSR(_sock, status) && status == SnSR::UDP &&
+      discardReceive(_sock, _remaining)) _remaining = 0;
 }
-

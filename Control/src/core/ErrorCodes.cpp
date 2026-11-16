@@ -158,6 +158,8 @@ bool Error_IsKnown(int8_t code)
 	return code <= 0 && code >= ERR_ERRMAX;
 }
 
+// Возвращает описание code. Для неизвестного кода записывает номер в unknown,
+// если буфер передан, или возвращает общий текст.
 const char *Error_Text(int8_t code, char (*unknown)[ERROR_TEXT_BUFFER_SIZE])
 {
 	if(Error_IsKnown(code)) return noteError[-code];
@@ -183,6 +185,7 @@ static uint16_t append(char *buf, uint16_t size, uint16_t len, const char *add)
 	return len;
 }
 
+// Формирует source и note с учётом их ёмкостей. now — время, src — источник, err — код ошибки.
 void Error_Store(char *source, uint16_t source_size,
                  char *note,   uint16_t note_size,
                  const char *now, const char *src, int8_t err)

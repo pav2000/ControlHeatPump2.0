@@ -301,12 +301,8 @@ void Message::setRetTest(const char *prefix, const char *var, const char *answer
 	m_snprintf(retTest + n, sizeof(retTest) - n, "\nОтвет: %s", answer);
 }
 
-// Сбросить накопленный исходящий поток в сокет.
-// Письмо копится в txBuf и уходит крупными кусками: EthernetClient::write() сразу выполняет
-// Sock_SEND с активным ожиданием SEND_OK, поэтому построчная отправка - это десятки блокирующих
-// операций и десятки TCP-пакетов на одно письмо.
-// Пишем кусками не больше SMTP_MAX_SEND: send() в библиотеке обрезает запись по W5100.SSIZE (2048)
-// и молча теряет хвост, а EthernetClient::write() все равно возвращает полный размер.
+// Отправляет SMTP порциями до SMTP_MAX_SEND байтов, чтобы каждая помещалась в TX.
+// Очищает буфер при завершении отправки или первом отказе.
 void Message::smtpFlush()
 {
 	// SEM-BORROW: xWebThreadSemaphore - вызывается из sendMail, замок сети там взят
@@ -314,7 +310,7 @@ void Message::smtpFlush()
 	while(pos < txLen) {
 		chunk = txLen - pos;
 		if(chunk > SMTP_MAX_SEND) chunk = SMTP_MAX_SEND;
-		if(clientMessage.write((const uint8_t*) txBuf + pos, chunk) == 0) break;  // соединение потеряно
+		if(clientMessage.write((const uint8_t*) txBuf + pos, chunk) != chunk) break;  // соединение потеряно
 		pos += chunk;
 	}
 	txLen = 0;

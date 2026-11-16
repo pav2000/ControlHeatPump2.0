@@ -13,7 +13,7 @@ public:
 
   uint8_t status();
   int get_freeTX();         // Свободное место в выходном буфере  на запись
-  int get_ReceivedSizeRX(); // Размер принятых данных
+  int get_ReceivedSizeRX(); // Подтверждённый размер, -1 при отказе чтения
   virtual int connect(IPAddress ip, uint16_t port);
   virtual int connect(const char *host, uint16_t port);
   virtual int connect(IPAddress ip, uint16_t port,uint8_t sock);// pav2000
@@ -43,7 +43,8 @@ public:
 private:
   static uint16_t _srcport;
   uint8_t _sock;
-  uint16_t _offset; // offset into the packet being sent
+  uint16_t _offset = 0;
+  bool _bufferFailed = false;
 };
 
 #endif

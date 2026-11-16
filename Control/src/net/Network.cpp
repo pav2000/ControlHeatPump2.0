@@ -500,126 +500,92 @@ void checkSockStatus()
   } // for
   SemaphoreGive(xWebThreadSemaphore);                                      // Отдать мютекс
 }
-// ---- Послать один пакет!!! ----
-// Послать данные TCP (максимальный размер данных W5200_MAX_LEN. больше обрезается), при ожидании освобождения буфера отдает управление Free RTOS
-// Для разделения доступа к spi используется мютекс  (SemaphoreHandle_t xSPI)
-// возвращает число посланых байт (0-ничего не послано)
-// Работает и с константами во флеш МК: шина SPI посылает их опросом (DMA - только для буферов в ОЗУ)
-// SEM-HOLD: xWebThreadSemaphore - одалживает замок вызывающего и возвращает его ему же
-uint16_t sendPacketRTOS(uint8_t thread, const uint8_t * buf, uint16_t len)
+// Отправляет из buf до len байтов в сокет потока thread, максимум W5200_MAX_LEN.
+// Возвращает подтверждённое число байтов либо 0 при отказе.
+// SEM-HOLD: xWebThreadSemaphore — возвращает заимствованный замок или отмечает его потерю.
+uint16_t sendPacketRTOS(uint8_t thread, const uint8_t *buf, uint16_t len)
 {
-	uint8_t status = 0;
-	uint16_t ret = 0;
-	uint16_t freesize = 0;
-	uint16_t lastFree = 0;                      // свободно в буфере передачи при прошлом опросе: рост - клиент подтверждает данные
-	const uint32_t tSpace = micros();            // начало ожидания места: сюда уходит RTT
-	uint32_t tProgress = GetTickCount();        // когда место прибавлялось в последний раз
-
-	if(GETBIT(Socket[thread].flags, fLOCK_LOST)) return 0;   // замок уже потерян раньше в этом запросе: на шину и сокет не лезем
+	if(!len || GETBIT(Socket[thread].flags, fLOCK_LOST)) return 0;
+	const uint16_t count = len > W5200_MAX_LEN ? W5200_MAX_LEN : len;
+	const uint32_t tSpace = micros();
+	uint32_t tProgress = GetTickCount();
+	uint16_t lastFree = 0;
 	spiBusDeselectAll();
-	if(len > W5200_MAX_LEN) ret = W5200_MAX_LEN;
-	else ret = len;
 
-	{    // ожидание места в буфере: клиент подтверждает прежние пакеты (ACK)
-		do// Ожидание освобождения буфера
-		{
-			if(xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) {
-				xSemaphoreGive (xWebThreadSemaphore);  //                                      // Мютекс потока отдать
-				taskYIELD();
-			} else delay(1);
-			if(SemaphoreTake(xWebThreadSemaphore, (W5200_TIME_WAIT / portTICK_PERIOD_MS)) == pdFALSE) {
-				SETBIT1(Socket[thread].flags, fLOCK_LOST);   // web_server по этому флагу не отдаёт замок и не трогает SPI
-				journal.jprintf("Socket: %d %s\n", Socket[thread].sock, MutexWebThreadBusy);
-				return 0;
-			} // Захват мютекса потока или ОЖИДАНИНЕ W5200_TIME_WAIT
-			freesize = W5100.getTXFreeSize(Socket[thread].sock);
-			if(freesize >= ret) {
-				break;
-			}
-			// Ожидание места не имело предела: клиент с нулевым окном приёма держал веб-поток вечно, а затянувшаяся выгрузка файла
-			// (история до 30 МБ через медленный канал) молчала дольше лимита потока и перезагружала контроллер. Рост свободного места -
-			// это продвижение: оно отмечается наблюдателю; нет роста дольше W5200_SEND_STALL - клиент застрял, соединение закрывается.
-			switch(Send_StallStep(freesize, &lastFree, GetTickCount(), &tProgress, W5200_SEND_STALL)) {
-			case SW_PROGRESS: Watchdog_AliveHere(); break;
-			case SW_STALLED:
-				journal.jprintf("WEB: client stalled %d s, sock %d - closing\n", (int) (W5200_SEND_STALL / 1000), (int) Socket[thread].sock);
-				close(Socket[thread].sock);
-				return 0;
-			default: break;
-			}
-			status = W5100.readSnSR(Socket[thread].sock);
-			if((status != SnSR::ESTABLISHED) && (status != SnSR::CLOSE_WAIT)) {
-				ret = 0;
-				break;
-			}
-		} while(freesize < ret);
+	// Ожидание места в буфере. Отдаём замок между опросами, чтобы другие
+	// потоки могли работать с сетью, пока клиент подтверждает прошлый пакет.
+	for(;;) {
+		if(xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) {
+			xSemaphoreGive(xWebThreadSemaphore);
+			taskYIELD();
+		} else delay(1);
+		if(SemaphoreTake(xWebThreadSemaphore, (W5200_TIME_WAIT / portTICK_PERIOD_MS)) == pdFALSE) {
+			SETBIT1(Socket[thread].flags, fLOCK_LOST);
+			journal.jprintf("Socket: %d %s\n", Socket[thread].sock, MutexWebThreadBusy);
+			return 0;
+		}
+		// Сокет мог достаться новому соединению при сбросе чипа.
+		if(GETBIT(Socket[thread].flags, fABORT_SOCK)) return 0;
+		const SOCKET sock = Socket[thread].sock;
+		uint8_t status;
+		uint16_t free;
+		if(!W5100.readSnSR(sock, status) || (status != SnSR::ESTABLISHED && status != SnSR::CLOSE_WAIT) ||
+		   !W5100.getTXFreeSize(sock, free)) return 0;
+		if(free >= count) break;
+
+		switch(Send_StallStep(free, &lastFree, GetTickCount(), &tProgress, W5200_SEND_STALL)) {
+		case SW_PROGRESS: Watchdog_AliveHere(); break;
+		case SW_STALLED:
+			journal.jprintf("WEB: client stalled %d s, sock %d - closing\n", (int)(W5200_SEND_STALL / 1000), (int)sock);
+			close(sock);
+			return 0;
+		default: break;
+		}
 	}
 
-	if(GETBIT(Socket[thread].flags, fABORT_SOCK)) {
-		SETBIT0(Socket[thread].flags, fABORT_SOCK);
-		return 0;
-	}              // Произошел сброс прерываем передачу
-
+	const SOCKET sock = Socket[thread].sock;
 	StatAcc_Add(&webStat.spaceWait, micros() - tSpace);
-	// послать данные
-	W5100.send_data_processing_offset(Socket[thread].sock, 0, (uint8_t *) buf, ret);
-	W5100.execCmdSn(Socket[thread].sock, Sock_SEND);
+	if(!W5100.bufferTx(sock, 0, buf, count) || !W5100.commitTx(sock, count) || !W5100.startSend(sock)) {
+		close(sock);
+		return 0;
+	}
+
 	const uint32_t tSendUs = micros();
-
-	// +2008.01 bj : reduce code
-	// Ожидание подтверждения отправки с таймаутом: при зависшем W5500 (SEND_OK не
-	// выставлен, но и сокет не CLOSED) задача без него крутилась бы здесь бесконечно,
-	// удерживая глобальный xWebThreadSemaphore, то есть web, MQTT и почта встали бы
-	// насовсем. Watchdog это не ловит - его сбрасывает vServiceHP с более высоким
-	// приоритетом.
-	{
-		uint32_t tmSend = GetTickCount();
-		while((W5100.readSnIR(Socket[thread].sock) & SnIR::SEND_OK) != SnIR::SEND_OK) {
-			if(W5100.readSnSR(Socket[thread].sock) == SnSR::CLOSED) {
-				close(Socket[thread].sock);
-				return 0;
-			}
-			if(GetTickCount() - tmSend > W5200_SEND_TIMEOUT) {
-				journal.jprintf("WEB: send timeout %d ms, sock %d - closing\n",
-				                (int) W5200_SEND_TIMEOUT, (int) Socket[thread].sock);
-				close(Socket[thread].sock);
-				return 0;
-			}
+	const uint32_t tmSend = GetTickCount();
+	for(;;) {
+		uint8_t irq, status;
+		if(!W5100.readSnIR(sock, irq) || (irq & SnIR::TIMEOUT)) break;
+		if(irq & SnIR::SEND_OK) {
+			if(!W5100.writeSnIR(sock, SnIR::SEND_OK)) break;
+			StatAcc_Add(&webStat.sendOk, micros() - tSendUs);
+			webStat.sockBytes[sock & 7] += count;
+			Watchdog_AliveHere();
+			return count;
+		}
+		if(!W5100.readSnSR(sock, status) || status == SnSR::CLOSED) break;
+		if(GetTickCount() - tmSend > W5200_SEND_TIMEOUT) {
+			journal.jprintf("WEB: send timeout %d ms, sock %d - closing\n",
+			                (int)W5200_SEND_TIMEOUT, (int)sock);
+			break;
 		}
 	}
-	StatAcc_Add(&webStat.sendOk, micros() - tSendUs);
-	if(Socket[thread].sock >= 0) webStat.sockBytes[Socket[thread].sock & 7] += ret;
-	W5100.writeSnIR(Socket[thread].sock, SnIR::SEND_OK);
-	Watchdog_AliveHere();                       // пакет ушёл: поток, отдающий файл, жив, сколько бы ни длилась выгрузка (медленный клиент, VPN)
-	return ret;
+	close(sock);
+	return 0;
 }
 
-// Послать буфер, может быть множество пакетов!!
-// Послать данные TCP (максимальный размер данных не ограничен, может отправлять несколько пакетов),
-// Использует функцию sendPaketRTOS
-// возвращает число посланых байт (0-ничего не послано, или ошибка передачи)
-// Работает и с константами во флеш МК: шина SPI посылает их опросом (DMA - только для буферов в ОЗУ)
-uint16_t sendBufferRTOS(uint8_t thread, const uint8_t * buf, uint16_t len)
+// Отправляет len байтов из buf порциями в сокет потока thread.
+// Возвращает полную длину либо 0 при отказе любой порции.
+uint16_t sendBufferRTOS(uint8_t thread, const uint8_t *buf, uint16_t len)
 {
-	uint16_t i = 0;
-	while(len > 0) {
-		if(len > W5200_MAX_LEN) {
-			if(sendPacketRTOS(thread, (byte*) buf + i, W5200_MAX_LEN) == 0) { // ошибка передачи
-				return 0;
-			}
-			i += W5200_MAX_LEN;
-			len -= W5200_MAX_LEN;
-		} else {  // последний пакет или ошибка передачи
-			if(sendPacketRTOS(thread, (byte*) buf + i, len) == 0) return 0;
-			else {
-				i += len;
-				break;
-			}
-		}
+	uint16_t sent = 0;
+	while(sent < len) {
+		const uint16_t remaining = len - sent;
+		const uint16_t count = remaining > W5200_MAX_LEN ? W5200_MAX_LEN : remaining;
+		if(sendPacketRTOS(thread, buf + sent, count) != count) return 0;
+		sent += count;
 	}
-	return i;
+	return sent;
 }
-
 
 // Послать один пакет строки (обычно константы во флеш МК)
 // Послать данные TCP (максимальный размер данных W5200_MAX_LEN, больше - ничего не посылается), при ожидании освобождения буфера отдает управление Free RTOS
@@ -717,11 +683,9 @@ void pingW5200(boolean f)
 #endif
 }
 
-// Запрос на сервер с ожиданием ответа, веб блокируется, вызов из MAIN_WEB_TASK
-// HTTP 1.0 GET, timeout - ms
-// Ответ: "str=x", Возврат: int(x). Ошибка x <= -2000000000;
-// fget_value: 0 - не читать ответ, 1 - считать тело ответа в Socket[MAIN_WEB_TASK].outBuf,
-//             2 - вернуть значение после '=', 3 - проверить на "Ok"
+// Посылает HTTP GET для request на server из MAIN_WEB_TASK.
+// fget_value: 0 — без тела, 1 — тело в outBuf потока, 2 — число после '=', 3 — проверить «Ok».
+// Возвращает результат выбранного режима. Коды отказа не больше -2000000000.
 int Send_HTTP_Request(const char *server, const char *request, uint8_t fget_value)
 {
 	if(server == NULL || request == NULL) return -2000000004;
@@ -746,7 +710,8 @@ int Send_HTTP_Request(const char *server, const char *request, uint8_t fget_valu
 			strcat((char*)buffer + sizeof(http_get_str1)-1, http_get_str2);
 			strcat((char*)buffer + sizeof(http_get_str1)-1 + sizeof(http_get_str2)-1, server);
 			strcat((char*)buffer + sizeof(http_get_str1)-1 + sizeof(http_get_str2)-1, http_get_str3);
-			if(tTCP.write(buffer, strlen((char*)buffer + sizeof(http_get_str1)-1 + sizeof(http_get_str2)-1 + sizeof(http_get_str3)-1) + sizeof(http_get_str1)-1 + sizeof(http_get_str2)-1 + sizeof(http_get_str3)-1) == 0) {
+			const size_t requestSize = strlen((char*)buffer);
+			if(tTCP.write(buffer, requestSize) != requestSize) {
 				ret = -2000000011;
 			} else {
 				ret = -2000000001;

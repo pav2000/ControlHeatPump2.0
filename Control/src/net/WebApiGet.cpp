@@ -41,6 +41,7 @@
 // Системная информация для разработчика: «подпись|значение;...», разделы - строки <b>…</b>. Источник ключа sys.info.
 static int spiBusMHz(SpiDev d) { const uint8_t scbr = spiBusScbr(d); return scbr ? (int) (F_CPU / 1000000UL / scbr) : 0; }
 
+// Дописывает системные сведения и счётчики диагностики в strReturn.
 static void sysInfoText(char *strReturn)
 {
 	strcat(strReturn,"Источник загрузкки web интерфейса |");
@@ -1096,6 +1097,7 @@ void api_text_cat(char *buf, uint16_t cap, const char *sect, const char *name)
 // ---- действия do ----
 static int apiAct_power_on(ApiOut *o, const char *)  { HP.sendCommand(pSTART); api_put(o, "\"ok\""); return AE_OK; }
 static int apiAct_power_off(ApiOut *o, const char *) { HP.sendCommand(pSTOP);  api_put(o, "\"ok\""); return AE_OK; }
+// Сохраняет настройки и моточасы, записывает размер в o. Возвращает статус веб-API.
 static int apiAct_save_all(ApiOut *o, const char *)
 {
 	int32_t r = HP.save_all(true);     // профили, расписание и настройки новым форматом
@@ -1104,6 +1106,8 @@ static int apiAct_save_all(ApiOut *o, const char *)
 	api_put_int(o, r);             // число записанных байт, как отвечал set_SAVE
 	return AE_OK;
 }
+// Сбрасывает заголовок настроек и ставит перезагрузку в очередь после записи.
+// Записывает подтверждение в o и возвращает статус веб-API.
 static int apiAct_reset_settings(ApiOut *o, const char *)
 {
 	if(HP.get_State() != pOFF_HP) return AE_BUSY;       // при работающем ТН команда не выполняется
@@ -1230,6 +1234,7 @@ static int apiAct_profile_load(ApiOut *o, const char *p)
 	api_put_int(o, r);
 	return AE_OK;
 }
+// Сохраняет профиль с номером из p, записывает длину в o. Возвращает статус веб-API.
 static int apiAct_profile_save(ApiOut *o, const char *p)
 {
 	int n = api_slot_arg(p);
@@ -1241,6 +1246,7 @@ static int apiAct_profile_save(ApiOut *o, const char *p)
 	api_put_int(o, r);
 	return AE_OK;
 }
+// Удаляет профиль с номером из p, записывает длину в o. Возвращает статус веб-API.
 static int apiAct_profile_erase(ApiOut *o, const char *p)
 {
 	int n = api_slot_arg(p);
@@ -1254,6 +1260,7 @@ static int apiAct_profile_erase(ApiOut *o, const char *p)
 	api_put_int(o, r);
 	return AE_OK;
 }
+// Копирует профиль по паре номеров в p, записывает подтверждение в o. Возвращает статус веб-API.
 static int apiAct_profile_copy(ApiOut *o, const char *p)
 {
 	if(p[0] < '0' || p[0] > '9' || p[1] != ':' || p[2] < '0' || p[2] > '9' || p[3]) return AE_BAD_VALUE;
@@ -1280,6 +1287,7 @@ static int apiAct_profile_info(ApiOut *o, const char *p)
 static int apiAct_dbg_default(ApiOut *o, const char *) { dbgFlags = Dbg_Defaults(); api_put(o, "\"ok\""); return AE_OK; }   // все флаги в рабочий набор
 // Расписание: очистка календарей, чтение из EEPROM и запись только расписания (общее сохранение - save.all)
 static int apiAct_schedule_clear(ApiOut *o, const char *) { HP.Schdlr.web_set_param((char*) "Clear", (char*) ""); api_put(o, "\"ok\""); return AE_OK; }
+// Загружает расписание и записывает его длину в o. Возвращает статус веб-API.
 static int apiAct_schedule_load(ApiOut *o, const char *)
 {
 	SettingsLock lock(HP.saving);
@@ -1289,6 +1297,7 @@ static int apiAct_schedule_load(ApiOut *o, const char *)
 	api_put_int(o, result);
 	return AE_OK;
 }
+// Сохраняет расписание и записывает OK в o при успехе. Возвращает статус веб-API.
 static int apiAct_save_schedule(ApiOut *o, const char *) { int8_t r = HP.Schdlr.save(); if(r == ERR_I2C_BUSY) return AE_BUSY; if(r < 0) return AE_FAIL; api_put_int(o, r); return AE_OK; }
 static int apiAct_chart_clear(ApiOut *o, const char *) { HP.clearChart(); api_put(o, "\"ok\""); return AE_OK; }   // сбросить ряды в ОЗУ
 // Статистика и подготовка к обновлению: счётчики, статистика, история на SD
@@ -1353,7 +1362,9 @@ static int apiAct_spi_test(ApiOut *o, const char *)
 	api_putc(o, '}');
 	return AE_OK;
 }
+// Сбрасывает сезонные счётчики и подтверждает результат в o. Возвращает статус веб-API.
 static int apiAct_reset_counters(ApiOut *o, const char *) { journal.jprintf("$RESET Season Counters. . .\n"); if(HP.resetCount(false) != OK) return AE_FAIL; api_put(o, "\"ok\""); return AE_OK; }
+// Сбрасывает все счётчики и подтверждает результат в o. Возвращает статус веб-API.
 static int apiAct_reset_counters_all(ApiOut *o, const char *) { journal.jprintf("$RESET All Counters. . .\n"); if(HP.resetCount(true) != OK) return AE_FAIL; api_put(o, "\"ok\""); return AE_OK; }
 static int apiAct_wdt_reset(ApiOut *o, const char *)       // обнулить замеры наблюдателя; таблицу замеров читают отдельно (sys.wdt)
 {

@@ -41,124 +41,154 @@ void W5500Class::init(void)
     }
 }
 
-uint16_t W5500Class::getTXFreeSize(SOCKET s)
+// pav2000 Возвращает ёмкость TX сокета s в байтах или 0 для недопустимого сокета.
+uint16_t W5500Class::txCapacity(SOCKET s) const
 {
-  uint16_t val=0, val1=0;
+  if (s >= SOCKETS) return 0;
+  uint8_t tx[NL_SOCKETS];
+  NetLayout_Fill(layoutMode, tx);
+  return uint16_t(tx[s]) * 1024;
+}
+
+// pav2000 Читает регистр address сокета s до двух совпадающих значений в пределах limit.
+// Записывает результат в size и возвращает true при успехе.
+bool W5500Class::stableSize(SOCKET s, uint16_t address, uint16_t limit, uint16_t &size)
+{
   const uint32_t started = millis();
   do {
-    val1 = readSnTX_FSR(s);
-    if (val1 != 0)
-      val = readSnTX_FSR(s);
-  }
-  while (val != val1 && millis() - started <= W5500_REG_READ_TIMEOUT);
-  return val;
+    uint8_t first[2], second[2];
+    if (readSn(s, address, first, sizeof(first)) != sizeof(first) ||
+        readSn(s, address, second, sizeof(second)) != sizeof(second)) return false;
+    if (first[0] == second[0] && first[1] == second[1]) {
+      const uint16_t value = (uint16_t(first[0]) << 8) | first[1];
+      if (value > limit) return false;
+      size = value;
+      return true;
+    }
+  } while (millis() - started <= W5500_REG_READ_TIMEOUT);
+  return false;
 }
 
-uint16_t W5500Class::getRXReceivedSize(SOCKET s)
+// pav2000 Записывает подтверждённое свободное место TX сокета s в size. Возвращает true при успехе.
+bool W5500Class::getTXFreeSize(SOCKET s, uint16_t &size)
 {
-  uint16_t val=0,val1=0;
+  return stableSize(s, 0x0020, txCapacity(s), size);
+}
+
+// pav2000 Записывает подтверждённое число байтов RX сокета s в size. Возвращает true при успехе.
+bool W5500Class::getRXReceivedSize(SOCKET s, uint16_t &size)
+{
+  return stableSize(s, 0x0026, RX_CAPACITY, size);
+}
+
+// pav2000 Копирует len байтов из data в TX сокета s со смещением offset от указателя записи.
+// Возвращает true при успехе. Указатель записи остаётся прежним.
+bool W5500Class::bufferTx(SOCKET s, uint16_t offset, const uint8_t *data, uint16_t len)
+{
+  const uint16_t capacity = txCapacity(s);
+  if (!capacity || offset > capacity || len > capacity - offset || (len && !data)) return false;
+  if (!len) return true;
+  uint16_t ptr;
+  return readSnTX_WR(s, ptr) && write(ptr + offset, 0x14 + (s << 5), data, len) == len;
+}
+
+// pav2000 Продвигает указатель записи TX сокета s на len байтов. Возвращает true при успехе.
+bool W5500Class::commitTx(SOCKET s, uint16_t len)
+{
+  const uint16_t capacity = txCapacity(s);
+  if (!capacity || len > capacity) return false;
+  if (!len) return true;
+  uint16_t ptr;
+  if (!readSnTX_WR(s, ptr)) return false;
+  if (writeSnTX_WR(s, ptr + len)) return true;
+  // Один из байтов указателя мог измениться.
+  execCmdSn(s, Sock_CLOSE);
+  return false;
+}
+
+// pav2000 Продвигает указатель RX сокета s с ptr на len байтов и освобождает принятые данные.
+// Возвращает true при успехе.
+bool W5500Class::consumeRx(SOCKET s, uint16_t ptr, uint16_t len)
+{
+  if (writeSnRX_RD(s, ptr + len) && execCmdSn(s, Sock_RECV)) return true;
+  execCmdSn(s, Sock_CLOSE);
+  return false;
+}
+
+// pav2000 Читает len байтов RX сокета s в dst. При peek сохраняет указатель RX. Возвращает true при успехе.
+bool W5500Class::readRx(SOCKET s, uint8_t *dst, uint16_t len, bool peek)
+{
+  uint16_t ptr;
+  return readSnRX_RD(s, ptr) && read_data(s, ptr, dst, len) &&
+         (peek || consumeRx(s, ptr, len));
+}
+
+// pav2000 Копирует len байтов из RX сокета s по адресу ptr в dst. Возвращает true при успехе.
+bool W5500Class::read_data(SOCKET s, uint16_t ptr, uint8_t *dst, uint16_t len)
+{
+  return s < SOCKETS && len <= RX_CAPACITY && (!len || (dst && read(ptr, 0x18 + (s << 5), dst, len) == len));
+}
+
+// pav2000 Передаёт заголовок W5500 с адресом addr и байтом control. Возвращает true при успешном обмене SPI.
+static bool transferHeader(uint16_t addr, uint8_t control)
+{
+  return spiBusXfer(addr >> 8, nullptr) == SPIBUS_OK &&
+         spiBusXfer(addr, nullptr) == SPIBUS_OK &&
+         spiBusXfer(control, nullptr) == SPIBUS_OK;
+}
+
+// pav2000 Записывает байт data в addr с байтом управления cb. Возвращает 1 при успехе, иначе 0.
+uint8_t W5500Class::write(uint16_t addr, uint8_t cb, uint8_t data)
+{
+  spiBusSelect(SPIDEV_NET);
+  const bool ok = transferHeader(addr, cb) && spiBusXfer(data, nullptr) == SPIBUS_OK;
+  spiBusDeselect(SPIDEV_NET);
+  return ok;
+}
+
+// pav2000 Записывает len байтов из buf в addr с байтом управления cb. Возвращает len при успехе, иначе 0.
+uint16_t W5500Class::write(uint16_t addr, uint8_t cb, const uint8_t *buf, uint16_t len)
+{
+  spiBusSelect(SPIDEV_NET);
+  const bool ok = transferHeader(addr, cb) && spiBusSend(buf, len) == SPIBUS_OK;
+  spiBusDeselect(SPIDEV_NET);
+  return ok ? len : 0;
+}
+
+// pav2000 Читает байт value из addr с байтом управления cb. Возвращает true при успехе.
+bool W5500Class::readByte(uint16_t addr, uint8_t cb, uint8_t &value)
+{
+  spiBusSelect(SPIDEV_NET);
+  const bool ok = transferHeader(addr, cb) && spiBusXfer(0xFF, &value) == SPIBUS_OK;
+  spiBusDeselect(SPIDEV_NET);
+  return ok;
+}
+
+// pav2000 Читает len байтов из addr в buf с байтом управления cb. Возвращает len при успехе, иначе 0.
+uint16_t W5500Class::read(uint16_t addr, uint8_t cb, uint8_t *buf, uint16_t len)
+{
+  spiBusSelect(SPIDEV_NET);
+  const bool ok = transferHeader(addr, cb) && spiBusRec(buf, len) == SPIBUS_OK;
+  spiBusDeselect(SPIDEV_NET);
+  return ok ? len : 0;
+}
+
+// pav2000 Передаёт команду cmd сокету s и ждёт очистки регистра команд. Возвращает true при успехе.
+bool W5500Class::execCmdSn(SOCKET s, SockCMD cmd)
+{
+  if (!writeSnCR(s, cmd)) return false;
   const uint32_t started = millis();
+  uint8_t pending;
   do {
-    val1 = readSnRX_RSR(s);
-    if (val1 != 0)
-      val = readSnRX_RSR(s);
-  }
-  while (val != val1 && millis() - started <= W5500_REG_READ_TIMEOUT);
-  return val;
+    if (!readSnCR(s, pending)) return false;
+    if (!pending) return true;
+  } while (millis() - started <= W5500_EXEC_CMD_TIMEOUT);
+  return false;
 }
 
-void W5500Class::send_data_processing(SOCKET s, const uint8_t *data, uint16_t len)
+// pav2000 Сбрасывает старые признаки отправки и запускает SEND для сокета s. Возвращает true при приёме команды.
+bool W5500Class::startSend(SOCKET s)
 {
-  // This is same as having no offset in a call to send_data_processing_offset
-  send_data_processing_offset(s, 0, data, len);
-}
-
-void W5500Class::send_data_processing_offset(SOCKET s, uint16_t data_offset, const uint8_t *data, uint16_t len)
-{
-	if(len == 0) return;
-    uint16_t ptr = readSnTX_WR(s);
-    uint8_t cntl_byte = (0x14+(s<<5));
-    ptr += data_offset;
-    write(ptr, cntl_byte, data, len);   // передача пакета
-    ptr += len;
-    writeSnTX_WR(s, ptr);
-}
-
-void W5500Class::recv_data_processing(SOCKET s, uint8_t *data, uint16_t len, uint8_t peek)
-{
-    uint16_t ptr;
-    ptr = readSnRX_RD(s);
-
-    read_data(s, ptr, data, len);
-    if (!peek)
-    {
-        ptr += len;
-        writeSnRX_RD(s, ptr);
-    }
-}
-
-void W5500Class::read_data(SOCKET s, volatile uint16_t src, volatile uint8_t *dst, uint16_t len)
-{
-    uint8_t cntl_byte = (0x18+(s<<5));
-    read((uint16_t)src , cntl_byte, (uint8_t *)dst, len);
-}
-
-uint8_t W5500Class::write(uint16_t _addr, uint8_t _cb, uint8_t _data)
-{
-    spiBusSelect(SPIDEV_NET);
-    spiBusXfer(_addr >> 8);
-    spiBusXfer(_addr & 0xFF);
-    spiBusXfer(_cb);
-    spiBusXfer(_data);
-    spiBusDeselect(SPIDEV_NET);
-    return 1;
-}
-// Передать пакет, есть отличия от 5200 чипа - длина передаваемых данных не передается
-uint16_t W5500Class::write(uint16_t _addr, uint8_t _cb, const uint8_t *_buf, uint16_t _len)
-{
-    spiBusSelect(SPIDEV_NET);
-    spiBusXfer(_addr >> 8);
-    spiBusXfer(_addr & 0xFF);
-    spiBusXfer(_cb);
-   // spiSend((0x80 | ((_len & 0x7F00) >> 8)));     // для w5500 длина не передается
-   // spiSend(_len & 0x00FF);
-    spiBusSend(_buf,_len);
-    spiBusDeselect(SPIDEV_NET);
-  return _len;
-}
-
-uint8_t W5500Class::read(uint16_t _addr, uint8_t _cb)
-{
-    spiBusSelect(SPIDEV_NET);
-    spiBusXfer(_addr >> 8);
-    spiBusXfer(_addr & 0xFF);
-    spiBusXfer(_cb);
-    uint8_t _data = spiBusXfer(0xFF);
-    spiBusDeselect(SPIDEV_NET);
-  return _data;
-}
-
-uint16_t W5500Class::read(uint16_t _addr, uint8_t _cb, uint8_t *_buf, uint16_t _len)
-{
-    spiBusSelect(SPIDEV_NET);
-    spiBusXfer(_addr >> 8);
-    spiBusXfer(_addr & 0xFF);
-    spiBusXfer( _cb);
-  //  spiSend((0x00 | ((_len & 0x7F00) >> 8)));  // для w5500 длина не передается
-  //  spiSend(_len & 0x00FF);
-    // Ошибка DMA не должна выглядеть как успешное чтение полного буфера.
-    const uint8_t status = spiBusRec(_buf, _len);
-    spiBusDeselect(SPIDEV_NET);
-    return status == SPIBUS_OK ? _len : 0;
-}
-
-bool W5500Class::execCmdSn(SOCKET s, SockCMD _cmd) {
-    writeSnCR(s, _cmd);     // Send command to socket
-//    uint32_t t = GetTickCount();
-    const uint32_t started = millis();
-    while(readSnCR(s)) {
-      if(millis() - started > W5500_EXEC_CMD_TIMEOUT) return false;
-    }
-    return true;
+  return writeSnIR(s, SnIR::SEND_OK | SnIR::TIMEOUT) && execCmdSn(s, Sock_SEND);
 }
 #endif
