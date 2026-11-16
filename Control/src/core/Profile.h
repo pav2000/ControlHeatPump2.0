@@ -78,12 +78,10 @@ class Profile                         // Класс профиль
     uint8_t  cache_verify(void);                            // пересчитать CRC слотов, вернуть число расхождений
     uint16_t cache_crc_of(const ProfileSlot &s);            // контрольная сумма слота кеша
     int16_t  save_region(void);                             // записать ВСЮ область профилей новым форматом
-    int8_t   load_region(void);                             // прочитать область нового формата в кеш
-    int8_t   cache_load_legacy(const LegacyProfileSizes &sz); // прочитать профили старых эпох в кеш
     int8_t   cache_activate(int8_t num);                    // сделать слот кеша текущим профилем (копирование одним блоком, журнал после него)
     uint8_t  cache_copy(int8_t num);                        // само копирование слота в текущие структуры: 0 ок, 1 пуст, 2 повреждён; без журнала и замков
-    bool     region_is_new(void);                           // область в новом формате?
-    uint16_t region_len(void);                              // длина области профилей на носителе, байт
+    int32_t  region_len(uint8_t version);                              // длина области профилей на носителе или ошибка
+    void     invalidate_cache(int8_t cause);                // закрыть кеш после неполной записи или загрузки
     inline boolean cache_used(int8_t num) { return cache_magic[num] == 0xaa; } // слот записан?
     int32_t erase(int8_t num);                              // стереть профайл num из еепром  (ставится признак пусто)
     void    info_txt(char *ret);                            // текущий профиль строками для settings.txt (номер, имя, описание, дата, CRC)
@@ -111,6 +109,11 @@ class Profile                         // Класс профиль
   // изменение настроек, и такой слот писать в EEPROM нельзя.
   ProfileSlot cache[I2C_PROFIL_NUM];
   uint16_t    cache_crc[I2C_PROFIL_NUM];
+  int8_t      cache_load_error = OK;
+  int8_t      region_format(void);
+  int32_t     scan_region(uint8_t *loaded);                 // при loaded != NULL читает данные и проверяет CRC
+  int8_t      cache_load_fixed(uint8_t *loaded);
+  int8_t      cache_load_legacy(const LegacyProfileSizes &sz, uint8_t *loaded);
   uint8_t     cache_magic[I2C_PROFIL_NUM];                  // 0xaa - записан, иначе слот не использован
    uint16_t get_crc16_mem();                                 // Расчитать контрольную сумму
    int8_t   check_crc16_eeprom(int8_t num);   // Проверить контрольную сумму ПРОФИЛЯ в EEPROM для данных на выходе ошибка, длина определяется из заголовка

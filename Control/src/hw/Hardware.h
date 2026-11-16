@@ -588,6 +588,8 @@ void Reset_Controller(uint32_t reason);  // сброс с причиной RESET
 void SupplyMonitorON(uint32_t voltage);  // монитор питания на заданном пороге
 void freeRamShow();
 int  freeRam();
+// Возвращает оценку свободных байт кучи с резервом для стека прерываний.
+int  freeHeapReserve();
 
 
 // Запись в EEPROM с подсчётом CRC на лету. Определены в Board.cpp.

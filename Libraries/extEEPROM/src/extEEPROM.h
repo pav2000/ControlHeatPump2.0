@@ -77,7 +77,7 @@
 
 enum twiClockFreq_t { twiClock100kHz = 100000, twiClock400kHz = 400000 };
 
-//EEPROM addressing error, returned by write() or read() if upper address bound is exceeded
+// Invalid address range or missing buffer for a nonempty read or write.
 const uint8_t EEPROM_ADDR_ERR = 9;
 
 class extEEPROM

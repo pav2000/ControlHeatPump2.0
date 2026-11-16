@@ -20,6 +20,7 @@
 // ---------------------------------------------------------------------------
 #ifndef HeatPump_h
 #define HeatPump_h
+#include "SettingsLock.h"
 #include "../../Constant.h"                       // Вся конфигурация и константы проекта Должен быть первым !!!!
 #include <stddef.h>                         // offsetof - для проверок раскладки сохраняемых структур
 #include "../hw/Hardware.h"
@@ -332,15 +333,12 @@ class HeatPump
     char *TestToStr();                  // Получить режим тестирования
     int8_t save_DumpJournal(boolean f); // Записать состояние теплового насоса в журнал
     // int32_t save(void) - записи в старом формате больше нет, см. HeatPumpSettings.cpp
-    int32_t load(uint8_t *buffer, uint8_t from_RAM); // Считать настройки из i2c или RAM, на выходе код ошибки (меньше нуля)
-    // Чтение всех настроек старого формата одной функцией. Определена в
-    // SettingsLegacy.cpp - файле, который через год удаляется целиком.
-    int32_t load_all_old(uint8_t *buffer);
+    int32_t load(uint8_t *buffer, uint16_t capacity, uint8_t from_RAM); // Считать настройки из i2c или RAM, на выходе код ошибки (меньше нуля)
     // ---- НОВЫЙ формат, версия 150. Каркас записи описан в Util.h ----
-    int32_t save_all(void);                          // записать ВСЕ настройки новым форматом; занято - ERR_I2C_BUSY
-    volatile uint8_t saving;                         // идёт save_all (занимается атомарно)
+    int32_t save_all(bool saveCounters = false);                          // записать ВСЕ настройки новым форматом; занято - ERR_I2C_BUSY
+    volatile uint8_t saving;                         // занята операция с областями настроек
     int32_t save_new(void);                          // записать настройки новым форматом
-    int32_t load_new(uint8_t *buffer, uint8_t from_RAM = 0); // прочитать новый формат
+    int32_t load_new(uint8_t *buffer, uint16_t capacity, uint8_t from_RAM); // прочитать новый формат
     int32_t load_fail(int8_t code, uint8_t from_RAM);       // ошибка загрузки настроек: в журнал ошибок (старт) или кодом возврата (файл)
     void    load_warn(int8_t code, uint8_t from_RAM);       // замечание о загрузке без отказа
     int8_t  load_parts(void);                               // расписание, кеш профилей и текущий профиль, итог для читателей
@@ -351,7 +349,7 @@ class HeatPump
     // Option.ver после этого бессмысленно, нужна эпоха ДО конверсии.
     // Выбор читателя по версии: байт на смещении 3 от начала блока.
     // Меньше 150 - старый формат, иначе новый. См. раздел 4.3 документа.
-    int32_t load_all(uint8_t *buffer);
+    int32_t load_all(uint8_t *buffer, uint16_t capacity);
     int8_t loadFromBuf(int32_t adr,byte *buf);// Считать настройки из буфера на входе адрес с какого, на выходе код ошибки (меньше нуля)
     int8_t save_motoHour();             // запись счетчиков теплового насоса в ЕЕПРОМ
     int8_t load_motoHour();             // чтение счетчиков теплового насоса в ЕЕПРОМ
@@ -511,7 +509,7 @@ class HeatPump
    inline uint32_t get_command_completed(){ return command_completed; } // Время работы при выполнении команды
    inline type_motoHour *get_motoHour(){ return &motoHour; }// Получить счетчики
      
-   void resetCount(boolean full);                          // Сборос сезонного счетчика моточасов
+   int8_t resetCount(boolean full);                          // Сборос сезонного счетчика моточасов
    void updateCount();                                     // Обновление счетчиков моточасов
    
   

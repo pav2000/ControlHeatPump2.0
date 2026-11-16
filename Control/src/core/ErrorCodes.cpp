@@ -158,26 +158,13 @@ bool Error_IsKnown(int8_t code)
 	return code <= 0 && code >= ERR_ERRMAX;
 }
 
-const char *Error_Text(int8_t code)
+const char *Error_Text(int8_t code, char (*unknown)[ERROR_TEXT_BUFFER_SIZE])
 {
-	if(!Error_IsKnown(code)) {
-		// Не код ошибки ТН. Чаще всего это статус, пришедший из драйвера шины
-		// (см. комментарий в ErrorCodes.h). Показываем как есть, чтобы при
-		// разборе аварии было видно, что источник другой.
-		// m_snprintf, а не snprintf: обычный тянет за собой всю машинерию
-		// форматирования из stdio - проверено, это 12.5 КБ flash. В проекте
-		// нет ни одного sprintf, и нарушать это правило нельзя.
-		// 48 байт, хотя результат занимает 32. m_snprintf требует ЗАПАСА
-		// около 16 байт сверх результата: при меньшем буфере она молча
-		// обрывает строку перед числом, не сигнализируя об этом. Измерено:
-		// с буфером 40 выходило "Неизвестный код " без кода, с 48 - полностью.
-		// Сама строка в UTF-8 занимает 30 байт, кириллица тут ни при чём -
-		// дело в запасе на преобразование числа. Поймано тестом.
-		static char unknown[48];
-		m_snprintf(unknown, sizeof(unknown), "Неизвестный код %d", (int)code);
-		return unknown;
-	}
-	return noteError[-code];
+	if(Error_IsKnown(code)) return noteError[-code];
+	if(!unknown) return "Неизвестный код";
+	// m_snprintf требует запас в буфере для преобразования числа.
+	m_snprintf(*unknown, sizeof(*unknown), "Неизвестный код %d", (int)code);
+	return *unknown;
 }
 
 const char *Ret_Text(uint8_t ret)
@@ -207,7 +194,8 @@ void Error_Store(char *source, uint16_t source_size,
 	len = append(note, note_size, len, " ");
 	len = append(note, note_size, len, src);
 	len = append(note, note_size, len, ": ");
-	      append(note, note_size, len, Error_Text(err));
+	char unknown[ERROR_TEXT_BUFFER_SIZE];
+	append(note, note_size, len, Error_Text(err, &unknown));
 }
 
 bool Error_Claim(volatile int8_t *field, int8_t code)

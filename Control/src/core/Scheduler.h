@@ -69,19 +69,17 @@ public:
 	const char* get_note(void); 						// Получить описание
 	const char* get_name(void) { return  "Scheduler"; } // Получить имя
 	int8_t   save(void);  			               		// Записать настройки в eeprom i2c
-	int16_t  load(uint8_t *data = NULL);  		     	// Считать настройки из eeprom i2c, возвращает длину или ошибку
+	int16_t  load(uint8_t *data = NULL, uint8_t version = 0);  		     	// Считать настройки из eeprom i2c, возвращает длину или ошибку
+	static uint16_t file_data_len(const uint8_t *buf, uint16_t avail, uint16_t hint);
 	int8_t   loadFromBuf(byte *buf, uint16_t avail, uint16_t hint = 0);	// Считать из буфера (секция файла): avail - сколько байт доступно, hint - длина данных из заголовка записи или 0; возврат код ошибки
 	uint16_t get_crc16(uint8_t *data);             		// Рассчитать контрольную сумму для данных на входе входная сумма на выходе новая
-	int8_t   check_crc16_eeprom(bool reportReadError = true);
-	// Область расписания опознаёт себя сама: в новом формате она начинается
-	// с NTAG_Scheduler. Старые данные начинались с Flags и Active, а Active
-	// не больше MAX_CALENDARS, поэтому старший байт тега их исключает.
-	bool     region_is_new(void);
-	uint16_t region_len(void);							// Длина данных области в EEPROM (без заголовка и CRC): LEN_NEW, LEN_OLD или 0, если область не опознана
-	uint32_t data_addr(void);
 	uint16_t get_data_size(void) { return sizeof(sch_data); }
 	Scheduler_Data sch_data;
 private:
+	friend class HeatPump;
+	int8_t save_locked(void);
+	int8_t read_region(uint32_t &base, uint16_t &len);
+	int8_t check_crc16_eeprom(uint32_t base, uint16_t len);
 	void fix_loaded(Scheduler_Data *d, bool lost);	// Привести прочитанные данные к нынешним пределам (обрезка, активный календарь)
 	uint8_t current_hour;
 	int16_t current_change; // -10,00..+10,00

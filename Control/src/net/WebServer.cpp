@@ -600,16 +600,31 @@ xFileFound:
 		{
 			WEB_STORE_DEBUG_INFO(16);
 			spiBusDeselectAll();                                  // все CS вверх: флеш выбирает свой драйвер
-			SerialFlashFile ff = SerialFlash.open(filename);
+			static const char flashError[] = "HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+			SerialFlashStatus status;
+			SerialFlashFile ff = SerialFlash.open(filename, &status);
 			if(ff) {
 				if(DBG_ON(DBG_HTTP)) { journal.jprintf("$Thread: %d socket: %d read file: %s\n",thread,Socket[thread].sock,filename); }
-				uint16_t hl = Web_HeaderToBuf(Socket[thread].outBuf, sizeof(Socket[thread].outBuf), webFileHeader(filename));   // заголовок + первый кусок одним вызовом
-				if(hl == 0) sendConstRTOS(thread, webFileHeader(filename));
+				char *buffer = Socket[thread].outBuf;
+				const uint16_t capacity = sizeof(Socket[thread].outBuf);
+				uint16_t hl = Web_HeaderToBuf(buffer, capacity, webFileHeader(filename));
+				if(hl < 2) {
+					sendConstRTOS(thread, flashError);
+					return;
+				}
+				// При обрыве чтения браузер увидит, что тело короче обещанного.
+				hl -= 2; // заменить последний пустой CRLF полем длины
+				hl += m_snprintf(buffer + hl, capacity - hl, "Content-Length: %u\r\n\r\n", (unsigned)ff.size());
 				spiBusDeselectAll();
 				for(;;) {
 					uint32_t t1 = micros();
 					n = ff.read(Socket[thread].outBuf + hl, sizeof(Socket[thread].outBuf) - hl);
 					StatAcc_Add(&webStat.fileRead, micros() - t1);
+					if(n == 0 && ff.available()) {
+						journal.jprintf("SPI flash: read error in %s\n", filename);
+						if(hl) sendConstRTOS(thread, flashError);
+						break;
+					}
 					if(n <= 0 && hl == 0) break;
 					t1 = micros();
 					const int sent = sendBufferRTOS(thread, (byte*) (Socket[thread].outBuf), hl + (n > 0 ? n : 0));
@@ -619,6 +634,13 @@ xFileFound:
 					spiBusDeselectAll();                          // после отдачи страницы в сеть (замок отпускался) - снова все CS вверх
 				} // for
 			} else {
+				if(status != SerialFlashStatus::NotFound) {
+					journal.jprintf("SPI flash: %s (%d) opening %s\n",
+					                status == SerialFlashStatus::Corrupt ? "corrupt directory" : "open error",
+					                (int)status, filename);
+					sendConstRTOS(thread, flashError);
+					return;
+				}
 				sendConstRTOS(thread, HEADER_FILE_NOT_FOUND);
 				uint8_t ip[4];
 				W5100.readSnDIPR(Socket[thread].sock, ip);
@@ -757,11 +779,14 @@ static bool uploadReceive(uint8_t thread, const uint8_t *ptr, int32_t buf_len, i
 static bool uploadFileFlash(uint8_t thread, const char *nameFile, const uint8_t *ptr, int32_t buf_len, int32_t lenFile)
 {
 	spiBusDeselectAll();
-	if(lenFile > (int32_t) SerialFlash.free_size()) { journal.jprintf("Not enough space, free: %d\n", (int) SerialFlash.free_size()); return false; }
-	int8_t e = SerialFlash.create(nameFile, lenFile);                                  // 0 - создан
-	if(e) { journal.jprintf("Error Create %d!\n", e); return false; }
-	SerialFlashFile ff = SerialFlash.open(nameFile);
-	if(!ff) { journal.jprintf("Error Open!\n"); return false; }
+	const int8_t e = SerialFlash.create(nameFile, lenFile);
+	if(e) {
+		journal.jprintf("SPI flash: %s (%d)\n", e == (int8_t)SerialFlashStatus::Corrupt ? "corrupt directory" : "create error", (int)e);
+		return false;
+	}
+	SerialFlashStatus status;
+	SerialFlashFile ff = SerialFlash.open(nameFile, &status);
+	if(!ff) { journal.jprintf("SPI flash: open error (%d)\n", (int)status); return false; }
 	bool ok = uploadReceive(thread, ptr, buf_len, lenFile, uploadWriteFlash, &ff);
 	// nameFile лежит в inBuf, а приём пишет туда пакеты: после uploadReceive имя затёрто, удалять - по дескриптору
 	spiBusDeselectAll();
@@ -791,14 +816,17 @@ static bool uploadFileSD(uint8_t thread, const char *nameFile, const uint8_t *pt
 // Область профилей в файле настроек: длина вместе с END и контрольной суммой или -1, если область негодна. Проверка
 // ничего не записывает, поэтому идёт до применения настроек и до записи в EEPROM: испорченная область (чужая раскладка
 // слота, обрубленный файл, неверная сумма) на носителе сломала бы профили при ближайшей загрузке.
-static int32_t fileProfilesLen(const uint8_t *ptr, const uint8_t *file_end)
+static int32_t fileProfilesLen(const uint8_t *ptr, const uint8_t *file_end, uint8_t version)
 {
 	int32_t len;
-	if(rec_hdr_tag(ptr) == NTAG_Profile) {
+	const int32_t available = file_end - ptr;
+	if(available < REC_HDR_SIZE) return -1;
+	const uint16_t tag = rec_hdr_tag(ptr);
+	if(tag == NTAG_Profile || tag == NTAG_END) {
 		ProfileScan ps;
 		profile_scan(ptr, file_end, NTAG_Profile, NTAG_END, 1 + sizeof(ProfileSlot), I2C_PROFIL_NUM, &ps);
 		len = ps.bytes + sizeof(uint16_t);               // плюс END (уже в bytes) и контрольная сумма
-		if(ps.bad_len || ps.bad_slot || ps.bad_tag || ps.truncated || !ps.end_seen || ptr + len > file_end) {
+		if(ps.bad_len || ps.bad_slot || ps.bad_tag || ps.truncated || !ps.end_seen || len > available) {
 			journal.jprintf("Profiles in file rejected: len %d, slot %d, tag %d, cut %d, end %d (code %d)\n",
 			                ps.bad_len, ps.bad_slot, ps.bad_tag, ps.truncated, ps.end_seen, ps.bad_len ? ERR_BAD_LEN_PROFILE : ERR_LOAD_PROFILE);
 			return -1;
@@ -812,9 +840,13 @@ static int32_t fileProfilesLen(const uint8_t *ptr, const uint8_t *file_end)
 			return -1;
 		}
 	} else {
-		len = HP.Prof.get_sizeProfile() * I2C_PROFIL_NUM_LEGACY;  // старый файл - массив из десяти слотов
-		if(ptr + len > file_end) { journal.jprintf("Profiles in file rejected: file too short\n"); return -1; }
+		LegacyProfileSizes sz;
+		const int32_t stride = legacy_profile_sizes(version, &sz, sizeof(uint8_t) + sizeof(uint16_t))
+		                       ? sz.total : HP.Prof.get_sizeProfile();
+		len = stride * I2C_PROFIL_NUM_LEGACY;
+		if(len > available) { journal.jprintf("Profiles in file rejected: file too short\n"); return -1; }
 	}
+	if(len > I2C_SCHEDULER_EEPROM - I2C_PROFILE_EEPROM) return -1;
 	return len;
 }
 
@@ -898,8 +930,9 @@ xLenErr:
 			len = Socket[thread].client.get_ReceivedSizeRX();                                      // получить длину входного пакета
 			if(len > W5200_MAX_LEN) len = W5200_MAX_LEN;                                   		// Ограничить размером в максимальный размер пакета w5200
 			if(buf_len + len > (int32_t)sizeof(Socket[thread].outBuf)) return pSETTINGS_MEM;     // проверить длину если не влезает то выходим
-			Socket[thread].client.read((uint8_t*)Socket[thread].outBuf + buf_len, len);            // прочитать буфер
-			buf_len = buf_len + len;                                                               // определить размер данных
+			const int got = Socket[thread].client.read((uint8_t*)Socket[thread].outBuf + buf_len, len);
+			if(got <= 0) return pSETTINGS_ERR;
+			buf_len += got;
 		}
 		{   // Поиск маркера HEADER_BIN в собранных данных (бинарно-безопасный, строка не завершена нулём)
 			const int32_t ml = sizeof(HEADER_BIN) - 1;
@@ -915,59 +948,54 @@ xLenErr:
 		}
 	    ptr = (byte*) Socket[thread].outBuf;     
 		journal.jprintf("Loading %s, length data %d bytes:\n", SETTINGS, (int)(buf_len));
-		// Чтение настроек из ptr. Читатель выбирается по версии - там же,
-		// на смещении 3 от начала блока, что и при чтении из EEPROM.
-		// Без этого файл, скачанный после конверсии, разобрался бы старым
-		// читателем и разложился не туда с правильной контрольной суммой.
-		const uint8_t *file_end = (byte*) Socket[thread].outBuf + buf_len;
-		// Весь файл проверяется ДО применения чего-либо: иначе отказ по профилям оставлял бы уже применённые настройки.
-		// В новом формате за блоком настроек (поле длины + длина) сразу идёт область профилей.
-		if(ptr[NEW_OFS_VER] >= SETTINGS_VER_NEW) {
-			uint32_t blk = *((uint16_t*) ptr) + sizeof(uint16_t);
-			if(buf_len < (int32_t) (blk + REC_HDR_SIZE) || fileProfilesLen(ptr + blk, file_end) < 0) {
-				journal.jprintf("Upload: file rejected before applying\n");
-				return pSETTINGS_ERR;
-			}
-		}
-		if(ptr[NEW_OFS_VER] < SETTINGS_VER_NEW && !settings_len_ok(*((uint16_t*) ptr), buf_len)) {   // старый формат: длина из файла против принятого
-			journal.jprintf("Upload: bad settings length %d of %d bytes received\n", (int) *((uint16_t*) ptr), (int) buf_len);
+		// Версия должна находиться в теле настроек перед CRC, а весь блок — в принятом файле.
+		const uint32_t block = settings_file_block_size(ptr, buf_len);
+		if(block < NEW_OFS_VER + 1 + sizeof(uint16_t)) {
+			journal.jprintf("Upload: bad settings block (%d bytes received)\n", (int)buf_len);
 			return pSETTINGS_ERR;
 		}
+		const bool newFormat = ptr[NEW_OFS_VER] >= SETTINGS_VER_NEW;
+		const uint8_t *file_end = ptr + buf_len;
+		const int32_t profilesLen = fileProfilesLen(ptr + block, file_end, ptr[NEW_OFS_VER]);
+		if(profilesLen < 0) {
+			journal.jprintf("Upload: file rejected before applying\n");
+			return pSETTINGS_ERR;
+		}
+		uint8_t *schedule = ptr + block + profilesLen;
+		uint16_t hint = 0;
+		if(file_end - schedule >= REC_HDR_SIZE && rec_hdr_tag(schedule) == NTAG_Scheduler) {
+			hint = rec_hdr_len(schedule);
+			if(!hint) return pSETTINGS_ERR;
+			schedule += REC_HDR_SIZE;
+		}
+		if(!HP.Schdlr.file_data_len(schedule, file_end - schedule, hint)) {
+			journal.jprintf("Upload: invalid schedule length or CRC\n");
+			return pSETTINGS_ERR;
+		}
+		SettingsLock lock(HP.saving);
+		if(!lock) return pSETTINGS_BUSY;
 #ifdef EEV_DEF
 		// Загрузка вызывает InitStepper; проверка раннего снимка IsWorkingNow недостаточна.
 		if(!HP.beginEEVService()) return pSETTINGS_BUSY;
 		struct SettingsEEVGuard { ~SettingsEEVGuard() { HP.endEEVService(); } } eevGuard;
 #endif
-		len = ptr[NEW_OFS_VER] >= SETTINGS_VER_NEW ? HP.load_new(ptr, 1) : HP.load(ptr, 1);
-		if(len <= 0) return pSETTINGS_ERR; // ошибка загрузки настроек
-		boolean ret = true;
-		ptr += len;
-		// Чтение профилей
-		// Длина области профилей в файле: в новом формате это поток записей,
-		// и он короче десяти слотов ровно на незаписанные.
-		len = fileProfilesLen(ptr, file_end);
-		if(len < 0) return pSETTINGS_ERR;
-		if(writeEEPROM_I2C(I2C_PROFILE_EEPROM, ptr, len)) {
-			journal.jprintf("Error write EEPROM at 0x%X\n", I2C_PROFILE_EEPROM);
-			ret = false;
-		} else {
-			HP.Prof.cache_load_all();                                 // профили записаны мимо кеша - перечитать
-			HP.Prof.load(HP.Option.numProf);
-			HP.Prof.update_list(HP.Prof.get_idProfile());             // обновить список
+		len = newFormat ? HP.load_new(ptr, block, 1) : HP.load(ptr, block, 1);
+		if(len <= 0) return pSETTINGS_ERR;
+		ptr += block;
+		if(writeEEPROM_I2C(I2C_PROFILE_EEPROM, ptr, profilesLen)) {
+			HP.Prof.invalidate_cache(ERR_SAVE_PROFILE);
+			HP.Prof.update_list(HP.Prof.get_idProfile());
+			HP.set_Warning(ErrorCatalog::kPROFILE_WRITE, "profiles");
+			return pSETTINGS_ERR;
 		}
-		// чтение расписания
-		// Расписание в файле тоже может быть в новом формате - тогда перед
-		// данными стоит заголовок записи.
-		{
-			uint8_t *sch = ptr + len;
-			uint16_t hint = 0;
-			if(sch + REC_HDR_SIZE <= file_end && rec_hdr_tag(sch) == NTAG_Scheduler) { hint = rec_hdr_len(sch); sch += REC_HDR_SIZE; }
-			uint16_t avail = sch < file_end ? file_end - sch : 0;
-			if(ret && HP.Schdlr.loadFromBuf(sch, avail, hint) != OK) ret = false;
+		const int8_t profiles = HP.Prof.cache_load_all();
+		if(profiles != OK || HP.Prof.load(HP.Option.numProf) < 0) {
+			HP.Prof.update_list(HP.Prof.get_idProfile());
+			return pSETTINGS_ERR;
 		}
+		HP.Prof.update_list(HP.Prof.get_idProfile());
 
-		if(ret) return pSETTINGS_OK;
-		else return pSETTINGS_ERR;
+		return HP.Schdlr.loadFromBuf(schedule, file_end - schedule, hint) == OK ? pSETTINGS_OK : pSETTINGS_ERR;
 	} //if (strcmp(nameFile,"*SETTINGS*")==0)
 
 	// загрузка вебморды
@@ -986,8 +1014,13 @@ xLenErr:
 			if(!toFlash) { journal.jprintf_time("Start upload to SD.\n"); return pNULL; }
 			journal.jprintf_time("Start upload, erase SPI disk ");
 			spiBusDeselectAll();                                  // все CS вверх: флеш выбирает свой драйвер
-			SerialFlash.eraseAll();
-			while(SerialFlash.ready() == false) {
+			bool done = false;
+			bool eraseOk = SerialFlash.eraseAll();
+			const uint32_t started = millis();
+			// У Micron до четырёх кристаллов, до минуты на каждый.
+			constexpr uint32_t eraseTimeout = 4 * 60000UL;
+			while(eraseOk && (eraseOk = SerialFlash.pollReady(done)) && !done &&
+			      (uint32_t)(millis() - started) < eraseTimeout) {
 				xSemaphoreGive(xWebThreadSemaphore); // отдать семафор вебморды, что бы обработались другие потоки веб морды
 				vTaskDelay(1000 / portTICK_PERIOD_MS);
 				if(SemaphoreTake(xWebThreadSemaphore, (3 * W5200_TIME_WAIT / portTICK_PERIOD_MS)) == pdFALSE) { // получить семафор веб морды
@@ -998,8 +1031,15 @@ xLenErr:
 				WebUpload_Alive(&webUpload, millis());
 				journal.jprintf(".");
 			}
+			SerialFlashStatus status = SerialFlashStatus::Io;
+			const uint32_t space = eraseOk && done ? SerialFlash.free_size(&status) : 0;
+			if(status != SerialFlashStatus::Ok || !space) {
+				WebUpload_FileDone(&webUpload, false);
+				journal.jprintf(" SPI flash: erase or directory initialization failed (%d)\n", (int)status);
+				return pLOAD_ERR;
+			}
 			WebUpload_Erased(&webUpload, millis());
-			journal.jprintf(" Ok, free %d bytes\n", (int)(SerialFlash.free_size()));
+			journal.jprintf(" Ok, free %d bytes\n", (int)space);
 			return pNULL;
 		} else if(strcmp(nameFile, LOAD_FLASH_END) == 0 || strcmp(nameFile, LOAD_SD_END) == 0) {  // Окончание загрузки вебморды
 			const uint8_t media = webUpload.media;

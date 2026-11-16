@@ -32,25 +32,30 @@
 
 class SerialFlashFile;
 
+enum class SerialFlashStatus : int8_t {
+	Ok = 0, Exists = -1, Corrupt = -2, Full = -3, NoSpace = -4, Io = -5, Invalid = -6, NotFound = -7
+};
+
 class SerialFlashChip
 {
 public:
 	static bool begin(uint8_t pin = 6);           // контроллер ТН: обмен через общую шину SpiBus (выбор порта SPIClass убран)
 	static uint32_t capacity(const uint8_t *id);
 	static uint32_t blockSize();
-	static void sleep();
-	static void wakeup();
-	static void readID(uint8_t *buf);
-	static void readSerialNumber(uint8_t *buf);
+	static bool sleep();
+	static bool wakeup();
+	static bool readID(uint8_t *buf);
+	static bool readSerialNumber(uint8_t *buf);
 	static bool read(uint32_t addr, void *buf, uint32_t len);
 	static uint8_t readHeader(uint8_t *h, uint32_t addr, bool addr32);   // заголовок Fast Read в h (до 6 байт), возвращает длину
 	static bool ready();
-  static bool wait();
-	static void write(uint32_t addr, const void *buf, uint32_t len);
-	static void eraseAll();
-	static void eraseBlock(uint32_t addr);
+	static bool pollReady(bool &done);  // false — сбой обмена; done — операция завершена
+	static bool wait(uint32_t timeout = 60000);
+	static bool write(uint32_t addr, const void *buf, uint32_t len);
+	static bool eraseAll();
+	static bool eraseBlock(uint32_t addr);
 
-	static SerialFlashFile open(const char *filename);
+	static SerialFlashFile open(const char *filename, SerialFlashStatus *status = nullptr);
 	static int8_t create(const char *filename, uint32_t length, uint32_t align = 0);
 	static int8_t createErasable(const char *filename, uint32_t length) {
 		return create(filename, length, blockSize());
@@ -59,8 +64,8 @@ public:
 	static bool remove(const char *filename);
 	static bool remove(SerialFlashFile &file);
 	static void opendir() { dirindex = 0; }
-	static bool readdir(char *filename, uint32_t strsize, uint32_t &filesize);
-	static uint32_t free_size(void);
+	static bool readdir(char *filename, uint32_t strsize, uint32_t &filesize, SerialFlashStatus *status = nullptr);
+	static uint32_t free_size(SerialFlashStatus *status = nullptr);
 	static uint32_t Capacity;
 private:
 	static uint16_t dirindex; // current position for readdir()
@@ -68,7 +73,7 @@ private:
 	static uint8_t busy;	// 0 = ready
 				// 1 = suspendable program operation
 				// 2 = suspendable erase operation
-				// 3 = busy for realz!!
+				// 3 = bulk erase, 4 = page program without suspend
 };
 
 extern SerialFlashChip SerialFlash;
@@ -83,20 +88,18 @@ public:
 		return false;
 	}
 	uint32_t read(void *buf, uint32_t rdlen) {
-		if (offset + rdlen > length) {
-			if (offset >= length) return 0;
-			rdlen = length - offset;
-		}
+		const uint32_t remaining = available();
+		if (!address || !remaining) return 0;
+		if (rdlen > remaining) rdlen = remaining;
 		if (!SerialFlash.read(address + offset, buf, rdlen)) return 0;
 		offset += rdlen;
 		return rdlen;
 	}
 	uint32_t write(const void *buf, uint32_t wrlen) {
-		if (offset + wrlen > length) {
-			if (offset >= length) return 0;
-			wrlen = length - offset;
-		}
-		SerialFlash.write(address + offset, buf, wrlen);
+		const uint32_t remaining = available();
+		if (!address || !remaining) return 0;
+		if (wrlen > remaining) wrlen = remaining;
+		if (!SerialFlash.write(address + offset, buf, wrlen)) return 0;
 		offset += wrlen;
 		return wrlen;
 	}
@@ -113,7 +116,7 @@ public:
 		if (offset >= length) return 0;
 		return length - offset;
 	}
-	void erase();
+	bool erase();
 	void flush() {
 	}
 	void close() {

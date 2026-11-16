@@ -102,25 +102,21 @@ bool legacy_resave_after_load(uint8_t ver)
 //
 // Эта функция исчезнет вместе с файлом: когда старый формат перестанет
 // поддерживаться, выбирать будет не из чего.
-int32_t HeatPump::load_all(uint8_t *buffer)
+int32_t HeatPump::load_all(uint8_t *buffer, uint16_t capacity)
 {
 	uint8_t probe[NEW_OFS_VER + 1];
 	if(readEEPROM_I2C(I2C_SETTING_EEPROM, probe, sizeof(probe))) {
 		journal.jprintf(" Settings: read error\n");
-		return error = ERR_LOAD_EEPROM;
+		return load_fail(ERR_LOAD_EEPROM, 0);
 	}
-	if(probe[NEW_OFS_VER] >= SETTINGS_VER_NEW) {    // новый формат
-		int32_t ret = load_new(buffer, 0);
-		load_parts();
-		return ret;
+	const bool newFormat = probe[NEW_OFS_VER] >= SETTINGS_VER_NEW;
+	const int32_t size = newFormat ? load_new(buffer, capacity, 0) : load(buffer, capacity, 0);
+	if(size < 0) return size;
+	const int8_t parts = load_parts();
+	if(parts != OK) return parts;
+	if(!newFormat && legacy_resave_after_load(Option.ver)) {
+		const int32_t saved = save_all();
+		if(saved < 0) return saved;
 	}
-	return load_all_old(buffer);
-}
-
-int32_t HeatPump::load_all_old(uint8_t *buffer)
-{
-	int32_t ret = load(buffer, 0);                  // настройки: голова по порядку, хвост по тегам
-	load_parts();                                   // расписание, все профили в ОЗУ, текущий профиль
-	if(legacy_resave_after_load(Option.ver)) save_all(); // до версии 134 пересохраняли сразу
-	return ret;
+	return size;
 }

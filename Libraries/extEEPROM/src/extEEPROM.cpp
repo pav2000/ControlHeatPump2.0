@@ -134,8 +134,8 @@ byte extEEPROM::write(uint32_t addr, byte *values, uint32_t nBytes)
     uint8_t txStatus = 0;   //transmit status
     uint32_t nWrite;        //number of bytes to write
 
-    if (addr + nBytes > _totalCapacity) {   //will this write go past the top of the EEPROM?
-        return EEPROM_ADDR_ERR;             //yes, tell the caller
+    if (addr > _totalCapacity || nBytes > _totalCapacity - addr || (nBytes && !values)) {
+        return EEPROM_ADDR_ERR;
     }
     while(nBytes > 0) {
    		uint32_t nPage;         //number of bytes remaining on current page, starting at addr
@@ -183,8 +183,8 @@ byte extEEPROM::read(uint32_t addr, byte *values, uint32_t nBytes)
     byte rxStatus;
     uint32_t nRead;             //number of bytes to read
 
-    if (addr + nBytes > _totalCapacity) {   //will this read take us past the top of the EEPROM?
-        return EEPROM_ADDR_ERR;             //yes, tell the caller
+    if (addr > _totalCapacity || nBytes > _totalCapacity - addr || (nBytes && !values)) {
+        return EEPROM_ADDR_ERR;
     }
 
     while(nBytes > 0) {

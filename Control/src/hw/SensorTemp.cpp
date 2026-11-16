@@ -127,9 +127,12 @@ int8_t sensorTemp::Read(bool *freshLocal)
 						if(numErrorRead > NUM_READ_TEMP_ERR && !get_setup_flag(fTEMP_ignory_errors)) { // Слишком много ошибок чтения подряд - ошибка!
 							int8_t code = Error_TempReadCode(err);
 							if(code == err) set_Error(code, name);
-							else HP.raise_Error(code, ErrorCatalog::kTEMP_READ, name,
-							                    {ErrorDetailKind::Local, static_cast<uint16_t>(-err), 0},
-							                    Error_Text(err));
+							else {
+								char unknown[ERROR_TEXT_BUFFER_SIZE];
+								HP.raise_Error(code, ErrorCatalog::kTEMP_READ, name,
+								               {ErrorDetailKind::Local, static_cast<uint16_t>(-err), 0},
+								               Error_Text(err, &unknown));
+							}
 						}
 						return err;
 					}

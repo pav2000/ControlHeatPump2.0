@@ -196,7 +196,8 @@ void set_Error(int8_t code, char *device)
 {
 	if(code == OK) return;
 	HP.stopForError();
-	HP.record_Error(code, device, ErrorCatalog::FromLegacy(code), {}, code == ERR_MINTEMP || code == ERR_MAXTEMP ? nullptr : Error_Text(code));
+	const char *text = Error_IsKnown(code) && code != ERR_MINTEMP && code != ERR_MAXTEMP ? Error_Text(code) : nullptr;
+	HP.record_Error(code, device, ErrorCatalog::FromLegacy(code), {}, text);
 }
 
 // Регистрирует аварию с кодом каталога и исходными деталями.

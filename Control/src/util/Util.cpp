@@ -548,15 +548,70 @@ char *web_fill_tag_select(char *str, const char *select, uint8_t selected)
 }
 
 // memcpy: <size[uint8_t: 1|2]><struct>
-void load_struct(void *to, uint8_t **from, uint16_t to_size)
+const uint8_t *settings_legacy_record(const uint8_t *&p, const uint8_t *end, uint16_t &len)
+{
+	if(p == end) return nullptr;
+	const size_t remaining = end - p;
+	const size_t prefix = (*p & 1) ? 2 : 1;
+	if(remaining < prefix) return nullptr;
+	uint16_t size = p[0];
+	if(prefix == 2) size |= (uint16_t)p[1] << 8;
+	size >>= 1;
+	if(size > remaining - prefix) return nullptr;
+	const uint8_t *data = p + prefix;
+	len = size;
+	p = data + len;
+	return data;
+}
+
+const uint8_t *settings_legacy_next(const uint8_t *&p, const uint8_t *end, uint16_t &len,
+                                   int16_t &tag, int16_t tagLimit)
+{
+	const uint8_t *record = p;
+	int16_t nextTag = tag;
+	if(end - record >= 2) {
+		const int16_t candidate = (int16_t)rec_hdr_tag(record);
+		if(candidate <= 0 && candidate > tagLimit) {
+			nextTag = candidate;
+			record += 2;
+			if(nextTag == 0) {
+				tag = 0;
+				len = 0;
+				p = record;
+				return record;
+			}
+		}
+	}
+	const uint8_t *data = settings_legacy_record(record, end, len);
+	if(data) {
+		p = record;
+		tag = nextTag;
+	}
+	return data;
+}
+
+bool settings_legacy_valid(const uint8_t *p, const uint8_t *end, int16_t tagLimit, int16_t lastArrayTag)
+{
+	uint16_t len;
+	for(unsigned i = 0; i < 5; ++i)
+		if(!settings_legacy_record(p, end, len) || (i == 0 && len == 0)) return false;
+
+	int16_t tag = tagLimit;
+	while(p < end) {
+		if(!settings_legacy_next(p, end, len, tag, tagLimit)) return false;
+		if(tag == 0) break;
+		if(tag >= lastArrayTag && len == 0) return false; // у элемента массива есть как минимум номер
+	}
+	return true; // старые блоки могли закончиться сразу после последней записи
+}
+
+bool load_struct(void *to, const uint8_t **from, const uint8_t *end, uint16_t to_size)
 {
 	uint16_t size;
-	memcpy(&size, *from, sizeof(size));   // запись не выровнена: разыменование uint16_t* по нечётному адресу - неопределённое поведение (ловит UBSan)
-	if((size & 1) == 0) size &= 0xFF; else (*from)++;
-	(*from)++;
-	size >>= 1;
-	if(to != NULL) memcpy(to, *from, size <= to_size ? size : to_size);
-	*from += size;
+	const uint8_t *data = settings_legacy_record(*from, end, size);
+	if(!data) return false;
+	if(to) memcpy(to, data, size <= to_size ? size : to_size);
+	return true;
 }
 
 int8_t Record_WriteStable(RecWriteFn wr, void *ctx, const uint8_t *src, uint16_t size, uint16_t *crc, uint8_t attempts)
@@ -811,14 +866,21 @@ bool settings_len_ok(uint16_t size, int32_t avail)
 	return (int32_t) size + 2 <= avail;                         // поле длины + size байт обязаны уместиться в принятое
 }
 
+uint32_t settings_file_block_size(const uint8_t *buffer, int32_t avail)
+{
+	if(!buffer || avail < (int32_t)sizeof(uint16_t)) return 0;
+	const uint16_t size = rec_hdr_tag(buffer);
+	return settings_len_ok(size, avail) ? size + sizeof(size) : 0;
+}
+
 void settings_scan(const uint8_t *p, const uint8_t *p_max, uint16_t end_tag, uint16_t max_tag, SettingsScan *s)
 {
 	memset(s, 0, sizeof(*s));
-	while(p + REC_HDR_SIZE <= p_max) {
+	while(p_max - p >= REC_HDR_SIZE) {
 		uint16_t tag = rec_hdr_tag(p);
 		uint16_t len = rec_hdr_len(p);
 		const uint8_t *data = p + REC_HDR_SIZE;
-		if(data + len > p_max) { s->truncated++; break; }
+		if(len > p_max - data) { s->truncated++; break; }
 		p = data + len;
 		if(tag == end_tag) { s->end_seen = true; break; }
 		s->records++;
@@ -831,15 +893,28 @@ void profile_scan(const uint8_t *p, const uint8_t *p_max, uint16_t tag, uint16_t
 {
 	memset(s, 0, sizeof(*s));
 	const uint8_t *p0 = p;
-	while(p + REC_HDR_SIZE <= p_max) {
+	uint32_t seen[8]{}; // по биту на каждый возможный номер слота
+	while(p_max - p >= REC_HDR_SIZE) {
 		uint16_t t = rec_hdr_tag(p), l = rec_hdr_len(p);
 		const uint8_t *data = p + REC_HDR_SIZE;
-		if(t == end_tag) { s->end_seen = true; p = data; break; }
+		if(t == end_tag) {
+			if(l != 0) s->bad_len++;
+			s->end_seen = true;
+			p = data;
+			break;
+		}
 		if(t != tag) { s->bad_tag++; break; }
-		if(data + l > p_max) { s->truncated++; break; }
+		if(l > p_max - data) { s->truncated++; break; }
 		if(l != rec_len || l == 0) s->bad_len++;
-		else if(data[0] >= max_slots) s->bad_slot++;
-		else s->slots++;
+		else {
+			const uint8_t slot = data[0];
+			const uint32_t bit = 1UL << (slot % 32);
+			if(slot >= max_slots || (seen[slot / 32] & bit)) s->bad_slot++;
+			else {
+				seen[slot / 32] |= bit;
+				s->slots++;
+			}
+		}
 		p = data + l;
 	}
 	s->bytes = (uint32_t)(p - p0);

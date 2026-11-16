@@ -67,6 +67,18 @@ int freeRam()
  return stack_ptr - heapend + mi.fordblks;
 }
 
+// Возвращает оценку запаса кучи в байтах с резервом для стека прерываний.
+// MSP не зависит от выбранной задачи FreeRTOS, её стек выделен внутри кучи.
+int freeHeapReserve()
+{
+	const uint8_t suspended = TaskSuspendAll();
+	const intptr_t heapEnd = reinterpret_cast<intptr_t>(sbrk(0));
+	const intptr_t mainStack = static_cast<intptr_t>(__get_MSP());
+	const int bytes = mainStack - heapEnd + mallinfo().fordblks - HEAP_INTERRUPT_RESERVE_BYTES;
+	if(suspended) xTaskResumeAll();
+	return bytes > 0 ? bytes : 0;
+}
+
 // ---- Чтение температуры чипа SAM3X ----
 //http://arduino.cc/forum/index.php/topic,129013.0.html
 #define TEMP_TRANS       (float)(SAM3X_ADC_REF/4096.0)
@@ -335,23 +347,38 @@ uint8_t initSpiDisk(boolean show)
 		if(show) journal.jprintf(" SPI flash not found!\n");
 		return false;
 	} else {
-		if(show) {
-			SerialFlash.readID(id);
+		if(show && SerialFlash.readID(id)) {
 			journal.jprintf(" Manufacturer ID: 0x%02X\n", id[0]);
 			journal.jprintf(" Memory type: 0x%02X\n", id[1]);
-			journal.jprintf(" Chip size(0x%02X): %d bytes\n", id[2], (int)(SerialFlash.Capacity));
-			journal.jprintf(" Free: %d bytes\n", (int)(SerialFlash.free_size()));
-			SerialFlash.readSerialNumber(id);
-			journal.jprintf(" Serial number: 0x%02x%02x%02x%02x%02x%02x%02x%02x\n", id[0], id[1], id[2], id[3], id[4], id[5], id[6], id[7]);
+			journal.jprintf(" Chip size(0x%02X): %d bytes\n", id[2], (int)SerialFlash.Capacity);
 		}
-		if (HP.get_WebStoreOnSPIFlash()) { // проверка наличия файла INDEX_FILE, если стоит флаг загрузки из флеша в настройках
-			if (!SerialFlash.exists((char*)INDEX_FILE)) { // файл не найден морды во флеше нет
-				HP.set_WebStoreOnSPIFlash(false);//  сбрасываем в оперативке (но не на флеше) флаг загрузки из флеш диска
-				if(show) journal.jprintf((char*) " ERROR - Can't find %s file on SPI flash!\n", INDEX_FILE);
-				HP.message.setMessage(pMESSAGE_SD, (char*) "Файл индекса не найден на SPI флеш диске", 0);// сформировать уведомление
+		SerialFlashStatus status = SerialFlashStatus::Ok;
+		if(show) {
+			const uint32_t space = SerialFlash.free_size(&status);
+			if(status == SerialFlashStatus::Ok || status == SerialFlashStatus::Full ||
+			   status == SerialFlashStatus::NoSpace) journal.jprintf(" Free: %d bytes\n", (int)space);
+			if(SerialFlash.readSerialNumber(id))
+				journal.jprintf(" Serial number: 0x%02x%02x%02x%02x%02x%02x%02x%02x\n", id[0], id[1], id[2], id[3], id[4], id[5], id[6], id[7]);
+		}
+		if(status == SerialFlashStatus::Corrupt || status == SerialFlashStatus::Io) {
+			HP.set_WebStoreOnSPIFlash(false);
+			if(show) journal.jprintf(status == SerialFlashStatus::Corrupt ?
+			                         " SPI flash: corrupt directory\n" : " SPI flash: directory read error\n");
+			return 1; // чип доступен для повторной загрузки
+		}
+		if(HP.get_WebStoreOnSPIFlash()) {
+			if(!SerialFlash.open(INDEX_FILE, &status)) {
+				HP.set_WebStoreOnSPIFlash(false);
+				if(status == SerialFlashStatus::NotFound) {
+					if(show) journal.jprintf(" ERROR - Can't find %s file on SPI flash!\n", INDEX_FILE);
+					HP.message.setMessage(pMESSAGE_SD, (char*) "Файл индекса не найден на SPI флеш диске", 0);
+				} else if(show) journal.jprintf(" SPI flash: %s (%d) opening %s\n",
+				                                status == SerialFlashStatus::Corrupt ? "corrupt directory" : "open error",
+				                                (int)status, INDEX_FILE);
 				return 1;
-			} else if(show) journal.jprintf((char*) " Found %s file\n", INDEX_FILE);	// файл найден
-		} // if HP.get_fSPIFlash()
+			}
+			if(show) journal.jprintf(" Found %s file\n", INDEX_FILE);
+		}
 
 		return 2;
 	}

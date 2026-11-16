@@ -108,7 +108,7 @@ static void sysInfoText(char *strReturn)
 	strcat(strReturn,"Счетчик неудачных ping|");_itoa(Diag.num_resPing,strReturn);strcat(strReturn,";");
 	strcat(strReturn,"Чтений по DMA шины SPI с таймаутом (должно быть 0)|");_itoa(Diag.num_dmaTimeout,strReturn);strcat(strReturn,";");
 	strcat(strReturn,"Переполнений приёмника SPI при чтении по DMA (должно быть 0)|");_itoa(Diag.num_dmaOverrun,strReturn);strcat(strReturn,";");
-	strcat(strReturn,"Чтений по DMA, закончившихся во время вытеснения потока (не ошибка)|");_itoa(spiBusStat.dmaLate,strReturn);strcat(strReturn,";");
+	strcat(strReturn,"Операций DMA, закончившихся во время вытеснения потока|");_itoa(spiBusStat.dmaLate,strReturn);strcat(strReturn,";");
 	#ifdef USE_ELECTROMETER_SDM
 	strcat(strReturn,"Счетчик числа ошибок чтения электро-счетчика|");_itoa(HP.dSDM.get_numErr(),strReturn);strcat(strReturn,";");
 	#endif
@@ -381,7 +381,7 @@ static void sip_info(char *strReturn)
 	_ftoa(strReturn, (float)HP.sTemp[TOUT].get_Temp() / 100.0, 1);    strcat(strReturn, "|");
 	_ftoa(strReturn, (float)HP.sTemp[TBOILER].get_Temp() / 100.0, 1); strcat(strReturn, "|");
 	strcat(strReturn, VERSION);                                       strcat(strReturn, "|");
-	_itoa(freeRam() + Diag.startRAM, strReturn);                      strcat(strReturn, "|");
+	_itoa(freeHeapReserve(), strReturn);                            strcat(strReturn, "|");
 	_itoa(Diag.CPU_LOAD, strReturn);                                  strcat(strReturn, "|");
 	TimeIntervalToStr(HP.get_uptime(), strReturn);                    strcat(strReturn, "|");
 #ifdef EEV_DEF
@@ -830,7 +830,7 @@ static int api_get_sys(uint8_t hook, uint8_t, ApiOut *o)
 	else if(hook == Y_LSTATS) api_put_year_files(o, 0);
 	else if(hook == Y_LHIST) api_put_year_files(o, 1);
 	else if(hook == Y_LHISTOLD) api_put_year_files(o, 2);
-	else if(hook == Y_FREERAM) api_put_int(o, freeRam() + Diag.startRAM);
+	else if(hook == Y_FREERAM) api_put_int(o, freeHeapReserve());
 	else if(hook == Y_ERRORS || hook == Y_ERRORS1) api_put_errors(o, hook - Y_ERRORS);
 	else if(hook == Y_ERRORS2) api_put_errors(o, 2);
 	else if(hook >= Y_INFO && hook <= Y_TASKS) return api_sys_table(hook, o);
@@ -1098,9 +1098,8 @@ static int apiAct_power_on(ApiOut *o, const char *)  { HP.sendCommand(pSTART); a
 static int apiAct_power_off(ApiOut *o, const char *) { HP.sendCommand(pSTOP);  api_put(o, "\"ok\""); return AE_OK; }
 static int apiAct_save_all(ApiOut *o, const char *)
 {
-	int32_t r = HP.save_all();     // профили, расписание и настройки новым форматом
+	int32_t r = HP.save_all(true);     // профили, расписание и настройки новым форматом
 	if(r == ERR_I2C_BUSY) return AE_BUSY;   // другое сохранение ещё идёт
-	HP.save_motoHour();
 	if(r < 0) return AE_FAIL;
 	api_put_int(o, r);             // число записанных байт, как отвечал set_SAVE
 	return AE_OK;
@@ -1108,9 +1107,15 @@ static int apiAct_save_all(ApiOut *o, const char *)
 static int apiAct_reset_settings(ApiOut *o, const char *)
 {
 	if(HP.get_State() != pOFF_HP) return AE_BUSY;       // при работающем ТН команда не выполняется
+	SettingsLock lock(HP.saving);
+	if(!lock) return AE_BUSY;
 	journal.jprintf("$RESET All HP settings . . .\n");
 	uint16_t d = 0;
-	writeEEPROM_I2C(I2C_SETTING_EEPROM, (byte*)&d, sizeof(d));
+	const uint8_t status = writeEEPROM_I2C(I2C_SETTING_EEPROM, (byte*)&d, sizeof(d));
+	if(status) {
+		HP.set_Warning(ErrorCatalog::kSETTINGS_WRITE, "settings", status, "Не удалось сбросить настройки");
+		return AE_FAIL;
+	}
 	HP.sendCommand(pRESET);                             // контроллер перезагрузится с заводскими настройками
 	api_put(o, "\"ok\"");
 	return AE_OK;
@@ -1229,6 +1234,8 @@ static int apiAct_profile_save(ApiOut *o, const char *p)
 {
 	int n = api_slot_arg(p);
 	if(n < 0) return AE_BAD_VALUE;
+	SettingsLock lock(HP.saving);
+	if(!lock) return AE_BUSY;
 	int16_t r = HP.Prof.save(n);
 	if(r < 0) return AE_FAIL;
 	api_put_int(o, r);
@@ -1239,6 +1246,8 @@ static int apiAct_profile_erase(ApiOut *o, const char *p)
 	int n = api_slot_arg(p);
 	if(n < 0) return AE_BAD_VALUE;
 	if(n == HP.Prof.get_idProfile() || HP.Schdlr.UsesProfile(n)) return AE_CONFLICT;   // текущий профиль или есть в расписании
+	SettingsLock lock(HP.saving);
+	if(!lock) return AE_BUSY;
 	int32_t r = HP.Prof.erase(n);
 	HP.Prof.update_list(HP.Prof.get_idProfile());
 	if(r < 0) return AE_FAIL;
@@ -1248,7 +1257,10 @@ static int apiAct_profile_erase(ApiOut *o, const char *p)
 static int apiAct_profile_copy(ApiOut *o, const char *p)
 {
 	if(p[0] < '0' || p[0] > '9' || p[1] != ':' || p[2] < '0' || p[2] > '9' || p[3]) return AE_BAD_VALUE;
+	SettingsLock lock(HP.saving);
+	if(!lock) return AE_BUSY;
 	int8_t r = HP.Prof.copy_slot(p[0] - '0', p[2] - '0');
+	if(r < -1) return AE_FAIL;
 	if(r < 0) return AE_BAD_VALUE;
 	if(r == 0) return AE_CONFLICT;                          // в текущий профиль копировать нельзя
 	api_put(o, "\"ok\"");
@@ -1268,8 +1280,16 @@ static int apiAct_profile_info(ApiOut *o, const char *p)
 static int apiAct_dbg_default(ApiOut *o, const char *) { dbgFlags = Dbg_Defaults(); api_put(o, "\"ok\""); return AE_OK; }   // все флаги в рабочий набор
 // Расписание: очистка календарей, чтение из EEPROM и запись только расписания (общее сохранение - save.all)
 static int apiAct_schedule_clear(ApiOut *o, const char *) { HP.Schdlr.web_set_param((char*) "Clear", (char*) ""); api_put(o, "\"ok\""); return AE_OK; }
-static int apiAct_schedule_load(ApiOut *o, const char *) { int16_t r = HP.Schdlr.load(); if(r < 0) return AE_FAIL; api_put_int(o, r); return AE_OK; }
-static int apiAct_save_schedule(ApiOut *o, const char *) { int8_t r = HP.Schdlr.save(); if(r < 0) return AE_FAIL; api_put_int(o, r); return AE_OK; }
+static int apiAct_schedule_load(ApiOut *o, const char *)
+{
+	SettingsLock lock(HP.saving);
+	if(!lock) return AE_BUSY;
+	const int16_t result = HP.Schdlr.load();
+	if(result < 0) return AE_FAIL;
+	api_put_int(o, result);
+	return AE_OK;
+}
+static int apiAct_save_schedule(ApiOut *o, const char *) { int8_t r = HP.Schdlr.save(); if(r == ERR_I2C_BUSY) return AE_BUSY; if(r < 0) return AE_FAIL; api_put_int(o, r); return AE_OK; }
 static int apiAct_chart_clear(ApiOut *o, const char *) { HP.clearChart(); api_put(o, "\"ok\""); return AE_OK; }   // сбросить ряды в ОЗУ
 // Статистика и подготовка к обновлению: счётчики, статистика, история на SD
 static int api_save_stats(ApiOut *o)
@@ -1333,8 +1353,8 @@ static int apiAct_spi_test(ApiOut *o, const char *)
 	api_putc(o, '}');
 	return AE_OK;
 }
-static int apiAct_reset_counters(ApiOut *o, const char *) { journal.jprintf("$RESET Season Counters. . .\n"); HP.resetCount(false); api_put(o, "\"ok\""); return AE_OK; }
-static int apiAct_reset_counters_all(ApiOut *o, const char *) { journal.jprintf("$RESET All Counters. . .\n"); HP.resetCount(true); api_put(o, "\"ok\""); return AE_OK; }
+static int apiAct_reset_counters(ApiOut *o, const char *) { journal.jprintf("$RESET Season Counters. . .\n"); if(HP.resetCount(false) != OK) return AE_FAIL; api_put(o, "\"ok\""); return AE_OK; }
+static int apiAct_reset_counters_all(ApiOut *o, const char *) { journal.jprintf("$RESET All Counters. . .\n"); if(HP.resetCount(true) != OK) return AE_FAIL; api_put(o, "\"ok\""); return AE_OK; }
 static int apiAct_wdt_reset(ApiOut *o, const char *)       // обнулить замеры наблюдателя; таблицу замеров читают отдельно (sys.wdt)
 {
 	if(o->cap - o->len < 1024) return AE_TOO_BIG;

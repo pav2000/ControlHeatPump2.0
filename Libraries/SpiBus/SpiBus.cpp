@@ -64,16 +64,21 @@ static inline void dmac_channel_disable(uint32_t ch) { DMAC->DMAC_CHDR = DMAC_CH
 static inline void dmac_channel_enable(uint32_t ch) { DMAC->DMAC_CHER = DMAC_CHER_ENA0 << ch; }
 static inline bool dmac_channel_transfer_done(uint32_t ch) { return (DMAC->DMAC_CHSR & (DMAC_CHSR_ENA0 << ch)) ? false : true; }
 
-static bool spi_wait_status(uint32_t mask)
+static bool spi_wait_status(uint32_t mask, uint32_t *observed = nullptr)
 {
 	const uint32_t started = millis();
-	while((SPI0->SPI_SR & mask) == 0) {
+	for(;;) {
+		const uint32_t status = SPI0->SPI_SR;
+		if(observed) *observed |= status;
+		if(status & mask) return true;
 		if(millis() - started > SPIBUS_DMA_TIMEOUT) {
+			const uint32_t last = SPI0->SPI_SR;
+			if(observed) *observed |= last;
+			if(last & mask) return true;
 			spiBusStat.busTimeouts++;
 			return false;
 		}
 	}
-	return true;
 }
 
 // Запуск приёма SPI -> память
@@ -180,43 +185,53 @@ uint8_t spiBusScbr(SpiDev d)
 	return spiDev[d].port ? (spiDev[d].csr & SPI_CSR_SCBR_Msk) >> SPI_CSR_SCBR_Pos : 0;
 }
 
-uint8_t spiBusXfer(uint8_t b)
+uint8_t spiBusXfer(uint8_t b, uint8_t *received)
 {
 	Spi *pSpi = SPI0;
 	pSpi->SPI_TDR = b;
-	return spi_wait_status(SPI_SR_RDRF) ? pSpi->SPI_RDR : 0;
+	uint32_t observed = 0;
+	const bool ready = spi_wait_status(SPI_SR_RDRF, &observed);
+	const uint8_t data = ready ? pSpi->SPI_RDR : 0;
+	uint8_t status = ready ? SPIBUS_OK : SPIBUS_TIMEOUT;
+	if(observed & SPI_SR_OVRES) {
+		status |= SPIBUS_OVERRUN;
+		spiBusStat.dmaOverruns++;
+	}
+	if(status == SPIBUS_OK && received) *received = data;
+	return status;
 }
 
-void spiBusSend(const uint8_t *buf, size_t n)
+uint8_t spiBusSend(const uint8_t *buf, size_t n)
 {
+	if(!n) return SPIBUS_OK;
 	Spi *pSpi = SPI0;
 	if(spiBusUseDma(buf, n)) {
 		while(n) {
 			const uint16_t k = n > SPIBUS_DMA_MAX ? SPIBUS_DMA_MAX : n;
 			spiDmaTX(buf, k);
 			const uint32_t started = millis();
-			bool timedOut = false;
 			while(!dmac_channel_transfer_done(SPI_DMAC_TX_CH)) {
 				if(millis() - started > SPIBUS_DMA_TIMEOUT) {
+					if(dmac_channel_transfer_done(SPI_DMAC_TX_CH)) { spiBusStat.dmaLate++; break; }
 					dmac_channel_disable(SPI_DMAC_TX_CH);
 					spiBusStat.dmaTimeouts++;
-					timedOut = true;
-					break;
+					if(spi_wait_status(SPI_SR_TXEMPTY)) (void)pSpi->SPI_RDR;
+					return SPIBUS_TIMEOUT;
 				}
 			}
-			if(timedOut) break;
 			buf += k;
 			n -= k;
 		}
 	} else {   // короткий блок или константа во флеш-памяти МК (DMAC её не читает)
-		if(!spi_wait_status(SPI_SR_TXEMPTY)) return;
+		if(!spi_wait_status(SPI_SR_TXEMPTY)) return SPIBUS_TIMEOUT;
 		for(size_t i = 0; i < n; i++) {
 			pSpi->SPI_TDR = buf[i];
-			if(!spi_wait_status(SPI_SR_TDRE)) return;
+			if(!spi_wait_status(SPI_SR_TDRE)) return SPIBUS_TIMEOUT;
 		}
 	}
-	if(!spi_wait_status(SPI_SR_TXEMPTY)) return;
-	(void) pSpi->SPI_RDR;    // приёмник оставить пустым: следующий обмен читает только своё
+	if(!spi_wait_status(SPI_SR_TXEMPTY)) return SPIBUS_TIMEOUT;
+	(void)pSpi->SPI_RDR;
+	return SPIBUS_OK;
 }
 
 uint8_t spiBusRec(uint8_t *buf, size_t n)
@@ -224,9 +239,8 @@ uint8_t spiBusRec(uint8_t *buf, size_t n)
 	Spi *pSpi = SPI0;
 	if(!spiBusUseDma(buf, n)) {
 		for(size_t i = 0; i < n; i++) {
-			pSpi->SPI_TDR = 0xFF;
-			if(!spi_wait_status(SPI_SR_RDRF)) return SPIBUS_TIMEOUT;
-			buf[i] = pSpi->SPI_RDR;
+			const uint8_t status = spiBusXfer(0xFF, buf + i);
+			if(status != SPIBUS_OK) return status;
 		}
 		return SPIBUS_OK;
 	}

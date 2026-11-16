@@ -172,50 +172,46 @@ uint16_t Profile::cache_crc_of(const ProfileSlot &sl)
 //
 // Незаписанный слот в поток не попадает: иначе в скачиваемый settings.bin утекли бы
 // байты, лежавшие в его ячейках.
-bool Profile::region_is_new(void)
+int8_t Profile::region_format(void)
 {
-	uint8_t hdr[2];
-	if(readEEPROM_I2C(I2C_PROFILE_EEPROM, hdr, sizeof(hdr))) return false;
-	return rec_hdr_tag(hdr) == NTAG_Profile;
+	uint8_t hdr[REC_HDR_SIZE];
+	if(readEEPROM_I2C(I2C_PROFILE_EEPROM, hdr, sizeof(hdr))) return ERR_LOAD_PROFILE;
+	const uint16_t tag = rec_hdr_tag(hdr);
+	if(tag == NTAG_Profile || tag == NTAG_END) return 1;
+	if(hdr[0] == 0xaa || hdr[0] == PROFILE_EMPTY || hdr[0] == 0xff) return 0;
+	return ERR_BAD_LEN_PROFILE;
 }
 
-// Длина области профилей на носителе. В старом формате это массив слотов
-// подряд, в новом - только занятые, поэтому выгрузка после конверсии
-// становится короче ровно на незаписанные слоты. Их содержимое и утекало
-// в settings.bin.
-//
-// Для старой раскладки берётся I2C_PROFIL_NUM_LEGACY, а не I2C_PROFIL_NUM:
-// число слотов на носителе задано тем, чем его записали, и сокращение числа
-// профилей его не меняет. По новой константе область обрезалась бы вдвое.
-uint16_t Profile::region_len(void)
+int32_t Profile::region_len(uint8_t version)
 {
-	if(!region_is_new()) return get_sizeProfile() * I2C_PROFIL_NUM_LEGACY;
-	// Длина считается по САМОМУ носителю, а не по числу занятых слотов кеша.
-	// Кеш и область совпадают не всегда: после неудачного чтения кеш пуст, а
-	// в области лежит поток. Считать по кешу значило бы обрезать выгрузку
-	// посреди записи и выдать испорченный settings.bin.
-	uint32_t addr = I2C_PROFILE_EEPROM;
-	uint8_t  hdr[REC_HDR_SIZE];
-	while(addr < I2C_SCHEDULER_EEPROM) {
-		if(readEEPROM_I2C(addr, hdr, sizeof(hdr))) break;
-		if(rec_hdr_tag(hdr) != NTAG_Profile) break;         // NTAG_END или мусор
-		addr += REC_HDR_SIZE + rec_hdr_len(hdr);
-	}
-	return addr - I2C_PROFILE_EEPROM + REC_HDR_SIZE + sizeof(uint16_t);  // плюс END и сумма
+	const int8_t format = region_format();
+	if(format < 0) return format;
+	if(format) return scan_region(nullptr);
+	LegacyProfileSizes sz;
+	const int32_t stride = legacy_profile_sizes(version, &sz, sizeof(magic) + sizeof(crc16))
+	                       ? sz.total : get_sizeProfile();
+	const int32_t size = stride * I2C_PROFIL_NUM_LEGACY;
+	return size > 0 && size <= I2C_SCHEDULER_EEPROM - I2C_PROFILE_EEPROM ? size : ERR_BAD_LEN_PROFILE;
 }
 
 int16_t Profile::save_region(void)
 {
+	if(cache_load_error != OK) {
+		HP.set_Warning(ErrorCatalog::kPROFILE_WRITE, "profiles", -cache_load_error,
+		               "Кеш профилей не загружен полностью");
+		return cache_load_error;
+	}
+	if(cache_verify()) {
+		HP.set_Warning(ErrorCatalog::kPROFILE_WRITE, "profiles", -ERR_CRC16_PROFILE,
+		               "Контрольная сумма кеша профилей не совпала");
+		return ERR_CRC16_PROFILE;
+	}
 	uint32_t addr = I2C_PROFILE_EEPROM;
 	uint16_t crc = 0xFFFF;
 	uint8_t  hdr[REC_HDR_SIZE + 1];                  // заголовок и номер слота
 	uint8_t  written = 0;
 	for(uint8_t i = 0; i < I2C_PROFIL_NUM; i++) {
 		if(cache_magic[i] != 0xaa) continue;         // незаписанный слот пропускается
-		if(cache_crc_of(cache[i]) != cache_crc[i]) { // содержимое изменилось мимо cache_store
-			journal.jprintf(" Profile #%d: RAM corrupted, not saved!\n", i);
-			continue;                                // писать испорченное в EEPROM нельзя
-		}
 		rec_hdr_put(hdr, NTAG_Profile, 1 + sizeof(ProfileSlot));
 		hdr[REC_HDR_SIZE] = i;
 		if(writeEEPROM_I2C(addr, hdr, sizeof(hdr))) goto xErr;
@@ -240,63 +236,43 @@ xErr:
 	return ERR_SAVE_PROFILE;
 }
 
-int8_t Profile::load_region(void)
+int32_t Profile::scan_region(uint8_t *loaded)
 {
 	uint32_t addr = I2C_PROFILE_EEPROM;
 	uint16_t crc = 0xFFFF;
-	uint8_t  hdr[REC_HDR_SIZE + 1];
-	uint8_t  used = 0;
-	for(uint8_t i = 0; i < I2C_PROFIL_NUM; i++) { cache_magic[i] = PROFILE_EMPTY; cache_crc[i] = 0; }
-	while(addr < I2C_SCHEDULER_EEPROM) {
-		if(readEEPROM_I2C(addr, hdr, REC_HDR_SIZE)) goto xErr;
-		uint16_t tag = rec_hdr_tag(hdr), len = rec_hdr_len(hdr);
+	uint8_t seen[I2C_PROFIL_NUM]{};
+	uint8_t hdr[REC_HDR_SIZE + 1];
+	while(I2C_SCHEDULER_EEPROM - addr >= REC_HDR_SIZE + sizeof(uint16_t)) {
+		if(readEEPROM_I2C(addr, hdr, REC_HDR_SIZE)) return ERR_LOAD_PROFILE;
+		const uint16_t tag = rec_hdr_tag(hdr), len = rec_hdr_len(hdr);
+		addr += REC_HDR_SIZE;
 		if(tag == NTAG_END) {
-			crc = calc_crc16(hdr, REC_HDR_SIZE, crc);
-			addr += REC_HDR_SIZE;
-			uint16_t stored;
-			if(readEEPROM_I2C(addr, (uint8_t*)&stored, sizeof(stored))) goto xErr;
-			if(crc != stored) {
-				journal.jprintf(" Profiles: crc %04x != %04x!\n", crc, stored);
-				for(uint8_t i = 0; i < I2C_PROFIL_NUM; i++) cache_magic[i] = PROFILE_EMPTY;
-				return err = ERR_CRC16_PROFILE;
+			if(len != 0) return ERR_BAD_LEN_PROFILE;
+			// Для пустой области CRC подтверждает формат, даже если нужна лишь длина.
+			if(loaded || addr == I2C_PROFILE_EEPROM + REC_HDR_SIZE) {
+				uint16_t stored;
+				if(readEEPROM_I2C(addr, (uint8_t*)&stored, sizeof(stored))) return ERR_LOAD_PROFILE;
+				if(calc_crc16(hdr, REC_HDR_SIZE, crc) != stored) return ERR_CRC16_PROFILE;
 			}
-			journal.jprintf(" Profiles loaded: %d, crc: %04x\n", used, crc);
-			return OK;
+			return addr - I2C_PROFILE_EEPROM + sizeof(uint16_t);
 		}
-		if(tag != NTAG_Profile) goto xErr;                                     // поток испорчен
-		if(len != 1 + sizeof(ProfileSlot)) {                                  // другая раскладка слота (запись другой прошивки)
-			journal.jprintf(" Profile record len %d, expected %d\n", len, (int)(1 + sizeof(ProfileSlot)));
-			for(uint8_t i = 0; i < I2C_PROFIL_NUM; i++) cache_magic[i] = PROFILE_EMPTY;   // с чужой раскладкой слоты не берём
-			set_Error(ERR_BAD_LEN_PROFILE, (char*)nameHeatPump);
-			return err = ERR_BAD_LEN_PROFILE;
+		if(tag != NTAG_Profile || len != 1 + sizeof(ProfileSlot) ||
+		   len + REC_HDR_SIZE + sizeof(uint16_t) > I2C_SCHEDULER_EEPROM - addr)
+			return ERR_BAD_LEN_PROFILE;
+		uint8_t &slot = hdr[REC_HDR_SIZE];
+		if(readEEPROM_I2C(addr, &slot, 1)) return ERR_LOAD_PROFILE;
+		if(slot >= I2C_PROFIL_NUM || seen[slot]) return ERR_BAD_LEN_PROFILE;
+		seen[slot] = 1;
+		if(loaded) {
+			if(readEEPROM_I2C(addr + 1, (uint8_t*)&cache[slot], sizeof(ProfileSlot))) return ERR_LOAD_PROFILE;
+			crc = calc_crc16(hdr, sizeof(hdr), crc);
+			crc = calc_crc16((uint8_t*)&cache[slot], sizeof(ProfileSlot), crc);
+			cache_crc[slot] = cache_crc_of(cache[slot]);
+			loaded[slot] = 0xaa;
 		}
-		if(readEEPROM_I2C(addr + REC_HDR_SIZE, hdr + REC_HDR_SIZE, 1)) goto xErr;
-		crc = calc_crc16(hdr, sizeof(hdr), crc);
-		uint8_t n = hdr[REC_HDR_SIZE];
-		addr += sizeof(hdr);
-		if(n >= I2C_PROFIL_NUM) {
-			// Область записана прошивкой, где профилей было больше. Отбрасывать
-			// такие слоты здесь незачем: формат 150 существует только на стенде,
-			// в поле его нет, и конверсия 150 -> 150 никому не нужна. Пусть это
-			// будет отказом чтения (решение владельца).
-			//
-			// Отбрасывание старших слотов работает на переходе 147 -> 150:
-			// старые читатели берут первые I2C_PROFIL_NUM слотов, и первое же
-			// сохранение записывает область уже в сокращённом виде.
-			journal.jprintf(" Profile slot #%d >= %d, area written by older build\n",
-			                n, (int)I2C_PROFIL_NUM);
-			goto xErr;
-		}
-		if(readEEPROM_I2C(addr, (uint8_t*)&cache[n], sizeof(ProfileSlot))) goto xErr;
-		crc = calc_crc16((uint8_t*)&cache[n], sizeof(ProfileSlot), crc);
-		addr += sizeof(ProfileSlot);
-		cache_magic[n] = 0xaa;
-		cache_crc[n] = cache_crc_of(cache[n]);
-		used++;
+		addr += len;
 	}
-xErr:
-	set_Error(ERR_LOAD_PROFILE, (char*)nameHeatPump);
-	return err = ERR_LOAD_PROFILE;
+	return ERR_BAD_LEN_PROFILE;
 }
 
 // Сделать слот кеша текущим профилем. Заменяет чтение из EEPROM: после
@@ -328,6 +304,7 @@ uint8_t Profile::cache_copy(int8_t num)
 
 int8_t Profile::cache_activate(int8_t num)
 {
+	if(cache_load_error != OK) return err = cache_load_error;
 	if(num < 0 || num >= I2C_PROFIL_NUM) return err = ERR_LOAD_PROFILE;
 	uint8_t suspended = TaskSuspendAll();   // 1, только если планировщик работает
 	uint8_t r = cache_copy(num);
@@ -342,12 +319,36 @@ int8_t Profile::cache_activate(int8_t num)
 // Прочитать все слоты из EEPROM в кеш. Читается по одному блоку, как это
 // делает load(), - общий буфер здесь не используется намеренно: он занят
 // ответом веб-запроса всякий раз, когда сохранение идёт из морды.
+void Profile::invalidate_cache(int8_t cause)
+{
+	cache_load_error = cause;
+	memset(cache_magic, PROFILE_EMPTY, sizeof(cache_magic));
+}
+
 int8_t Profile::cache_load_all(void)
 {
-	if(region_is_new()) return load_region();    // область опознаёт себя сама
-	LegacyProfileSizes sz;
-	if(legacy_profile_sizes(HP.Option.ver, &sz, sizeof(magic) + sizeof(crc16)))
-		return cache_load_legacy(sz);            // формат старше 147
+	invalidate_cache(ERR_LOAD_PROFILE);
+	uint8_t loaded[I2C_PROFIL_NUM];
+	memset(loaded, PROFILE_EMPTY, sizeof(loaded));
+	int32_t result = region_format();
+	if(result > 0) {
+		result = scan_region(loaded);
+	} else if(result == 0) {
+		LegacyProfileSizes sz;
+		result = legacy_profile_sizes(HP.Option.ver, &sz, sizeof(magic) + sizeof(crc16))
+		         ? cache_load_legacy(sz, loaded) : cache_load_fixed(loaded);
+	}
+	if(result < 0) {
+		journal.jprintf(" Profiles: load failed (%d)\n", (int)result);
+		return cache_load_error = result;
+	}
+	memcpy(cache_magic, loaded, sizeof(cache_magic));
+	cache_load_error = OK;
+	return OK;
+}
+
+int8_t Profile::cache_load_fixed(uint8_t *loaded)
+{
 	// Слоты 5..9 старой раскладки сюда не попадают: цикл идёт до нового
 	// I2C_PROFIL_NUM. Так и задумано - число профилей сокращено, старшие
 	// отбрасываются при конверсии. Шаг по носителю остаётся прежним, он
@@ -356,14 +357,13 @@ int8_t Profile::cache_load_all(void)
 	for(uint8_t i = 0; i < I2C_PROFIL_NUM; i++) {
 		int32_t adr = I2C_PROFILE_EEPROM + (int32_t)get_sizeProfile() * i;
 		uint8_t m = PROFILE_EMPTY;
-		if(readEEPROM_I2C(adr, &m, sizeof(m))) { set_Error(ERR_LOAD_PROFILE, (char*)nameHeatPump); return ERR_LOAD_PROFILE; }
-		cache_magic[i] = m;
+		if(readEEPROM_I2C(adr, &m, sizeof(m))) return ERR_LOAD_PROFILE;
 		memset(&cache[i], 0, sizeof(cache[i]));
 		cache_crc[i] = 0;
 		if(m != 0xaa) continue;                       // слот не использован - читать нечего
 		adr += sizeof(magic);
 		uint16_t stored;
-		if(readEEPROM_I2C(adr, (uint8_t*)&stored, sizeof(stored))) { set_Error(ERR_LOAD_PROFILE, (char*)nameHeatPump); return ERR_LOAD_PROFILE; }
+		if(readEEPROM_I2C(adr, (uint8_t*)&stored, sizeof(stored))) return ERR_LOAD_PROFILE;
 		adr += sizeof(crc16);
 		ProfileSlot &sl = cache[i];
 		if(   readEEPROM_I2C(adr, (uint8_t*)&sl.dataProfile, sizeof(sl.dataProfile))
@@ -372,15 +372,13 @@ int8_t Profile::cache_load_all(void)
 		   || readEEPROM_I2C(adr += sizeof(sl.Cool), (uint8_t*)&sl.Heat, sizeof(sl.Heat))
 		   || readEEPROM_I2C(adr += sizeof(sl.Heat), (uint8_t*)&sl.Boiler, sizeof(sl.Boiler))
 		   || readEEPROM_I2C(adr += sizeof(sl.Boiler), (uint8_t*)&sl.DailySwitch, sizeof(sl.DailySwitch))) {
-			set_Error(ERR_LOAD_PROFILE, (char*)nameHeatPump);
 			return ERR_LOAD_PROFILE;
 		}
 		used++;
 		cache_crc[i] = stored;
 		if(cache_crc_of(sl) != stored) {              // слот в EEPROM испорчен
-			cache_magic[i] = PROFILE_EMPTY;           // не давать писать его обратно
 			bad++;
-		}
+		} else loaded[i] = 0xaa;
 	}
 	journal.jprintf(" Profiles cached: %d used, %d bad, slots %d..%d dropped\n",
 	                used, bad, (int)I2C_PROFIL_NUM, (int)I2C_PROFIL_NUM_LEGACY - 1);
@@ -394,22 +392,21 @@ int8_t Profile::cache_load_all(void)
 //
 // Слоты читаются по одному, без общего буфера: cache_load_all вызывается и
 // после восстановления настроек из файла, а там Socket[0].outBuf занят.
-int8_t Profile::cache_load_legacy(const LegacyProfileSizes &sz)
+int8_t Profile::cache_load_legacy(const LegacyProfileSizes &sz, uint8_t *loaded)
 {
 	uint8_t tmp[128];                       // самый длинный старый блок - 120 байт
 	uint8_t used = 0, bad = 0;
 	// Как и в ветке 147: читаются первые I2C_PROFIL_NUM слотов, старшие
 	// отбрасываются. Шаг по носителю - sz.total, от числа слотов не зависит.
 	for(uint8_t i = 0; i < I2C_PROFIL_NUM; i++) {
-		cache_magic[i] = PROFILE_EMPTY;
 		cache_crc[i] = 0;
 		memset(&cache[i], 0, sizeof(cache[i]));
 		uint32_t adr = I2C_PROFILE_EEPROM + (uint32_t)sz.total * i;
 		uint8_t m;
-		if(readEEPROM_I2C(adr, &m, sizeof(m))) return err = ERR_LOAD_PROFILE;
+		if(readEEPROM_I2C(adr, &m, sizeof(m))) return ERR_LOAD_PROFILE;
 		if(m != 0xaa) continue;             // слот не записан
 		uint16_t stored;
-		if(readEEPROM_I2C(adr + sizeof(magic), (uint8_t*)&stored, sizeof(stored))) return err = ERR_LOAD_PROFILE;
+		if(readEEPROM_I2C(adr + sizeof(magic), (uint8_t*)&stored, sizeof(stored))) return ERR_LOAD_PROFILE;
 		adr += sizeof(magic) + sizeof(crc16);
 
 		struct { uint16_t had; uint8_t *to; uint16_t want; } blk[] = {
@@ -426,13 +423,13 @@ int8_t Profile::cache_load_legacy(const LegacyProfileSizes &sz)
 			uint16_t n = blk[b].had;
 			if(n == 0) continue;            // в той версии поля не было
 			if(n > sizeof(tmp)) { ok = false; break; }
-			if(readEEPROM_I2C(adr, tmp, n)) return err = ERR_LOAD_PROFILE;
+			if(readEEPROM_I2C(adr, tmp, n)) return ERR_LOAD_PROFILE;
 			crc = calc_crc16(tmp, n, crc);  // сумма считается по СТАРОЙ раскладке
 			memcpy(blk[b].to, tmp, n <= blk[b].want ? n : blk[b].want);
 			adr += n;
 		}
 		if(!ok || crc != stored) { bad++; continue; }   // слот испорчен - не берём
-		cache_magic[i] = 0xaa;
+		loaded[i] = 0xaa;
 		cache_crc[i] = cache_crc_of(cache[i]);          // сумма уже по НОВОЙ раскладке
 		used++;
 	}
@@ -444,6 +441,7 @@ int8_t Profile::cache_load_legacy(const LegacyProfileSizes &sz)
 // профиля в EEPROM, чтобы кеш не разошёлся с носителем.
 void Profile::cache_store(int8_t num)
 {
+	if(cache_load_error != OK) return;
 	if(num < 0 || num >= I2C_PROFIL_NUM) return;
 	ProfileSlot &sl = cache[num];
 	memcpy(&sl.dataProfile, &dataProfile, sizeof(sl.dataProfile));
@@ -635,6 +633,7 @@ boolean Profile::set_slot_meta(int8_t num, const char *field, char *val, bool de
 // src == dst), -1 - исходный слот пуст или номер неверный.
 int8_t Profile::copy_slot(int8_t src, int8_t dst)
 {
+	if(cache_load_error != OK) return cache_load_error;
 	if(src < 0 || src >= I2C_PROFIL_NUM || dst < 0 || dst >= I2C_PROFIL_NUM) return -1;
 	if(dst == dataProfile.id || src == dst) return 0;
 	if(src == dataProfile.id) cache_store(dst);                    // источник - живой текущий профиль
@@ -677,8 +676,10 @@ int32_t Profile::erase(int8_t num)
    // Отдельный слот в потоке не стереть: освобождаем его в кеше и
    // переписываем область целиком. Освобождённый слот в поток не попадёт.
    if (num<0 || num>=I2C_PROFIL_NUM) return ERR_SAVE_PROFILE;
+   const uint8_t previous = cache_magic[num];
    cache_magic[num] = PROFILE_EMPTY;
    int16_t ret = save_region();
+   if(ret < 0) cache_magic[num] = previous;
    return ret > 0 ? dataProfile.len : ret;
 }
 
@@ -960,6 +961,8 @@ static int api_set_slot(uint8_t hook, uint8_t dev, const char *val)
 {
 	static const char *const field[] = { 0, prof_NAME_PROFILE, prof_NOTE_PROFILE, prof_ENABLE_PROFILE };
 	if(hook < SL_NAME || hook > SL_EN) return AE_FAIL;
+	SettingsLock lock(HP.saving);
+	if(!lock) return AE_BUSY;
 	if(hook == SL_NAME && strlen(val) >= LEN_PROFILE_NAME) return AE_RANGE;
 	if(hook == SL_NOTE && strlen(val) >= 85) return AE_RANGE;
 	if(hook == SL_EN) {                                 // set_slot_meta принимает флаг строкой "0"/"1"

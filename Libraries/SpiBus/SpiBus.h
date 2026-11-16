@@ -12,9 +12,9 @@
 
 enum SpiDev : uint8_t { SPIDEV_NET, SPIDEV_SD, SPIDEV_FLASH, SPIDEV_NUM };
 
-// Коды spiBusRec(), можно складывать
+// Коды операций SPI, можно складывать
 #define SPIBUS_OK       0
-#define SPIBUS_OVERRUN  1    // переполнение приёмника SPI при чтении по DMA
+#define SPIBUS_OVERRUN  1    // переполнение приёмника SPI при чтении
 #define SPIBUS_TIMEOUT  2    // DMA не закончил за SPIBUS_DMA_TIMEOUT мс: в буфере мусор
 
 #define SPIBUS_DMA_MIN     16      // блоки короче - опросом: настройка двух каналов DMAC (1-2 мкс) дороже самой передачи
@@ -30,16 +30,24 @@ void    spiBusSelect(SpiDev d);                               // настрой�
 void    spiBusDeselect(SpiDev d);                             // CS вверх
 void    spiBusDeselectAll();                                  // CS вверх у всех настроенных устройств (бывшие SPI_switch*())
 uint8_t spiBusScbr(SpiDev d);                                 // текущий делитель устройства (SCK = 84 МГц / делитель), 0 - не настроено
-uint8_t spiBusXfer(uint8_t b);                                // один байт опросом, возвращает принятый
-void    spiBusSend(const uint8_t *buf, size_t n);             // передать (принятое отбрасывается)
+// При отказе принятый байт не меняется. nullptr означает отбросить принятый байт.
+uint8_t spiBusXfer(uint8_t b, uint8_t *received);
+// Старый контракт W5500 и SdFat до передачи статуса в их интерфейсы.
+inline uint8_t spiBusXfer(uint8_t b)
+{
+	uint8_t received = 0;
+	spiBusXfer(b, &received);
+	return received;
+}
+uint8_t spiBusSend(const uint8_t *buf, size_t n);             // SPIBUS_OK / TIMEOUT; принятые байты отбрасываются
 uint8_t spiBusRec(uint8_t *buf, size_t n);                    // принять, передавая 0xFF; SPIBUS_OK / OVERRUN / TIMEOUT
 bool    spiBusUseDma(const void *buf, size_t n);              // выбор способа: DMA только для блока от SPIBUS_DMA_MIN байт в ОЗУ
 uint32_t spiBusCsr(uint8_t scbr);                             // значение CSR канала для делителя: режим 0, 8 бит, без DLYBCT/DLYBS
 
 struct SpiBusStat {
-	volatile uint32_t dmaTimeouts;   // порций, принятых по DMA с таймаутом
-	volatile uint32_t dmaOverruns;   // переполнений приёмника при чтении по DMA
-	volatile uint32_t dmaLate;       // приём по DMA закончился, пока поток был вытеснен дольше таймаута (не ошибка, данные целы)
+	volatile uint32_t dmaTimeouts;   // порций DMA с таймаутом
+	volatile uint32_t dmaOverruns;   // переполнений приёмника при чтении
+	volatile uint32_t dmaLate;       // DMA закончился, пока поток был вытеснен дольше таймаута (не ошибка, данные целы)
 	volatile uint32_t busTimeouts;   // ожидание SPI/DMAC превысило SPIBUS_DMA_TIMEOUT мс
 };
 extern SpiBusStat spiBusStat;

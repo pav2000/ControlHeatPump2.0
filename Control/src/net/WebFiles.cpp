@@ -783,52 +783,65 @@ bool get_binEEPROM(uint8_t thread)
 	return true;
 }
 
-// Записать в клиента бинарный файл настроек
+// Готовит файл полностью до отправки HTTP 200, чтобы отказ чтения
+// или неверная длина секции не превращались в скачанный обрезанный файл.
+static int32_t read_binSettings(uint8_t *buffer, uint16_t capacity)
+{
+	SettingsLock lock(HP.saving);
+	if(!lock) return ERR_I2C_BUSY;
+	uint16_t size;
+	if(readEEPROM_I2C(I2C_SETTING_EEPROM, (byte*)&size, sizeof(size))) return ERR_LOAD_EEPROM;
+	if(size + sizeof(size) < NEW_OFS_VER + 1 + sizeof(uint16_t) ||
+	   !settings_len_ok(size, I2C_PROFILE_EEPROM - I2C_SETTING_EEPROM) ||
+	   !settings_len_ok(size, capacity)) return ERR_BAD_LEN_EEPROM;
+	const uint16_t settingsSize = size + sizeof(size);
+	memcpy(buffer, &size, sizeof(size));
+	if(readEEPROM_I2C(I2C_SETTING_EEPROM + sizeof(size), buffer + sizeof(size), size)) return ERR_LOAD_EEPROM;
+#ifdef LOAD_VERIFICATION
+	const uint16_t settingsCRC = calc_crc16(buffer + sizeof(size), size - sizeof(uint16_t));
+	if(settingsCRC != rec_hdr_tag(buffer + settingsSize - sizeof(uint16_t))) return ERR_CRC16_EEPROM;
+#endif
+	const uint8_t version = buffer[NEW_OFS_VER];
+	const int32_t profilesSize = HP.Prof.region_len(version);
+	if(profilesSize <= 0) return profilesSize < 0 ? profilesSize : ERR_BAD_LEN_PROFILE;
+	const uint32_t scheduleOffset = settingsSize + profilesSize;
+	const uint16_t scheduleCapacity = HP.Schdlr.get_data_size() + sizeof(uint16_t);
+	if(scheduleOffset + scheduleCapacity > capacity) return ERR_BAD_LEN_EEPROM;
+
+	uint8_t *profiles = buffer + settingsSize;
+	if(readEEPROM_I2C(I2C_PROFILE_EEPROM, profiles, profilesSize)) return ERR_LOAD_PROFILE;
+	const uint16_t tag = rec_hdr_tag(profiles);
+	if(tag == NTAG_Profile || tag == NTAG_END) {
+		const uint16_t content = profilesSize - sizeof(uint16_t);
+		if(calc_crc16(profiles, content) != rec_hdr_tag(profiles + content)) return ERR_CRC16_PROFILE;
+	}
+	const int16_t scheduleSize = HP.Schdlr.load(buffer + scheduleOffset, version);
+	if(scheduleSize < 0) return scheduleSize;
+	if(scheduleSize != scheduleCapacity) return ERR_BAD_LEN_EEPROM;
+	return scheduleOffset + scheduleSize;
+}
+
 bool get_binSettings(uint8_t thread)
 {
-	int len;
-	// 1. Заголовок
-    strcpy(Socket[thread].outBuf, WEB_HEADER_OK_CT);
-    strcat(Socket[thread].outBuf, WEB_HEADER_BIN_ATTACH);
-    strcat(Socket[thread].outBuf, "settings.bin\"\r\n\r\n");
-	strcat(Socket[thread].outBuf, "Ver. "); // Записать номер версии в которой делалось сохранение
-    strcat(Socket[thread].outBuf, VERSION);
-    strcat(Socket[thread].outBuf, " ");
-    // Сюда можно запихивать текстовую информацию, при чтении бинарных данных она будет игнорироваться
-    strcat(Socket[thread].outBuf, HEADER_BIN); // Заголовок по которому определяется начало "бинарных данных"
-    len = strlen(Socket[thread].outBuf);
-    if(sendPacketRTOS(thread, (byte*)Socket[thread].outBuf, len) != len) return 0;
-
-	// 2. Запись настроек ТН
-    uint16_t *size = (uint16_t *)Socket[thread].outBuf;
-	if(readEEPROM_I2C(I2C_SETTING_EEPROM, (byte*)size, sizeof(*size))) {
-		journal.jprintf("Error read EEPROM at 0x%X\n", I2C_SETTING_EEPROM);
-		return 0;
+	char *buffer = Socket[thread].outBuf;
+	strcpy(buffer, WEB_HEADER_OK_CT);
+	strcat(buffer, WEB_HEADER_BIN_ATTACH);
+	strcat(buffer, "settings.bin\"\r\n\r\nVer. ");
+	strcat(buffer, VERSION);
+	strcat(buffer, " ");
+	strcat(buffer, HEADER_BIN);
+	const uint16_t headerSize = strlen(buffer);
+	const int32_t dataSize = read_binSettings((uint8_t*)buffer + headerSize,
+	                                         sizeof(Socket[thread].outBuf) - headerSize);
+	if(dataSize < 0) {
+		journal.jprintf(" Settings export failed (%d)\n", (int)dataSize);
+		static const char busy[] = "HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+		static const char failed[] = "HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+		sendConstRTOS(thread, dataSize == ERR_I2C_BUSY ? busy : failed);
+		return false;
 	}
-	len = *size;
-	if(len > W5200_MAX_LEN) return 0;
-	if(readEEPROM_I2C(I2C_SETTING_EEPROM + 2, (byte*)Socket[thread].outBuf + 2, len)) {
-		journal.jprintf("Error read EEPROM at 0x%X\n", I2C_SETTING_EEPROM);
-		return 0;
-	}
-	len += 2;
-	if(sendBufferRTOS(thread, (uint8_t*)Socket[thread].outBuf, len) != len) return 0; // передать пакет, при ошибке выйти
-	// 3. Запись всех профилей
-	len = HP.Prof.region_len();      // в новом формате незаписанные слоты в файл не попадают
-	if(len > (int)sizeof(Socket[thread].outBuf)) return 0;
-	if(readEEPROM_I2C(I2C_PROFILE_EEPROM, (byte*)Socket[thread].outBuf, len)) {
-		journal.jprintf("Error read EEPROM at 0x%X\n", I2C_PROFILE_EEPROM);
-		return 0;
-	}
-	if(sendBufferRTOS(thread, (uint8_t*)Socket[thread].outBuf, len) != len) return 0; // передать пакет, при ошибке выйти
-	
-    // 4. Расписание
-	if((len = HP.Schdlr.load((byte*) Socket[thread].outBuf)) <= 0) {
-		journal.jprintf("Error read EEPROM at 0x%X\n", I2C_SCHEDULER_EEPROM);
-		return 0;
-	}
-	if(sendBufferRTOS(thread, (uint8_t*)Socket[thread].outBuf, len) != len) return 0; // передать пакет, при ошибке выйти
-	return true;
+	const uint16_t total = headerSize + dataSize;
+	return sendBufferRTOS(thread, (uint8_t*)buffer, total) == total;
 }
 
 // Получить файл со графиками возвращает число отправленных байт

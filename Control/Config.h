@@ -53,6 +53,7 @@ constexpr int HEAP_LOW_BYTES = 4096;                // Предупрежден�
 constexpr int HEAP_RECOVER_BYTES = 6144;            // Восстановление при запасе от 6 КиБ.
 constexpr unsigned HEAP_LOW_CONFIRM_S = 60;        // Выдержка низкого запаса.
 constexpr unsigned HEAP_RECOVER_CONFIRM_S = 60;    // Выдержка восстановления.
+constexpr int HEAP_INTERRUPT_RESERVE_BYTES = 1024; // Резерв ниже MSP для вложенных прерываний.
 
 constexpr bool IO_BUS_WARN_ENABLED = true;          // Наблюдать устойчивые сбои SPI/DMA.
 constexpr unsigned IO_BUS_WINDOW_S = 60;            // Длительность окна наблюдения.
@@ -263,7 +264,7 @@ uint8_t SPI_RATE 	 = 2;	                                              // дел�
  //   CommandHP   150 / 138     ServiceHP   180 /  96
  //   Web0..3     230 / 132-144 UpdateEEV   100 /  34
  //   StepperEEV   40 /  22  - на стенде шаговик не движется, замер неполный
- #define STACK_vReadSensor     140             // Чтение датчиков
+ #define STACK_vReadSensor     256             // Чтение датчиков, включая диагностику Modbus и аварийный журнал.
  #define STACK_vServiceHP      180             // Сервисная задача
  // Было 150 при расходе 138, то есть запас 12 слов = 48 байт. Разбор очереди
  // команд уходит глубоко: pRESET изнутри делает штатный останов ТН и пишет

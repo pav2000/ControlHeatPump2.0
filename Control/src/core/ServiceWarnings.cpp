@@ -55,9 +55,7 @@ void ServiceWarningsPoll()
 	}
 	if(HEAP_LOW_WARN_ENABLED) {
 		static TimedWarning heap; // Эпизод малого запаса памяти.
-		const uint8_t suspended = TaskSuspendAll();
-		const int32_t bytes = freeRam() + static_cast<int32_t>(Diag.startRAM);
-		if(suspended) xTaskResumeAll();
+		const int bytes = freeHeapReserve();
 		if(heap.Update(now, bytes < HEAP_LOW_BYTES, bytes >= HEAP_RECOVER_BYTES,
 		               HEAP_LOW_CONFIRM_S, HEAP_RECOVER_CONFIRM_S)) {
 			char detail[64];
@@ -74,7 +72,7 @@ void ServiceWarningsPoll()
 			char detail[64];
 			m_snprintf(detail, sizeof(detail), "Повторные сбои:%s%s%s",
 			           reason & 1 ? " SPI timeout" : "", reason & 2 ? " DMA timeout" : "",
-			           reason & 4 ? " DMA overrun" : "");
+			           reason & 4 ? " SPI overrun" : "");
 			HP.set_Warning(ErrorCatalog::kIO_BUS, "SPI", reason, detail, true);
 		}
 	}

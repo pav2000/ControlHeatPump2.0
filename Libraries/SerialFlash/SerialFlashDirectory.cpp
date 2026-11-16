@@ -26,6 +26,7 @@
  */
 
 #include "SerialFlash.h"
+#include <string.h>
 
 /* On-chip SerialFlash file allocation data structures:
 
@@ -61,127 +62,184 @@ in the strings section.
 Strings are null terminated.  The remainder of the chip is file data.
 */
 
-#define DEFAULT_MAXFILES      300 //600
-#define DEFAULT_STRINGS_SIZE  12780 //25560
+namespace {
+using Status = SerialFlashStatus;
 
+constexpr uint32_t Signature = 0xFA96554C;
+constexpr uint16_t DefaultSlots = 300;
+constexpr uint32_t DefaultNamesSize = 12780;
+constexpr uint32_t HeaderSize = 8;
+constexpr uint32_t EntrySize = 10;
 
-static uint32_t check_signature(void)
+struct Directory {
+	uint16_t slots;
+	uint32_t names;
+	uint32_t data;
+
+	uint32_t hashAddress(uint16_t index) const { return HeaderSize + index * 2u; }
+	uint32_t entryAddress(uint16_t index) const { return hashAddress(slots) + index * EntrySize; }
+};
+
+struct Entry {
+	uint32_t address;
+	uint32_t size;
+	uint32_t name;
+};
+
+Status readDirectory(Directory &dir)
 {
-	uint32_t sig[2];
-
-	SerialFlash.read(0, sig, 8);
-	 //Serial.printf("sig: %08X %08X\n", sig[0], sig[1]);
-	if (sig[0] == 0xFA96554C) return sig[1];
-	if (sig[0] == 0xFFFFFFFF) {
-		sig[0] = 0xFA96554C;
-		sig[1] = ((uint32_t)(DEFAULT_STRINGS_SIZE/4) << 16) | DEFAULT_MAXFILES;
-		SerialFlash.write(0, sig, 8);
-		uint32_t tm = millis();
-		while (!SerialFlash.ready()) {
-			if(millis() - tm > 5000) return 0; // Timeout
-		}
-		SerialFlash.read(0, sig, 8);
-		if (sig[0] == 0xFA96554C) return sig[1];
+	uint32_t header[2];
+	if (SerialFlash.Capacity < HeaderSize) return Status::Corrupt;
+	if (!SerialFlash.read(0, header, sizeof(header))) return Status::Io;
+	if (header[0] == UINT32_MAX && header[1] == UINT32_MAX) {
+		const uint32_t initial[] = {Signature, ((DefaultNamesSize / 4) << 16) | DefaultSlots};
+		if (HeaderSize + DefaultSlots * 12u + DefaultNamesSize > SerialFlash.Capacity) return Status::Corrupt;
+		if (!SerialFlash.write(0, initial, sizeof(initial)) ||
+		    !SerialFlash.read(0, header, sizeof(header)) ||
+		    memcmp(header, initial, sizeof(header)) != 0) return Status::Io;
 	}
-	return 0;
+	if (header[0] != Signature) return Status::Corrupt;
+	dir.slots = header[1];
+	dir.names = dir.entryAddress(dir.slots);
+	const uint32_t namesSize = (header[1] >> 16) * 4;
+	dir.data = dir.names + namesSize;
+	if (!dir.slots || !namesSize || dir.data > SerialFlash.Capacity) return Status::Corrupt;
+	return Status::Ok;
 }
 
-static uint16_t filename_hash(const char *filename)
+uint16_t filenameHash(const char *filename)
 {
-	// http://isthe.com/chongo/tech/comp/fnv/
 	uint32_t hash = 2166136261;
-	const char *p;
-
-	for (p=filename; *p; p++) {
+	for (const char *p = filename; *p; ++p) {
 		hash ^= *p;
 		hash *= 16777619;
 	}
-	hash = (hash % (uint32_t)0xFFFE) + 1; // all values except 0000 & FFFF
-	return hash;
+	return (hash % 0xFFFEu) + 1; // 0 и 0xffff зарезервированы
 }
 
-static bool filename_compare(const char *filename, uint32_t straddr)
+Status readEntry(const Directory &dir, uint16_t index, Entry &entry)
 {
-	unsigned int i;
-	const char *p;
-	char buf[16];
+	if (index >= dir.slots) return Status::Corrupt;
+	uint32_t raw[3]{};
+	if (!SerialFlash.read(dir.entryAddress(index), raw, EntrySize)) return Status::Io;
+	entry = {raw[0], raw[1], dir.names + raw[2] * 4};
+	if (entry.address < dir.data || entry.address > SerialFlash.Capacity ||
+	    entry.size > SerialFlash.Capacity - entry.address || entry.name >= dir.data)
+		return Status::Corrupt;
+	return Status::Ok;
+}
 
-	p = filename;
-	while (1) {
-		SerialFlash.read(straddr, buf, sizeof(buf));
-		straddr += sizeof(buf);
-		for (i=0; i < sizeof(buf); i++) {
-			if (*p++ != buf[i]) return false;
-			if (buf[i] == 0) return true;
+// length включает завершающий ноль. При поиске по имени проверяем всю
+// строку, даже если часть букв уже не совпала с искомым именем.
+Status scanName(const Directory &dir, uint32_t addr, const char *expected, uint32_t &length)
+{
+	char buf[16];
+	length = 0;
+	bool matches = true;
+	while (addr < dir.data) {
+		uint32_t count = dir.data - addr;
+		if (count > sizeof(buf)) count = sizeof(buf);
+		if (!SerialFlash.read(addr, buf, count)) return Status::Io;
+		for (uint32_t i = 0; i < count; ++i) {
+			++length;
+			if (expected && matches && *expected++ != buf[i]) matches = false;
+			if (buf[i] == 0) return matches ? Status::Ok : Status::NotFound;
+		}
+		addr += count;
+	}
+	return Status::Corrupt;
+}
+
+// При отсутствии имени index указывает на первый свободный слот или конец.
+Status findEntry(const Directory &dir, const char *filename, uint16_t &index, Entry &entry)
+{
+	const uint16_t hash = filename ? filenameHash(filename) : 0;
+	uint16_t hashes[8];
+	index = 0;
+	while (index < dir.slots) {
+		uint16_t count = dir.slots - index;
+		if (count > 8) count = 8;
+		if (!SerialFlash.read(dir.hashAddress(index), hashes, count * sizeof(hashes[0]))) return Status::Io;
+		for (uint16_t i = 0; i < count; ++i, ++index) {
+			if (hashes[i] == UINT16_MAX) return Status::NotFound;
+			if (!filename || hashes[i] != hash) continue;
+			Status status = readEntry(dir, index, entry);
+			if (status != Status::Ok) return status;
+			uint32_t length;
+			status = scanName(dir, entry.name, filename, length);
+			if (status != Status::NotFound) return status;
 		}
 	}
+	return Status::NotFound;
 }
 
-#if 0
-void pbuf(const void *buf, uint32_t len)
+Status nextSpace(const Directory &dir, uint16_t index, uint32_t &address, uint32_t &name)
 {
-  const uint8_t *p = (const uint8_t *)buf;
-  do {
-    Serial.printf("%02X ", *p++);
-  } while (--len > 0);
-  Serial.println();
+	if (index >= dir.slots) return Status::Full;
+	address = dir.data;
+	name = dir.names;
+	if (!index) return Status::Ok;
+	Entry previous;
+	Status status = readEntry(dir, index - 1, previous);
+	if (status != Status::Ok) return status;
+	uint32_t length;
+	status = scanName(dir, previous.name, nullptr, length);
+	if (status != Status::Ok) return status;
+	address = previous.address + previous.size;
+	name = (previous.name + length + 3) & ~3u;
+	return Status::Ok;
 }
-#endif
 
-SerialFlashFile SerialFlashChip::open(const char *filename)
+bool alignUp(uint32_t &value, uint32_t align)
 {
-	uint32_t maxfiles, straddr;
-	uint16_t hash, hashtable[8];
-	uint32_t i, n, index=0;
-	uint32_t buf[3];
+	const uint32_t rem = value % align;
+	if (!rem) return true;
+	const uint32_t pad = align - rem;
+	if (pad > UINT32_MAX - value) return false;
+	value += pad;
+	return true;
+}
+
+Status checkErased(uint32_t address, uint32_t length)
+{
+	uint8_t data[16];
+	while (length) {
+		const uint32_t count = length < sizeof(data) ? length : sizeof(data);
+		if (!SerialFlash.read(address, data, count)) return Status::Io;
+		for (uint32_t i = 0; i < count; ++i)
+			if (data[i] != 0xff) return Status::Corrupt;
+		length -= count;
+		address += count;
+	}
+	return Status::Ok;
+}
+
+bool report(SerialFlashStatus *out, Status status)
+{
+	if (out) *out = status;
+	return status == Status::Ok;
+}
+} // namespace
+
+SerialFlashFile SerialFlashChip::open(const char *filename, SerialFlashStatus *out)
+{
 	SerialFlashFile file;
-
-	maxfiles = check_signature();
-	 //Serial.printf("sig: %08X\n", maxfiles);
-	if (!maxfiles) return file;
-	maxfiles &= 0xFFFF;
-	hash = filename_hash(filename);
-	 //Serial.printf("hash %04X for \"%s\"\n", hash, filename);
-	while (index < maxfiles) {
-		n = 8;
-		if (n > maxfiles - index) n = maxfiles - index;
-		SerialFlash.read(8 + index * 2, hashtable, n * 2);
-		 //Serial.printf(" read %u: ", 8 + index * 2);
-		 //pbuf(hashtable, n * 2);
-		for (i=0; i < n; i++) {
-			if (hashtable[i] == hash) {
-				 //Serial.printf("  hash match at index %u\n", index+i);
-				buf[2] = 0;
-				SerialFlash.read(8 + maxfiles * 2 + (index+i) * 10, buf, 10);
-
-				 //Serial.printf("  maxf=%d, index=%d, i=%d\n", maxfiles, index, i);
-				 //Serial.printf("  read %u: ", 8 + maxfiles * 2 + (index+i) * 10);
-				 //pbuf(buf, 10);
-				straddr = 8 + maxfiles * 12 + buf[2] * 4;
-				 //Serial.printf("  straddr = %u\n", straddr);
-				if (filename_compare(filename, straddr)) {
-					 //Serial.printf("  match!\n");
-					 //Serial.printf("  addr = %u\n", buf[0]);
-					 //Serial.printf("  len =  %u\n", buf[1]);
-					file.address = buf[0];
-					file.length = buf[1];
-					file.offset = 0;
-					file.dirindex = index + i;
-					return file;
-				}
-			} else if (hashtable[i] == 0xFFFF) {
-				return file;
-			}
-		}
-		index += n;
+	Directory dir;
+	Entry entry;
+	uint16_t index;
+	Status status = filename && *filename ? readDirectory(dir) : Status::Invalid;
+	if (status == Status::Ok) status = findEntry(dir, filename, index, entry);
+	if (report(out, status)) {
+		file.address = entry.address;
+		file.length = entry.size;
+		file.dirindex = index;
 	}
 	return file;
 }
 
 bool SerialFlashChip::exists(const char *filename)
 {
-	SerialFlashFile file = open(filename);
-	return (bool)file;
+	return (bool)open(filename);
 }
 
 bool SerialFlashChip::remove(const char *filename)
@@ -192,240 +250,125 @@ bool SerialFlashChip::remove(const char *filename)
 
 bool SerialFlashChip::remove(SerialFlashFile &file)
 {
-	// To "remove" a file, we simply zero its hash in the lookup
-	// table, so it can't be found by open().  The space on the
-	// flash memory is not freed.
 	if (!file) return false;
+	Directory dir;
+	Entry entry;
+	if (readDirectory(dir) != Status::Ok ||
+	    readEntry(dir, file.dirindex, entry) != Status::Ok ||
+	    entry.address != file.address || entry.size != file.length) return false;
+
+	const uint32_t addr = dir.hashAddress(file.dirindex);
 	uint16_t hash;
-	SerialFlash.read(8 + file.dirindex * 2, &hash, 2);
-	 //Serial.printf("remove hash %04X at %d index\n", hash, file.dirindex);
-	hash ^= 0xFFFF;  // write zeros to all ones
-	SerialFlash.write(8 + file.dirindex * 2, &hash, 2);
-	uint32_t tm = millis();
-	while (!SerialFlash.ready()) {
-		if(millis() - tm > 5000) return false; // Timeout
-	}
-	SerialFlash.read(8 + file.dirindex * 2, &hash, 2);
-	if (hash != 0)  {
-		 //Serial.printf("remove failed, hash %04X\n", hash);
-		return false;
-	}
-	file.address = 0;
-	file.length = 0;
+	if (!SerialFlash.read(addr, &hash, sizeof(hash)) || hash == UINT16_MAX) return false;
+	const uint16_t deleted = 0;
+	if (hash && (!SerialFlash.write(addr, &deleted, sizeof(deleted)) ||
+	             !SerialFlash.read(addr, &hash, sizeof(hash)) || hash != deleted)) return false;
+	file.close();
+	file.address = file.length = file.offset = 0;
 	return true;
 }
 
-static uint32_t find_first_unallocated_file_index(uint32_t maxfiles)
+uint32_t SerialFlashChip::free_size(SerialFlashStatus *out)
 {
-	uint16_t hashtable[8];
-	uint32_t i, n, index=0;
-
-	do {
-		n = 8;
-		if (index + n > maxfiles) n = maxfiles - index;
-		SerialFlash.read(8 + index * 2, hashtable, n * 2);
-		for (i=0; i < n; i++) {
-			if (hashtable[i] == 0xFFFF) return index + i;
-		}
-		index += n;
-	} while (index < maxfiles);
-	return 0xFFFFFFFF;
-}
-
-static uint32_t string_length(uint32_t addr)
-{
-	char buf[16];
-	const char *p;
-	uint32_t len=0;
-
-	while (1) {
-		SerialFlash.read(addr, buf, sizeof(buf));
-		for (p=buf; p < buf + sizeof(buf); p++) {
-			len++;
-			if (*p == 0) return len;
-		}
-		addr += sizeof(buf);
+	Directory dir;
+	Entry entry;
+	uint16_t index;
+	uint32_t address, name;
+	Status status = readDirectory(dir);
+	if (status == Status::Ok) {
+		status = findEntry(dir, nullptr, index, entry);
+		if (status == Status::NotFound) status = nextSpace(dir, index, address, name);
 	}
+	if (status == Status::Ok &&
+	    (name >= dir.data || dir.data - name < 2 || !alignUp(address, 256) || address > Capacity))
+		status = Status::NoSpace;
+	return report(out, status) ? Capacity - address : 0;
 }
 
-//  uint32_t signature = 0xFA96554C;
-//  uint16_t maxfiles          
-//  uint16_t stringssize  // div by 4
-//  uint16_t hashes[maxfiles]
-//  struct {
-//    uint32_t file_begin
-//    uint32_t file_length
-//    uint16_t string_index  // div 4
-//  } fileinfo[maxfiles]
-//  char strings[stringssize]
-
-// Return free size in bytes. (by vad7)
-uint32_t SerialFlashChip::free_size(void)
-{
-	uint32_t address;
-	{
-		uint32_t maxfiles, stringsize;
-		uint32_t index, buf[3];
-		maxfiles = check_signature();
-		stringsize = (maxfiles & 0xFFFF0000) >> 14;
-		maxfiles &= 0xFFFF;
-		index = find_first_unallocated_file_index(maxfiles);
-		// compute where to store the filename and actual data
-		address = 8 + maxfiles * 12;
-		if (index == 0) {
-			address += stringsize;
-		} else {
-			SerialFlash.read(8 + maxfiles * 2 + (index-1) * 10, buf, 10);
-			address = buf[0] + buf[1];
-		}
-		address = (address + 255) & 0xFFFFFF00;
-	}
-	return Capacity - address;
-}
-
-// Return 0 on success, negative value on error
 int8_t SerialFlashChip::create(const char *filename, uint32_t length, uint32_t align)
 {
-	uint32_t maxfiles, stringsize;
-	uint32_t index, buf[3];
-	uint32_t address, straddr, len;
-	SerialFlashFile file;
+	if (!filename || !*filename) return (int8_t)Status::Invalid;
+	Directory dir;
+	Status status = readDirectory(dir);
+	if (status != Status::Ok) return (int8_t)status;
 
-	// check if the file already exists
-	if (exists(filename)) return -1;
+	uint16_t index;
+	Entry entry;
+	status = findEntry(dir, filename, index, entry);
+	if (status == Status::Ok) return (int8_t)Status::Exists;
+	if (status != Status::NotFound) return (int8_t)status;
 
-	// first, get the filesystem parameters
-	maxfiles = check_signature();
-	if (!maxfiles) return -2;
-	stringsize = (maxfiles & 0xFFFF0000) >> 14;
-	maxfiles &= 0xFFFF;
+	uint32_t address, name;
+	status = nextSpace(dir, index, address, name);
+	if (status != Status::Ok) return (int8_t)status;
+	const size_t nameLength = strlen(filename);
+	if (name >= dir.data || nameLength >= dir.data - name ||
+	    !alignUp(address, align ? align : 256) || address > Capacity ||
+	    (align && !alignUp(length, align)) || length > Capacity - address) return (int8_t)Status::NoSpace;
 
-	// find the first unused slot for this file
-	index = find_first_unallocated_file_index(maxfiles);
-	if (index >= maxfiles) return -3;
-	 //Serial.printf("index = %u\n", index);
-	// compute where to store the filename and actual data
-	straddr = 8 + maxfiles * 12;
-	if (index == 0) {
-		address = straddr + stringsize;
-	} else {
-		buf[2] = 0;
-		SerialFlash.read(8 + maxfiles * 2 + (index-1) * 10, buf, 10);
-		address = buf[0] + buf[1];
-		straddr += buf[2] * 4;
-		straddr += string_length(straddr);
-		straddr = (straddr + 3) & 0x0003FFFC;
-	}
-	 //Serial.printf("straddr = %u\n", straddr);
-	 //Serial.printf("address = %u\n", address);
-	 //Serial.printf("length = %u\n", length);
-	if (align > 0) {
-		// for files aligned to sectors, adjust addr & len
-		address += align - 1;
-		address /= align;
-		address *= align;
-		 //Serial.printf("align address = %u\n", address);
-		length += align - 1;
-		length /= align;
-		length *= align;
-		 //Serial.printf("align length = %u\n", length);
-	} else {
-		// always align every file to a page boundary
-		// for predictable write latency and to guarantee
-		// write suspend for reading another file can't
-		// conflict on the same page (2 files never share
-		// a write page).
-		address = (address + 255) & 0xFFFFFF00;
-	}
-	 //Serial.printf("address = %u\n", address);
-	// last check, if enough space exists...
-	len = strlen(filename);
-	// TODO: check for enough string space for filename
-	uint8_t id[5];
-	SerialFlash.readID(id);
-	if (address + length > SerialFlash.capacity(id)) return -4;
+	const uint32_t entryAddress = dir.entryAddress(index);
+	status = checkErased(entryAddress, EntrySize);
+	if (status != Status::Ok) return (int8_t)status;
+	status = checkErased(name, nameLength + 1);
+	if (status != Status::Ok) return (int8_t)status;
 
-	SerialFlash.write(straddr, filename, len+1);
-	buf[0] = address;
-	buf[1] = length;
-	buf[2] = (straddr - (8 + maxfiles * 12)) / 4;
-	SerialFlash.write(8 + maxfiles * 2 + index * 10, buf, 10);
-	 //Serial.printf("  write %u: ", 8 + maxfiles * 2 + index * 10);
-	 //pbuf(buf, 10);
-	uint32_t tm = millis();
-	while (!SerialFlash.ready()) {
-		if(millis() - tm > 5000) return -5; // Timeout
-	}
-	 
-	buf[0] = filename_hash(filename);
-	 //Serial.printf("hash = %04X\n", buf[0]);
-	SerialFlash.write(8 + index * 2, buf, 2);
-	tm = millis();
-	while (!SerialFlash.ready()) {
-		if(millis() - tm > 5000) return -6; // Timeout
-	}
+	const uint32_t raw[] = {address, length, (name - dir.names) / 4};
+	const uint16_t hash = filenameHash(filename);
+	if (!SerialFlash.write(name, filename, nameLength + 1) ||
+	    !SerialFlash.write(entryAddress, raw, EntrySize)) return (int8_t)Status::Io;
 
-	return 0;
+	uint32_t stored[3]{};
+	uint32_t storedLength;
+	if (!SerialFlash.read(entryAddress, stored, EntrySize) ||
+	    memcmp(raw, stored, EntrySize) != 0 ||
+	    scanName(dir, name, filename, storedLength) != Status::Ok) return (int8_t)Status::Io;
+
+	// Хеш публикуется последним. Прерванная запись имени/описателя
+	// не станет видимым файлом и не будет перезаписана поверх битов NOR.
+	uint16_t storedHash;
+	const uint32_t hashAddress = dir.hashAddress(index);
+	if (!SerialFlash.write(hashAddress, &hash, sizeof(hash)) ||
+	    !SerialFlash.read(hashAddress, &storedHash, sizeof(storedHash)) || storedHash != hash)
+		return (int8_t)Status::Io;
+	return (int8_t)Status::Ok;
 }
 
-bool SerialFlashChip::readdir(char *filename, uint32_t strsize, uint32_t &filesize)
+bool SerialFlashChip::readdir(char *filename, uint32_t capacity, uint32_t &filesize, SerialFlashStatus *out)
 {
-	uint32_t maxfiles, index, straddr;
-	uint32_t i, n;
-	uint32_t buf[2];
-	uint16_t hash;
-	char str[16], *p=filename;
-
+	if (!filename || !capacity) return report(out, Status::Invalid);
 	filename[0] = 0;
-	maxfiles = check_signature();
-	if (!maxfiles) return false;
-	maxfiles &= 0xFFFF; 
-	index = dirindex;
-	while (1) {
-		if (index >= maxfiles) return false;
-		 //Serial.printf("readdir, index = %u\n", index);
-		SerialFlash.read(8 + index * 2, &hash, 2);
-		if (hash != 0) break;
-		index++;  // skip deleted entries
-	}
-	dirindex = index + 1;
-	buf[1] = 0;
-	SerialFlash.read(8 + 4 + maxfiles * 2 + index * 10, buf, 6);
-	if (buf[0] == 0xFFFFFFFF) return false;
-	filesize = buf[0];
-	straddr = 8 + maxfiles * 12 + buf[1] * 4;
-	 //Serial.printf("  length = %u\n", buf[0]);
-	 //Serial.printf("  straddr = %u\n", straddr);
-
-	while (strsize) {
-		n = strsize;
-		if (n > sizeof(str)) n = sizeof(str);
-		SerialFlash.read(straddr, str, n);
-		for (i=0; i < n; i++) {
-			*p++ = str[i];
-			if (str[i] == 0) {
-				 //Serial.printf("  name = %s\n", filename);
-				return true;
-			}
+	Directory dir;
+	Status status = readDirectory(dir);
+	if (status != Status::Ok) return report(out, status);
+	for (uint16_t index = dirindex; index < dir.slots; ++index) {
+		uint16_t hash;
+		if (!SerialFlash.read(dir.hashAddress(index), &hash, sizeof(hash))) return report(out, Status::Io);
+		if (!hash) continue; // удалённый слот
+		if (hash == UINT16_MAX) break;
+		Entry entry;
+		status = readEntry(dir, index, entry);
+		if (status != Status::Ok) return report(out, status);
+		uint32_t length;
+		status = scanName(dir, entry.name, nullptr, length);
+		if (status != Status::Ok) return report(out, status);
+		const uint32_t count = length < capacity ? length - 1 : capacity - 1;
+		if (count && !SerialFlash.read(entry.name, filename, count)) {
+			filename[0] = 0;
+			return report(out, Status::Io);
 		}
-		strsize -= n;
-		straddr += n;
+		filename[count] = 0;
+		filesize = entry.size;
+		dirindex = index + 1;
+		return report(out, Status::Ok);
 	}
-	*(p - 1) = 0;
-	 //Serial.printf("  name(overflow) = %s\n", filename);
-	return true;
+	return report(out, Status::NotFound);
 }
 
-
-void SerialFlashFile::erase()
+bool SerialFlashFile::erase()
 {
-	uint32_t i, blocksize;
-
-	blocksize = SerialFlash.blockSize();
-	if (address & (blocksize - 1)) return; // must begin on a block boundary
-	if (length & (blocksize - 1)) return;  // must be exact number of blocks
-	for (i=0; i < length; i += blocksize) {
-		SerialFlash.eraseBlock(address + i);
-	}
+	const uint32_t block = SerialFlash.blockSize();
+	if (!address || address % block || length % block) return false;
+	for (uint32_t i = 0; i < length; i += block)
+		if (!SerialFlash.eraseBlock(address + i)) return false;
+	return SerialFlash.wait();
 }
-

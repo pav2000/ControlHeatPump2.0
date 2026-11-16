@@ -25,6 +25,7 @@
 #include "Scheduler.h"
 #include "SettingsLegacy.h"   // чтение старых форматов, файл к удалению
 #include "SchedulerCalc.h" // разбор календаря, проверяется на хосте
+#include "Rtos.h"     // TaskSuspendAll
 #include "HeatPump.h"     // HP: профиль, состояние, команды
 #include "../hw/Hardware.h"     // readEEPROM_I2C / writeEEPROM_I2C
 #include "../log/Journal.h"      // journal
@@ -186,6 +187,12 @@ uint8_t Scheduler::web_set_param(char *param, char *val)
 // Записать настройки в eeprom i2c, если число меньше 0 это код ошибки
 int8_t Scheduler::save(void)
 {
+    SettingsLock lock(HP.saving);
+    return lock ? save_locked() : ERR_I2C_BUSY;
+}
+
+int8_t Scheduler::save_locked(void)
+{
     // Пишем всегда НОВЫМ форматом: область опознаёт себя сама, поэтому
     // расписание, сохранённое раньше настроек, ничего не ломает.
     uint8_t hdr[REC_HDR_SIZE];
@@ -195,7 +202,13 @@ int8_t Scheduler::save(void)
     if(!writeEEPROM_I2C(I2C_SCHEDULER_EEPROM, hdr, sizeof(hdr)) &&
        !writeEEPROM_I2C(I2C_SCHEDULER_EEPROM + REC_HDR_SIZE, (byte*)&sch_data, sizeof(sch_data)) &&
        !writeEEPROM_I2C(I2C_SCHEDULER_EEPROM + REC_HDR_SIZE + sizeof(sch_data), (byte*)&crc16, sizeof(crc16))) {
-        err = check_crc16_eeprom(false);
+        uint32_t base;
+        uint16_t len;
+        err = read_region(base, len);
+        if(err == OK) {
+            err = base == I2C_SCHEDULER_EEPROM + REC_HDR_SIZE && len == sizeof(sch_data)
+                  ? check_crc16_eeprom(base, len) : ERR_SETTINGS_VERIFY;
+        }
     }
     if(err == OK) {
         journal.jprintf("Save scheduler to I2C OK, write: %d bytes, crc: %04x\n", sizeof(sch_data) + sizeof(crc16), crc16);
@@ -233,24 +246,32 @@ static bool unpack_old(Scheduler_Data *d, const uint8_t *src)
 
 // Считать настройки в память по адресу из eeprom i2c, если число меньше 0 это код ошибки
 // Запись в EEPROM может быть и прежней длины (9 календарей) - тогда лишнее отбрасывается.
-int16_t Scheduler::load(uint8_t *data)
+int16_t Scheduler::load(uint8_t *data, uint8_t version)
 {
 	journal.jprintf(" Scheduler ");
-	uint16_t len = region_len();
-	if(!len) {
-		journal.jprintf("unknown region!\n");
-		return ERR_CRC16_EEPROM;
-	}
-	int16_t ret = legacy_scheduler_has_crc(HP.Option.ver) ? check_crc16_eeprom() : OK;
-#ifdef LOAD_VERIFICATION
+	uint32_t base;
+	uint16_t len;
+	int16_t ret = read_region(base, len);
 	if(ret != OK) {
-		journal.jprintf("CRC mismatch!\n");
+		journal.jprintf(" region error (%d)\n", (int)ret);
 		return ret;
 	}
+#ifdef LOAD_VERIFICATION
+	if(base != I2C_SCHEDULER_EEPROM || legacy_scheduler_has_crc(version ? version : HP.Option.ver)) {
+		ret = check_crc16_eeprom(base, len);
+		if(ret != OK) {
+			journal.jprintf(" verification error (%d)\n", (int)ret);
+			return ret;
+		}
+	}
+#else
+	(void)version;
 #endif
-	Scheduler_Data *d = data ? (Scheduler_Data *) data : &sch_data;
+	// Загрузка при старте или из сериализованного веб-API. При отказе
+	// чтения действующее расписание сохраняется целиком.
+	static Scheduler_Data candidate;
+	Scheduler_Data *d = data ? (Scheduler_Data *) data : &candidate;
 	journal.jprintf(data ? "save" : "load");
-	uint32_t base = data_addr();
 	bool lost = false, fail;
 	if(len == SCHEDULER_LEN_NEW) {
 		fail = readEEPROM_I2C(base, (uint8_t *) d, sizeof(*d));
@@ -266,17 +287,20 @@ int16_t Scheduler::load(uint8_t *data)
 		}
 	}
 	if(fail) {
-		set_Error(ERR_LOAD_EEPROM, (char *) get_name());
-		journal.jprintf(" - Error!\n");
+		journal.jprintf(" - read error!\n");
 		return ERR_LOAD_EEPROM;
 	}
 	fix_loaded(d, lost);
 	ret = sizeof(*d);
 	if(data) {                                            // экспорт: за данными контрольная сумма уже обработанных данных
 		uint16_t crc = get_crc16((uint8_t *) d);
-		*(uint16_t *)(data + sizeof(*d)) = crc;
+		memcpy(data + sizeof(*d), &crc, sizeof(crc));
 		journal.jprintf(" - crc: %04x, ", crc);
-		ret += 2;
+		ret += sizeof(crc);
+	} else {
+		uint8_t suspended = TaskSuspendAll();
+		memcpy(&sch_data, d, sizeof(sch_data));
+		if(suspended) xTaskResumeAll();
 	}
 	if(len != SCHEDULER_LEN_NEW) journal.jprintf(" (old record, %d bytes)", len);
 	journal.jprintf(" %d bytes Ok.\n", ret);
@@ -287,8 +311,11 @@ int16_t Scheduler::load(uint8_t *data)
 // avail - сколько байт после начала данных есть в файле; hint - длина данных
 // из заголовка записи, либо 0, если заголовка нет (файл прежней выгрузки).
 // Длина без подсказки определяется по контрольной сумме: сначала нынешняя, затем прежняя.
-int8_t Scheduler::loadFromBuf(byte* buf, uint16_t avail, uint16_t hint)
+uint16_t Scheduler::file_data_len(const uint8_t *buf, uint16_t avail, uint16_t hint)
 {
+#ifndef LOAD_VERIFICATION
+	(void)buf;
+#endif
 	uint16_t len = 0;
 	const uint16_t cand[2] = { SCHEDULER_LEN_NEW, SCHEDULER_LEN_OLD };
 	for(uint8_t i = 0; i < 2 && !len; i++) {
@@ -297,10 +324,16 @@ int8_t Scheduler::loadFromBuf(byte* buf, uint16_t avail, uint16_t hint)
 #ifdef LOAD_VERIFICATION
 		uint16_t crc = 0xFFFF;
 		for(uint16_t k = 0; k < cand[i]; k++) crc = _crc16(crc, buf[k]);
-		if(crc != *(uint16_t *)(buf + cand[i])) continue;
+		if(crc != rec_hdr_tag(buf + cand[i])) continue;
 #endif
 		len = cand[i];
 	}
+	return len;
+}
+
+int8_t Scheduler::loadFromBuf(byte *buf, uint16_t avail, uint16_t hint)
+{
+	const uint16_t len = file_data_len(buf, avail, hint);
 	if(!len) {
 		journal.jprintf(" Load scheduler: unknown length or CRC error (%d bytes available, hint %d)\n", avail, hint);
 		return ERR_CRC16_EEPROM;
@@ -322,41 +355,23 @@ uint16_t Scheduler::get_crc16(uint8_t *data)
 	return crc;
 }
 
-// Область в EEPROM новая (с заголовком записи)?
-bool Scheduler::region_is_new(void)
+// Считывает адрес данных и длину из одного снимка заголовка.
+int8_t Scheduler::read_region(uint32_t &base, uint16_t &len)
 {
 	uint8_t hdr[REC_HDR_SIZE];
-	if(readEEPROM_I2C(I2C_SCHEDULER_EEPROM, hdr, sizeof(hdr))) return false;
-	return rec_hdr_tag(hdr) == NTAG_Scheduler && region_len() != 0;
+	base = I2C_SCHEDULER_EEPROM;
+	if(readEEPROM_I2C(base, hdr, sizeof(hdr))) return ERR_LOAD_EEPROM;
+	if(rec_hdr_tag(hdr) == NTAG_Scheduler) {
+		len = rec_hdr_len(hdr);
+		if(len != SCHEDULER_LEN_NEW && len != SCHEDULER_LEN_OLD) return ERR_BAD_LEN_EEPROM;
+		base += REC_HDR_SIZE;
+	} else len = SCHEDULER_LEN_OLD;
+	return OK;
 }
 
-// Длина данных области: у записи с заголовком её несёт заголовок (принимаются
-// нынешняя и прежняя), у самой старой без заголовка - всегда прежняя.
-// 0 - заголовок наш, а длина чужая.
-uint16_t Scheduler::region_len(void)
+int8_t Scheduler::check_crc16_eeprom(uint32_t base, uint16_t len)
 {
-	uint8_t hdr[REC_HDR_SIZE];
-	if(readEEPROM_I2C(I2C_SCHEDULER_EEPROM, hdr, sizeof(hdr))) return 0;
-	if(rec_hdr_tag(hdr) != NTAG_Scheduler) return SCHEDULER_LEN_OLD;
-	uint16_t l = rec_hdr_len(hdr);
-	return (l == SCHEDULER_LEN_NEW || l == SCHEDULER_LEN_OLD) ? l : 0;
-}
-
-// Адрес самих данных: в новом формате за заголовком записи.
-uint32_t Scheduler::data_addr(void)
-{
-	return I2C_SCHEDULER_EEPROM + (region_is_new() ? REC_HDR_SIZE : 0);
-}
-
-int8_t Scheduler::check_crc16_eeprom(bool reportReadError)
-{
-	// Читаем пачками, а не по байту. Побайтно это 799 отдельных транзакций
-	// I2C, каждая с захватом семафора, и всё это под остановленными задачами,
-	// где watchdog не гладит никто.
 	uint16_t crc2, crc = 0xFFFF;
-	uint16_t len = region_len();
-	if(!len) return ERR_CRC16_EEPROM;
-	uint32_t base = data_addr();
 	// Буфер статический, а не на стеке: проверка вызывается из веб-задачи
 	// (STACK_vWebX = 170 слов = 680 байт), где 64 байта - заметная доля.
 	// Обслуживание веб-запроса сериализовано семафором, гонки нет.
@@ -365,17 +380,11 @@ int8_t Scheduler::check_crc16_eeprom(bool reportReadError)
 	while(i < len) {
 		uint16_t n = len - i;
 		if(n > sizeof(blk)) n = sizeof(blk);
-		if(readEEPROM_I2C(base + i, blk, n)) {
-			if(reportReadError) set_Error(ERR_LOAD_EEPROM, (char *) get_name());
-			return ERR_LOAD_EEPROM;
-		}
+		if(readEEPROM_I2C(base + i, blk, n)) return ERR_LOAD_EEPROM;
 		crc = calc_crc16(blk, n, crc);
 		i += n;
 	}
-	if(readEEPROM_I2C(base + i, (byte*) &crc2, sizeof(crc2))) {
-		if(reportReadError) set_Error(ERR_LOAD_EEPROM, (char *) get_name());
-		return ERR_LOAD_EEPROM;
-	}
+	if(readEEPROM_I2C(base + i, (byte*)&crc2, sizeof(crc2))) return ERR_LOAD_EEPROM;
 	return crc == crc2 ? OK : ERR_CRC16_EEPROM;
 }
 

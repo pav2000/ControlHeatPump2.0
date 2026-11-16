@@ -26,6 +26,7 @@
  */
 
 #include "SerialFlash.h"
+#include <string.h>
 #include <SpiBus.h>      // контроллер ТН: флеш на общей шине SPI0 с W5500 и SD (Libraries/SpiBus)
 
 // Обмен с чипом - через общую шину вместо библиотеки SPI ядра. Ядро к любой настройке добавляло паузу DLYBCT 381 нс после
@@ -34,11 +35,7 @@
 #define CSASSERT()  spiBusSelect(SPIDEV_FLASH)
 #define CSRELEASE() spiBusDeselect(SPIDEV_FLASH)
 #define FLASH_SCBR  2      // 84/2 = 42 МГц: у W25Q32 предел Fast Read 104/133 МГц, у прежнего чтения 03h - 50 МГц
-#define FLASH_READ_TRIES 3 // попыток чтения при сбое DMA
-#define FLASH_WAIT_TIMEOUT 60000 // мс: допустимое стирание всего чипа
-
-static inline void xfer16(uint16_t w) { spiBusXfer(w >> 8); spiBusXfer(w); }
-
+#define FLASH_READ_TRIES 3 // попыток чтения при сбое SPI
 uint16_t SerialFlashChip::dirindex = 0;
 uint8_t SerialFlashChip::flags = 0;
 uint8_t SerialFlashChip::busy = 0;
@@ -49,285 +46,225 @@ uint32_t SerialFlashChip::Capacity = 0;
 #define FLAG_DIFF_SUSPEND	0x04	// uses 2 different suspend commands
 #define FLAG_MULTI_DIE		0x08	// multiple die, don't read cross 32M barrier
 #define FLAG_256K_BLOCKS	0x10	// has 256K erase blocks
-#define FLAG_DIE_MASK		0xC0	// top 2 bits count during multi-die erase
 
-bool SerialFlashChip::wait(void)
+static uint8_t nextEraseDie, eraseDieCount, resumeCommand;
+static uint32_t eraseDieSize;
+
+static bool command(uint8_t cmd)
 {
-	uint32_t status;
-	const uint32_t started = millis();
-	//Serial.print("wait-");
-	while (1) {
-		CSASSERT();
-		if (flags & FLAG_STATUS_CMD70) {
-			// some Micron chips require this different
-			// command to detect program and erase completion
-			spiBusXfer(0x70);
-			status = spiBusXfer(0);
-			CSRELEASE();
-			//Serial.printf("b=%02x.", status & 0xFF);
-			if ((status & 0x80)) break;
-		} else {
-			// all others work by simply reading the status reg
-			spiBusXfer(0x05);
-			status = spiBusXfer(0);
-			CSRELEASE();
-			//Serial.printf("b=%02x.", status & 0xFF);
-			if (!(status & 1)) break;
-		}
-		if (millis() - started > FLASH_WAIT_TIMEOUT) return false;
-	}
-	busy = 0;
-	//Serial.println();
+	CSASSERT();
+	const bool ok = spiBusXfer(cmd, nullptr) == SPIBUS_OK;
+	CSRELEASE();
+	return ok;
+}
+
+static uint8_t addressHeader(uint8_t *h, uint8_t cmd, uint32_t addr, bool addr32)
+{
+	uint8_t n = 0;
+	h[n++] = cmd;
+	if (addr32) h[n++] = addr >> 24;
+	h[n++] = addr >> 16;
+	h[n++] = addr >> 8;
+	h[n++] = addr;
+	return n;
+}
+
+static bool writeEnable()
+{
+	if (!command(0x06)) return false;
+	delayMicroseconds(1);
 	return true;
+}
+
+static bool readReady(uint8_t flags, bool &done)
+{
+	const bool cmd70 = flags & FLAG_STATUS_CMD70;
+	uint8_t status;
+	CSASSERT();
+	const bool ok = spiBusXfer(cmd70 ? 0x70 : 0x05, nullptr) == SPIBUS_OK &&
+	                spiBusXfer(0, &status) == SPIBUS_OK;
+	CSRELEASE();
+	done = ok && (cmd70 ? (status & 0x80) != 0 : (status & 1) == 0);
+	return ok;
+}
+
+static bool resumeOperation()
+{
+	if (!resumeCommand) return true;
+	if (!writeEnable() || !command(resumeCommand)) return false;
+	resumeCommand = 0;
+	return true;
+}
+
+static bool startDieErase(uint32_t addr)
+{
+	if (!writeEnable()) return false;
+	uint8_t header[5];
+	const uint8_t n = addressHeader(header, 0xC4, addr, true);
+	CSASSERT();
+	const bool ok = spiBusSend(header, n) == SPIBUS_OK;
+	CSRELEASE();
+	return ok;
+}
+
+bool SerialFlashChip::pollReady(bool &done)
+{
+	done = false;
+	if (!resumeOperation()) return false;
+	if (busy) {
+		if (!readReady(flags, done)) return false;
+		if (!done) return true;
+		busy = 0;
+	}
+	if (nextEraseDie < eraseDieCount) {
+		done = false;
+		busy = 3; // при отказе команды на чипе всё ещё может идти стирание
+		const bool ok = startDieErase(nextEraseDie * eraseDieSize);
+		if (ok) ++nextEraseDie;
+		else eraseDieCount = 0;
+		return ok;
+	}
+	done = true;
+	return true;
+}
+
+bool SerialFlashChip::ready()
+{
+	bool done;
+	return pollReady(done) && done;
+}
+
+bool SerialFlashChip::wait(uint32_t timeout)
+{
+	const uint32_t started = millis();
+	for (;;) {
+		bool done;
+		if (!pollReady(done)) return false;
+		if (done) return true;
+		if (millis() - started > timeout) return false;
+	}
 }
 
 // Заголовок чтения Fast Read 0Bh: команда, адрес (3 байта или 4 в режиме 32-битных адресов), пустой байт. Прежняя
 // команда 03h у W25Q32 ограничена 50 МГц (у части марок 33 МГц), 0Bh - 104/133 МГц; цена - один байт на вызов.
 uint8_t SerialFlashChip::readHeader(uint8_t *h, uint32_t addr, bool addr32)
 {
-	uint8_t n = 0;
-	h[n++] = 0x0B;
-	if (addr32) h[n++] = addr >> 24;
-	h[n++] = addr >> 16;
-	h[n++] = addr >> 8;
-	h[n++] = addr;
+	uint8_t n = addressHeader(h, 0x0B, addr, addr32);
 	h[n++] = 0;
 	return n;
 }
 
 bool SerialFlashChip::read(uint32_t addr, void *buf, uint32_t len)
 {
+	if (addr > Capacity || len > Capacity - addr || (len && !buf)) return false;
+	if (!len) return true;
+	if (!resumeOperation()) return false;
+	const uint8_t operation = busy;
+	if (operation && operation < 3) {
+		bool done;
+		if (!readReady(flags, done)) return false;
+		if (done) busy = 0;
+		else {
+			if (!writeEnable()) return false;
+			const bool spansionProgram = (flags & FLAG_DIFF_SUSPEND) && operation == 1;
+			resumeCommand = spansionProgram ? 0x8A : 0x7A;
+			bool ok = command(spansionProgram ? 0x85 : 0x75);
+			const uint32_t started = millis();
+			while (ok && !done) {
+				ok = readReady(flags, done);
+				if (!done && millis() - started > SPIBUS_DMA_TIMEOUT) break;
+			}
+			if (!ok || !done) {
+				resumeOperation();
+				return false;
+			}
+		}
+	} else if (operation && !wait()) return false;
+
 	uint8_t *p = (uint8_t *)buf;
-	uint8_t b, f, status, cmd;
-
-	f = flags;                 // буфер больше не обнуляется: его целиком перезаписывает чтение (memset 6 КБ стоил 20-40 мкс)
-	b = busy;
-	if (b) {
-		// read status register ... chip may no longer be busy
-		CSASSERT();
-		if (flags & FLAG_STATUS_CMD70) {
-			spiBusXfer(0x70);
-			status = spiBusXfer(0);
-			if ((status & 0x80)) b = 0;
-		} else {
-			spiBusXfer(0x05);
-			status = spiBusXfer(0);
-			if (!(status & 1)) b = 0;
-		}
-		CSRELEASE();
-		if (b == 0) {
-			// chip is no longer busy :-)
-			busy = 0;
-		} else if (b < 3) {
-			// TODO: this may not work on Spansion chips
-			// which apparently have 2 different suspend
-			// commands, for program vs erase
-			CSASSERT();
-			spiBusXfer(0x06); // write enable (Micron req'd)
-			CSRELEASE();
-			delayMicroseconds(1);
-			cmd = 0x75; //Suspend program/erase for almost all chips
-			// but Spansion just has to be different for program suspend!
-			if ((f & FLAG_DIFF_SUSPEND) && (b == 1)) cmd = 0x85;
-			CSASSERT();
-			spiBusXfer(cmd); // Suspend command
-			CSRELEASE();
-			const uint32_t suspendStarted = millis();
-			if (f & FLAG_STATUS_CMD70) {
-				// Micron chips don't actually suspend until flags read
-				CSASSERT();
-				spiBusXfer(0x70);
-				do {
-					status = spiBusXfer(0);
-				} while (!(status & 0x80) && millis() - suspendStarted <= SPIBUS_DMA_TIMEOUT);
-				CSRELEASE();
-				if (!(status & 0x80)) return false;
-			} else {
-				CSASSERT();
-				spiBusXfer(0x05);
-				do {
-					status = spiBusXfer(0);
-				} while ((status & 0x01) && millis() - suspendStarted <= SPIBUS_DMA_TIMEOUT);
-				CSRELEASE();
-				if (status & 0x01) return false;
-			}
-		} else {
-			// chip is busy with an operation that can not suspend
-			if (!wait()) return false;			// ждать конца (стирание всего чипа - до десятков секунд)
-			b = 0;
-		}
-	}
 	bool ok = true;
-	do {
-		uint32_t rdlen = len;
-		if (f & FLAG_MULTI_DIE) {
-			if ((addr & 0xFE000000) != ((addr + len - 1) & 0xFE000000)) {
-				rdlen = 0x2000000 - (addr & 0x1FFFFFF);
-			}
+	while (len) {
+		uint32_t count = len;
+		if (flags & FLAG_MULTI_DIE) {
+			const uint32_t remaining = 0x2000000 - (addr & 0x1FFFFFF);
+			if (count > remaining) count = remaining;
 		}
-		uint8_t h[6];
-		const uint8_t hl = readHeader(h, addr, f & FLAG_32BIT_ADDR);
-		// Сбой DMA (переполнение приёмника или таймаут) оставляет в буфере мусор, а он ушёл бы клиенту как файл морды.
-		// Чтение побочных эффектов не имеет - повторяем; каждый сбой виден в счётчиках spiBusStat и журнале ($SPI DMA).
-		uint8_t e = SPIBUS_OK;
-		for (uint8_t t = 1; ; t++) {
+		uint8_t header[6];
+		const uint8_t n = readHeader(header, addr, flags & FLAG_32BIT_ADDR);
+		// Чтение можно повторить, в том числе при отказе передачи заголовка.
+		uint8_t status = SPIBUS_TIMEOUT;
+		for (uint8_t attempt = 0; attempt < FLASH_READ_TRIES && status != SPIBUS_OK; ++attempt) {
 			CSASSERT();
-			spiBusSend(h, hl);         // заголовок короче порога DMA - опросом
-			e = spiBusRec(p, rdlen);   // данные: DMA порциями по 2048 (короткие - опросом)
+			status = spiBusSend(header, n);
+			if (status == SPIBUS_OK) status = spiBusRec(p, count);
 			CSRELEASE();
-			if (e == SPIBUS_OK || t >= FLASH_READ_TRIES) break;
 		}
-		if (e != SPIBUS_OK) { ok = false; break; }
-		p += rdlen;
-		addr += rdlen;
-		len -= rdlen;
-	} while (len > 0);
-	if (b) {
-		CSASSERT();
-		spiBusXfer(0x06); // write enable (Micron req'd)
-		CSRELEASE();
-		delayMicroseconds(1);
-		cmd = 0x7A;
-		if ((f & FLAG_DIFF_SUSPEND) && (b == 1)) cmd = 0x8A;
-		CSASSERT();
-		spiBusXfer(cmd); // Resume program/erase
-		CSRELEASE();
+		if (status != SPIBUS_OK) { ok = false; break; }
+		p += count;
+		addr += count;
+		len -= count;
 	}
-	return ok;
+	return resumeOperation() && ok;
 }
 
-void SerialFlashChip::write(uint32_t addr, const void *buf, uint32_t len)
+bool SerialFlashChip::write(uint32_t addr, const void *buf, uint32_t len)
 {
+	if (addr > Capacity || len > Capacity - addr || (len && !buf)) return false;
+	if (!len) return true;
 	const uint8_t *p = (const uint8_t *)buf;
-	uint32_t max, pagelen;
-
-	 //Serial.printf("WR: addr %08X, len %d\n", addr, len);
-	do {
-		if (busy) wait();
+	if (!wait()) return false;
+	while (len) {
+		if (!writeEnable()) return false;
+		const uint32_t remaining = 256 - (addr & 0xFF);
+		const uint32_t count = len < remaining ? len : remaining;
+		uint8_t header[5];
+		const uint8_t n = addressHeader(header, 0x02, addr, flags & FLAG_32BIT_ADDR);
 		CSASSERT();
-		// write enable command
-		spiBusXfer(0x06);
+		const bool ok = spiBusSend(header, n) == SPIBUS_OK &&
+		                spiBusSend(p, count) == SPIBUS_OK;
 		CSRELEASE();
-		max = 256 - (addr & 0xFF);
-		pagelen = (len <= max) ? len : max;
-		 //Serial.printf("WR: addr %08X, pagelen %d\n", addr, pagelen);
-		delayMicroseconds(1); // TODO: reduce this, but prefer safety first
-		CSASSERT();
-		if (flags & FLAG_32BIT_ADDR) {
-			spiBusXfer(0x02); // program page command
-			xfer16(addr >> 16);
-			xfer16(addr);
-		} else {
-			xfer16(0x0200 | ((addr >> 16) & 255));
-			xfer16(addr);
-		}
-		addr += pagelen;
-		len -= pagelen;
-		spiBusSend(p, pagelen);    // страница: DMA (короткие и константы во флеш МК - опросом)
-		p += pagelen;
-		CSRELEASE();
-		busy = 4;
-	} while (len > 0);
-}
-
-void SerialFlashChip::eraseAll()
-{
-	if (busy) wait();
-	uint8_t id[5];
-	readID(id);
-	//Serial.printf("ID: %02X %02X %02X\n", id[0], id[1], id[2]);
-	if (id[0] == 0x20 && id[2] >= 0x20 && id[2] <= 0x22) {
-		// Micron's multi-die chips require special die erase commands
-		//  N25Q512A	20 BA 20  2 dies  32 Mbyte/die   65 nm transitors
-		//  N25Q00AA	20 BA 21  4 dies  32 Mbyte/die   65 nm transitors
-		//  MT25QL02GC	20 BA 22  2 dies  128 Mbyte/die  45 nm transitors
-		uint8_t die_count = 2;
-		if (id[2] == 0x21) die_count = 4;
-		uint8_t die_index = flags >> 6;
-		 //Serial.printf("Micron die erase %d\n", die_index);
-		flags &= 0x3F;
-		if (die_index >= die_count) return; // all dies erased :-)
-		uint8_t die_size = 2;  // in 16 Mbyte units
-		if (id[2] == 0x22) die_size = 8;
-		CSASSERT();
-		spiBusXfer(0x06); // write enable command
-		CSRELEASE();
-		 delayMicroseconds(1);
-		CSASSERT();
-		// die erase command
-		spiBusXfer(0xC4);
-		xfer16((die_index * die_size) << 8);
-		xfer16(0x0000);
-		CSRELEASE();
-		 //Serial.printf("Micron erase begin\n");
-		flags |= (die_index + 1) << 6;
-	} else {
-		// All other chips support the bulk erase command
-		CSASSERT();
-		// write enable command
-		spiBusXfer(0x06);
-		CSRELEASE();
-		 delayMicroseconds(1);
-		CSASSERT();
-		// bulk erase command
-		spiBusXfer(0xC7);
-		CSRELEASE();
-	}
-	busy = 3;
-}
-
-void SerialFlashChip::eraseBlock(uint32_t addr)
-{
-	uint8_t f = flags;
-	if (busy) wait();
-	CSASSERT();
-	spiBusXfer(0x06); // write enable command
-	CSRELEASE();
-	 delayMicroseconds(1);
-	CSASSERT();
-	if (f & FLAG_32BIT_ADDR) {
-		spiBusXfer(0xD8);
-		xfer16(addr >> 16);
-		xfer16(addr);
-	} else {
-		xfer16(0xD800 | ((addr >> 16) & 255));
-		xfer16(addr);
-	}
-	CSRELEASE();
-	busy = 2;
-}
-
-
-bool SerialFlashChip::ready()
-{
-	uint32_t status;
-	if (!busy) return true;
-	CSASSERT();
-	if (flags & FLAG_STATUS_CMD70) {
-		// some Micron chips require this different
-		// command to detect program and erase completion
-		spiBusXfer(0x70);
-		status = spiBusXfer(0);
-		CSRELEASE();
-		//Serial.printf("ready=%02x\n", status & 0xFF);
-		if ((status & 0x80) == 0) return false;
-	} else {
-		// all others work by simply reading the status reg
-		spiBusXfer(0x05);
-		status = spiBusXfer(0);
-		CSRELEASE();
-		//Serial.printf("ready=%02x\n", status & 0xFF);
-		if ((status & 1)) return false;
-	}
-	busy = 0;
-	if (flags & 0xC0) {
-		// continue a multi-die erase
-		eraseAll();
-		return false;
+		busy = 4; // уже переданные байты могли попасть в страницу
+		if (!ok || !wait(5000)) return false;
+		addr += count;
+		len -= count;
+		p += count;
 	}
 	return true;
 }
 
+bool SerialFlashChip::eraseAll()
+{
+	uint8_t id[5];
+	if (!Capacity || !readID(id) || !capacity(id)) return false;
+	nextEraseDie = eraseDieCount = 0;
+	if (id[0] == 0x20 && id[2] >= 0x20 && id[2] <= 0x22) {
+		eraseDieCount = id[2] == 0x21 ? 4 : 2;
+		eraseDieSize = Capacity / eraseDieCount;
+		busy = 3;
+		if (!startDieErase(0)) {
+			eraseDieCount = 0;
+			return false;
+		}
+		nextEraseDie = 1;
+		return true;
+	}
+	if (!writeEnable()) return false;
+	busy = 3;
+	return command(0xC7);
+}
+
+bool SerialFlashChip::eraseBlock(uint32_t addr)
+{
+	if (addr >= Capacity || blockSize() > Capacity - addr || (addr % blockSize())) return false;
+	if (!wait() || !writeEnable()) return false;
+	uint8_t header[5];
+	const uint8_t n = addressHeader(header, 0xD8, addr, flags & FLAG_32BIT_ADDR);
+	CSASSERT();
+	const bool ok = spiBusSend(header, n) == SPIBUS_OK;
+	CSRELEASE();
+	busy = 2;
+	return ok;
+}
 
 #define ID0_WINBOND	0xEF
 #define ID0_SPANSION	0x01
@@ -342,99 +279,69 @@ bool SerialFlashChip::ready()
 
 bool SerialFlashChip::begin(uint8_t pin)
 {
+	spiBusInit();                                  // без SD в конфигурации шину до сети никто не поднимет
+	spiBusSetDevice(SPIDEV_FLASH, pin, FLASH_SCBR);
+	flags = busy = nextEraseDie = eraseDieCount = resumeCommand = 0;
+	Capacity = 0;
 	uint8_t id[5];
-	uint8_t f;
-
-	spiBusInit();                                   // SPI0 и DMAC (без SD в конфигурации шину до сети никто не поднимет)
-	spiBusSetDevice(SPIDEV_FLASH, pin, FLASH_SCBR); // CS - выход, поднят
-	readID(id);
-	if ((id[0]==0 && id[1]==0 && id[2]==0) || (id[0]==255 && id[1]==255 && id[2]==255)) {
-		return false;
-	}
-	f = 0;
-	Capacity = capacity(id);
-	if (Capacity > 16777216) {
-		// more than 16 Mbyte requires 32 bit addresses
-		f |= FLAG_32BIT_ADDR;
+	if (!readID(id)) return false;
+	const uint32_t size = capacity(id);
+	if (!size) return false;
+	uint8_t features = 0;
+	if (size > 16777216) {
+		features |= FLAG_32BIT_ADDR;
 		if (id[0] == ID0_SPANSION) {
-			// spansion uses MSB of bank register
+			const uint8_t bank[] = {0x17, 0x80};
 			CSASSERT();
-			xfer16(0x1780); // bank register write
+			const bool ok = spiBusSend(bank, sizeof(bank)) == SPIBUS_OK;
 			CSRELEASE();
-		} else {
-			// micron & winbond & macronix use command
-			CSASSERT();
-			spiBusXfer(0x06); // write enable
-			CSRELEASE();
-			delayMicroseconds(1);
-			CSASSERT();
-			spiBusXfer(0xB7); // enter 4 byte addr mode
-			CSRELEASE();
-		}
-		if (id[0] == ID0_MICRON) f |= FLAG_MULTI_DIE;
+			if (!ok) return false;
+		} else if (!writeEnable() || !command(0xB7)) return false;
+		if (id[0] == ID0_MICRON) features |= FLAG_MULTI_DIE;
 	}
 	if (id[0] == ID0_SPANSION) {
-		// Spansion has separate suspend commands
-		f |= FLAG_DIFF_SUSPEND;
-		if (!id[4]) {
-			// Spansion chips with id[4] == 0 use 256K sectors
-			f |= FLAG_256K_BLOCKS;
-		}
+		features |= FLAG_DIFF_SUSPEND;
+		if (!id[4]) features |= FLAG_256K_BLOCKS;
 	}
-	if (id[0] == ID0_MICRON) {
-		// Micron requires busy checks with a different command
-		f |= FLAG_STATUS_CMD70; // TODO: all or just multi-die chips?
-	}
-	flags = f;
-	readID(id);
+	if (id[0] == ID0_MICRON) features |= FLAG_STATUS_CMD70;
+	flags = features;
+	Capacity = size;
 	return true;
 }
 
-// chips tested: https://github.com/PaulStoffregen/SerialFlash/pull/12#issuecomment-169596992
-//
-void SerialFlashChip::sleep()
+bool SerialFlashChip::sleep()
 {
-	if (busy) wait();
-	CSASSERT();
-	spiBusXfer(0xB9); // Deep power down command
-	CSRELEASE();
+	return wait() && command(0xB9);
 }
 
-void SerialFlashChip::wakeup()
+bool SerialFlashChip::wakeup()
 {
-	CSASSERT();
-	spiBusXfer(0xAB); // Wake up from deep power down command
-	CSRELEASE();
+	return command(0xAB);
 }
 
-void SerialFlashChip::readID(uint8_t *buf)
+bool SerialFlashChip::readID(uint8_t *buf)
 {
-	if (busy) wait();
+	if (!buf || !wait()) return false;
+	uint8_t id[5]{};
 	CSASSERT();
-	spiBusXfer(0x9F);
-	buf[0] = spiBusXfer(0); // manufacturer ID
-	buf[1] = spiBusXfer(0); // memory type
-	buf[2] = spiBusXfer(0); // capacity
-	if (buf[0] == ID0_SPANSION) {
-		buf[3] = spiBusXfer(0); // ID-CFI
-		buf[4] = spiBusXfer(0); // sector size
-	}
+	bool ok = spiBusXfer(0x9F, nullptr) == SPIBUS_OK;
+	for (uint8_t i = 0; ok && i < 3; ++i) ok = spiBusXfer(0, id + i) == SPIBUS_OK;
+	if (ok && id[0] == ID0_SPANSION)
+		for (uint8_t i = 3; ok && i < sizeof(id); ++i) ok = spiBusXfer(0, id + i) == SPIBUS_OK;
 	CSRELEASE();
-	//Serial.printf("ID: %02X %02X %02X\n", buf[0], buf[1], buf[2]);
+	if (ok) memcpy(buf, id, id[0] == ID0_SPANSION ? sizeof(id) : 3);
+	return ok;
 }
 
-void SerialFlashChip::readSerialNumber(uint8_t *buf) //needs room for 8 bytes
+bool SerialFlashChip::readSerialNumber(uint8_t *buf) // needs room for 8 bytes
 {
-	if (busy) wait();
+	if (!buf || !wait()) return false;
+	const uint8_t header[] = {0x4B, 0, 0, 0, 0};
 	CSASSERT();
-	spiBusXfer(0x4B);			
-	xfer16(0);	
-	xfer16(0);
-	for (int i=0; i<8; i++) {		
-		buf[i] = spiBusXfer(0);
-	}
+	const bool ok = spiBusSend(header, sizeof(header)) == SPIBUS_OK &&
+	                spiBusRec(buf, 8) == SPIBUS_OK;
 	CSRELEASE();
-//	Serial.printf("Serial Number: %02X %02X %02X %02X %02X %02X %02X %02X\n", buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]);
+	return ok;
 }
 
 uint32_t SerialFlashChip::capacity(const uint8_t *id)

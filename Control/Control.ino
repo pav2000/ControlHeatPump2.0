@@ -81,7 +81,7 @@ CHECK_SAVE_SIZE(type_SaveON,      12);
 CHECK_SAVE_SIZE(type_motoHour,    64);
 CHECK_SAVE_SIZE(type_dataProfile,120);
 // Расписание: 5 календарей. Новый тег не заводился осознанно:
-// запись опознаётся по длине в заголовке, читаются обе (Scheduler::region_len).
+// запись опознаётся по длине в заголовке, читаются обе (Scheduler::read_region).
 CHECK_SAVE_SIZE(Scheduler_Data,  667);
 // SchedulerCalc не видит Constant.h, биты режима у него свои
 static_assert(SCHDLR_MODE_OFF == pOFF && SCHDLR_MODE_HEAT == pHEAT && SCHDLR_MODE_COOL == pCOOL, "SCHDLR_MODE_* разошлись с pOFF/pHEAT/pCOOL");
@@ -758,7 +758,7 @@ x_I2C_init_std_message:
 		journal.jprintf(" I2C memory is empty, a default settings will be used!\n");
 		HP.save_motoHour();
 	} else {
-		HP.load_all((uint8_t *)Socket[0].outBuf);     // читатель выбирается по версии, см. SettingsLegacy.cpp
+		HP.load_all((uint8_t *)Socket[0].outBuf, sizeof(Socket[0].outBuf));     // читатель выбирается по версии, см. SettingsLegacy.cpp
 	}
 	// обновить хеш для пользователей
 	HP.set_hashUser();
@@ -1559,6 +1559,7 @@ static void relayAct(devRelay &r, uint8_t act)
 	static uint32_t RPUMPBTick=0;
 	#endif
 	static uint8_t  Scheduler_check_day = 0;
+	static bool schedulerSavePending = false;
 	for(;;)
 	{
 		Watchdog_Beat(WDT_UpdateHP);   // отметка живости для наблюдателя
@@ -1605,10 +1606,11 @@ static void relayAct(devRelay &r, uint8_t act)
 					uint8_t was = HP.Schdlr.sch_data.Active;
 					if(Scheduler_AutoSelect(HP.Schdlr.sch_data.AutoSelectMonthWeek, MAX_CALENDARS, &HP.Schdlr.sch_data.Active, rtcSAM3X8.get_months(), d)) {
 						if(HP.Schdlr.sch_data.Active != was) journal.jprintf_time("Schedule %d selected\n", HP.Schdlr.sch_data.Active + 1);
-						HP.Schdlr.save();
+						schedulerSavePending = true;
 					}
 				}
 			}
+			if(schedulerSavePending) schedulerSavePending = HP.Schdlr.save() == ERR_I2C_BUSY;
 			// Какой профиль ДОЛЖЕН быть сейчас активен и что для этого сделать - решение в SchedulerCalc
 			int8_t _profile = HP.Schdlr.calc_active_profile();
 			uint8_t _state = HP.get_State();

@@ -49,42 +49,68 @@
 // вызовет, и на носителе окажется смесь форматов. Читатель старого формата
 // остаётся - он в SettingsLegacy.cpp и удаляется отдельно, через год.
 
-// Считать настройки из памяти i2c или из RAM, если не NULL, на выходе длина или код ошибки (меньше нуля)
-int32_t HeatPump::load(uint8_t *buffer, uint8_t from_RAM)
+// Копирование с правилом усечения, тем же, что у load_struct: берём
+// сколько есть, но не больше, чем ждём. Это и есть совместимость при росте
+// структуры с конца - в обе стороны.
+static void copy_min(void *to, const uint8_t *from, uint16_t have, uint16_t want)
+{
+	if(to) memcpy(to, from, have <= want ? have : want);
+}
+
+// Чтение тела блока с CRC. Для файла capacity включает поле длины,
+// для EEPROM это ёмкость буфера, куда читается тело.
+static int8_t read_settings_block(uint8_t *&buffer, uint16_t capacity, uint8_t from_RAM,
+                                  bool newFormat, uint16_t &size)
+{
+	if(from_RAM) {
+		journal.jprintf("FILE");
+		const uint32_t block = settings_file_block_size(buffer, capacity);
+		if(!block) return ERR_BAD_LEN_EEPROM;
+		size = block - sizeof(size);
+		buffer += sizeof(size);
+	} else {
+		journal.jprintf("I2C");
+		if(!buffer || readEEPROM_I2C(I2C_SETTING_EEPROM, (byte*)&size, sizeof(size)))
+			return ERR_LOAD_EEPROM;
+	}
+	if(newFormat && settings_head_check(size, VER_SAVE, VER_SAVE, NEW_HDR_SIZE) == SETHEAD_EMPTY)
+		return ERR_SETTINGS_HEADER;
+	if(!from_RAM) {
+		if(size > capacity || !settings_len_ok(size, I2C_PROFILE_EEPROM - I2C_SETTING_EEPROM))
+			return ERR_BAD_LEN_EEPROM;
+		if(readEEPROM_I2C(I2C_SETTING_EEPROM + sizeof(size), buffer, size)) return ERR_LOAD_EEPROM;
+	}
+	return OK;
+}
+
+// Считать настройки из I2C или файла. На выходе длина блока или отрицательный код ошибки.
+int32_t HeatPump::load(uint8_t *buffer, uint16_t capacity, uint8_t from_RAM)
 {
 	uint16_t size;
 	journal.jprintf(" Load settings from ");
-	if(from_RAM == 0) {
-		journal.jprintf("I2C");
-		if(readEEPROM_I2C(I2C_SETTING_EEPROM, (byte*) &size, sizeof(size))) {
-x_ReadError:
-			journal.jprintf(" - read error!\n");
-			return load_fail(ERR_LOAD_EEPROM, from_RAM);
-		}
-		if(size < 2 || size > I2C_PROFILE_EEPROM - I2C_SETTING_EEPROM)
-			return load_fail(ERR_BAD_LEN_EEPROM, from_RAM);
-		if(readEEPROM_I2C(I2C_SETTING_EEPROM + sizeof(size), buffer, size)) goto x_ReadError;
-	} else {
-		journal.jprintf("FILE");
-		size = *((uint16_t *) buffer);
-		buffer += sizeof(size);
-		if(size < 2) { journal.jprintf(" - bad size %d!\n", size); return ERR_BAD_LEN_EEPROM; }   // отказ файла не меняет error ТН
+	const int8_t status = read_settings_block(buffer, capacity, from_RAM, false, size);
+	if(status != OK) {
+		journal.jprintf(" - settings block rejected (%d)\n", (int)status);
+		return load_fail(status, from_RAM);
 	}
-	journal.jprintf(", size %d, crc: ", size + 2); // sizeof(crc)
-	size -= 2;
+	journal.jprintf(", size %d, crc: ", size + 2);
+	size -= sizeof(uint16_t);
+	const uint8_t *buffer_max = buffer + size;
 #ifdef LOAD_VERIFICATION
-	
-	uint16_t crc = 0xFFFF;
-	crc = calc_crc16(buffer, size, crc);
-	if(crc != *((uint16_t *)(buffer + size))) {
-		journal.jprintf("Error: %04x != %04x!\n", crc, *((uint16_t *)(buffer + size)));
+	const uint16_t crc = calc_crc16(buffer, size);
+	const uint16_t stored = rec_hdr_tag(buffer_max);
+	if(crc != stored) {
+		journal.jprintf("Error: %04x != %04x!\n", crc, stored);
 		return load_fail(ERR_CRC16_EEPROM, from_RAM);
 	}
 	journal.jprintf("%04x", crc);
 #else
 	journal.jprintf("*No verification");
 #endif
-	uint8_t *buffer_max = buffer + size;
+	if(!settings_legacy_valid(buffer, buffer_max, SAVE_TYPE_LIMIT, SAVE_TYPE_sIP)) {
+		journal.jprintf(" - invalid legacy record structure!\n");
+		return load_fail(ERR_SETTINGS_STRUCT, from_RAM);
+	}
 #ifdef EEV_DEF
 	const type_settingsEEV *currentEEV = (const type_settingsEEV*)dEEV.get_save_addr();
 	if(!eev_bounds_scan(buffer, buffer_max, true, SAVE_TYPE_dEEV, offsetof(type_settingsEEV, minSteps),
@@ -93,50 +119,44 @@ x_ReadError:
 		return load_fail(ERR_CONFIG, from_RAM);
 	}
 #endif
-	size += 2;
-	load_struct(&Option, &buffer, sizeof(Option));
-	journal.jprintf(", v.%d ", Option.ver);  // вывести версию сохранения
-	load_struct(&DateTime, &buffer, sizeof(DateTime));
-	load_struct(&Network, &buffer, sizeof(Network));
-	load_struct(message.get_save_addr(), &buffer, message.get_save_size());
-	load_struct(dFC.get_save_addr(), &buffer,  dFC.get_save_size());
+	const uint8_t *p = buffer;
+	load_struct(&Option, &p, buffer_max, sizeof(Option));
+	journal.jprintf(", v.%d ", Option.ver);
+	load_struct(&DateTime, &p, buffer_max, sizeof(DateTime));
+	load_struct(&Network, &p, buffer_max, sizeof(Network));
+	load_struct(message.get_save_addr(), &p, buffer_max, message.get_save_size());
+	load_struct(dFC.get_save_addr(), &p, buffer_max, dFC.get_save_size());
+
 	int16_t type = SAVE_TYPE_LIMIT;
-	while(buffer_max > buffer) { // динамические структуры
-		if(*((int16_t *) buffer) <= SAVE_TYPE_END && *((int16_t *) buffer) > SAVE_TYPE_LIMIT) {
-			type = *((int16_t *) buffer);
-			buffer += 2;
-		}
-		// массивы, длина структуры должна быть меньше 128 байт, <size[1]><<number>struct>
-		uint8_t n = buffer[1]; // номер элемента
-		if(type == SAVE_TYPE_sTemp) { // первый в структуре идет номер датчика
-			if(n < TNUMBER) { load_struct(sTemp[n].get_save_addr(), &buffer, sTemp[n].get_save_size());	sTemp[n].after_load(); } else goto xSkip;
+	while(p < buffer_max) {
+		uint16_t len;
+		const uint8_t *data = settings_legacy_next(p, buffer_max, len, type, SAVE_TYPE_LIMIT);
+		if(!data || type == SAVE_TYPE_END) break;
+		const uint8_t n = len ? data[0] : 0;
+		if(type == SAVE_TYPE_sTemp) {
+			if(n < TNUMBER) { copy_min(sTemp[n].get_save_addr(), data, len, sTemp[n].get_save_size()); sTemp[n].after_load(); }
 		} else if(type == SAVE_TYPE_sADC) {
-			if(n < ANUMBER) { load_struct(sADC[n].get_save_addr(), &buffer, sADC[n].get_save_size()); sADC[n].after_load(); } else goto xSkip;
+			if(n < ANUMBER) { copy_min(sADC[n].get_save_addr(), data, len, sADC[n].get_save_size()); sADC[n].after_load(); }
 		} else if(type == SAVE_TYPE_sInput) {
-			if(n < INUMBER) load_struct(sInput[n].get_save_addr(), &buffer, sInput[n].get_save_size()); else goto xSkip;
+			if(n < INUMBER) copy_min(sInput[n].get_save_addr(), data, len, sInput[n].get_save_size());
 		} else if(type == SAVE_TYPE_sFrequency) {
-			if(n < FNUMBER) load_struct(sFrequency[n].get_save_addr(), &buffer, sFrequency[n].get_save_size()); else goto xSkip;
+			if(n < FNUMBER) copy_min(sFrequency[n].get_save_addr(), data, len, sFrequency[n].get_save_size());
 #ifdef SENSOR_IP
 		} else if(type == SAVE_TYPE_sIP) {
-			if(n < IPNUMBER) { load_struct(sIP[n].get_save_addr(), &buffer, sIP[n].get_save_size()); sIP[n].after_load(); } else goto xSkip;
+			if(n < IPNUMBER) { copy_min(sIP[n].get_save_addr(), data, len, sIP[n].get_save_size()); sIP[n].after_load(); }
 #endif
-		// не массивы <size[1|2]><struct>
 #ifdef EEV_DEF
 		} else if(type == SAVE_TYPE_dEEV) {
-			load_struct(dEEV.get_save_addr(), &buffer, dEEV.get_save_size()); dEEV.after_load();
+			copy_min(dEEV.get_save_addr(), data, len, dEEV.get_save_size()); dEEV.after_load();
 #endif
 #ifdef USE_ELECTROMETER_SDM
 		} else if(type == SAVE_TYPE_dSDM) {
-			load_struct(dSDM.get_save_addr(), &buffer, dSDM.get_save_size());
+			copy_min(dSDM.get_save_addr(), data, len, dSDM.get_save_size());
 #endif
 #ifdef MQTT
 		} else if(type == SAVE_TYPE_clMQTT) {
-			load_struct(clMQTT.get_save_addr(), &buffer, clMQTT.get_save_size());
+			copy_min(clMQTT.get_save_addr(), data, len, clMQTT.get_save_size());
 #endif
-		} else if(type == SAVE_TYPE_END) {
-			break;
-		} else {
-xSkip:		load_struct(NULL, &buffer, 0); // skip unknown type
 		}
 	}
 #ifdef SENSOR_IP
@@ -148,7 +168,7 @@ xSkip:		load_struct(NULL, &buffer, 0); // skip unknown type
 	for(uint8_t i = 0; i < FNUMBER; i++) sFrequency[i].after_load();
 	dbg_after_load();
 	journal.jprintf("OK\n");
-	return size + sizeof(crc);
+	return size + 2 * sizeof(uint16_t);
 }
 
 // ---------------------------------------------------------------------------
@@ -170,14 +190,6 @@ xSkip:		load_struct(NULL, &buffer, 0); // skip unknown type
 // Тег означает РАСКЛАДКУ: при несовместимом изменении структуры заводится
 // новый тег, а не поднимается версия формата. Поэтому 150 простоит долго.
 // ---------------------------------------------------------------------------
-
-// Копирование с правилом усечения, тем же, что у load_struct: берём
-// сколько есть, но не больше, чем ждём. Это и есть совместимость при росте
-// структуры с конца - в обе стороны.
-static void copy_min(void *to, const uint8_t *from, uint16_t have, uint16_t want)
-{
-	if(to) memcpy(to, from, have <= want ? have : want);
-}
 
 // Версия записи не может быть НИЖЕ порога нового каркаса: иначе прошивка
 // писала бы данные, которые сама же потом отправит старому читателю.
@@ -209,25 +221,24 @@ void HeatPump::dbg_before_save()
 	Dbg_Pack(dbgFlags, &Option.dbg, &Option.dbg2);
 }
 
-int32_t HeatPump::save_all(void)
+int32_t HeatPump::save_all(bool saveCounters)
 {
 	// Условие - ПОРОГ: конверсия нужна, только если данные старого каркаса.
 	// Сообщаем версию, которой пишем, то есть VER_SAVE.
 	if(Option.ver < SETTINGS_VER_NEW) {
 		journal.jprintf(" Converting settings to v.%d (was %d)\n", VER_SAVE, Option.ver);
 	}
-	// Сохранение одно за раз. save_all зовут CommandHP (pSAVE), веб-потоки (save.all) и загрузка прежнего формата,
-	// а три области EEPROM (профили, расписание, настройки) пишутся по частям: две записи вперемешку дали бы
-	// область из кусков двух сохранений. Флаг занимается атомарно, без мьютекса и без остановки планировщика.
-	// Второй вызывающий получает отказ ERR_I2C_BUSY ("занято") и ничего не пишет; set_Error для него не вызывается.
-	if(__atomic_exchange_n(&saving, (uint8_t) 1, __ATOMIC_SEQ_CST)) {
+	// Профили, расписание и настройки пишутся по частям. Общий замок
+	// защищает их от пересечения с другими операциями и экспортом.
+	SettingsLock lock(saving);
+	if(!lock) {
 		journal.jprintf(" Save settings: busy, another save is in progress\n");
 		return ERR_I2C_BUSY;
 	}
 	Prof.cache_store(Prof.get_idProfile());        // текущий профиль - в кеш, оттуда пишется область
 	int32_t ret = Prof.save_region();
 	if(ret >= 0) {
-		ret = Schdlr.save();
+		ret = Schdlr.save_locked();
 		if(ret == OK) {
 			ret = save_new();                     // настройки последними
 			if(ret < 0) {
@@ -237,7 +248,10 @@ int32_t HeatPump::save_all(void)
 			}
 		}
 	}
-	__atomic_store_n(&saving, (uint8_t) 0, __ATOMIC_SEQ_CST);
+	if(ret >= 0 && saveCounters) {
+		const int8_t counters = save_motoHour();
+		if(counters != OK) return counters;
+	}
 	return ret;
 }
 
@@ -326,56 +340,35 @@ void HeatPump::load_warn(int8_t code, uint8_t from_RAM)
 // Расписание, кеш профилей и текущий профиль: общий итог для обоих читателей.
 int8_t HeatPump::load_parts(void)
 {
-	int8_t ret = OK;
-	if(Schdlr.load() < 0) ret = ERR_SETTINGS_PARTS;
-	if(Prof.cache_load_all() < 0) ret = ERR_SETTINGS_PARTS;
-	if(Prof.load(Option.numProf) < 0) {
-		journal.jprintf(" Error load profile #%d\n", Option.numProf);
-		ret = ERR_SETTINGS_PARTS;
-	}
-	if(ret != OK) {
-		journal.jprintf(" Settings: schedule/profiles not loaded!\n");
-		load_warn(ret, 0);
-	}
-	return ret;
+	const int16_t schedule = Schdlr.load();
+	int32_t profile = Prof.cache_load_all();
+	if(profile == OK) profile = Prof.load(Option.numProf);
+	if(schedule >= 0 && profile >= 0) return OK;
+
+	journal.jprintf(" Settings: schedule=%d, profiles=%d\n", (int)schedule, (int)profile);
+	// Сохраняем исходную причину в статусе операции и в деталях общей аварии загрузки.
+	const int8_t result = schedule < 0 ? schedule : profile;
+	raise_Error(ERR_SETTINGS_PARTS, ErrorCatalog::kSETTINGS_PARTS, schedule < 0 ? "Scheduler" : "Profile",
+	            {ErrorDetailKind::Local, static_cast<uint16_t>(-result), 0});
+	return result;
 }
 
-int32_t HeatPump::load_new(uint8_t *buffer, uint8_t from_RAM)
+int32_t HeatPump::load_new(uint8_t *buffer, uint16_t capacity, uint8_t from_RAM)
 {
 	uint16_t size;
 	journal.jprintf(" Load settings from ");
-	if(from_RAM == 0) {
-		journal.jprintf("I2C");
-		if(readEEPROM_I2C(I2C_SETTING_EEPROM, (byte*) &size, sizeof(size))) {
-xReadError:
-			journal.jprintf(" - read error!\n");
-			return load_fail(ERR_LOAD_EEPROM, from_RAM);
-		}
-		// Пустая память читается как 0xFFFF: без этой проверки её приняли бы за ошибку длины
-		if(settings_head_check(size, VER_SAVE, VER_SAVE, NEW_HDR_SIZE) == SETHEAD_EMPTY) {
-			journal.jprintf(" - not found (size %d)!\n", size);
-			return load_fail(ERR_SETTINGS_HEADER, from_RAM);
-		}
-		if(size > I2C_PROFILE_EEPROM - I2C_SETTING_EEPROM) {
-			journal.jprintf(" - bad size %d!\n", size);
-			return load_fail(ERR_BAD_LEN_EEPROM, from_RAM);
-		}
-		if(readEEPROM_I2C(I2C_SETTING_EEPROM + sizeof(size), buffer, size)) goto xReadError;
-	} else {
-		journal.jprintf("FILE");
-		size = *((uint16_t *) buffer);
-		buffer += sizeof(size);
-		if(settings_head_check(size, VER_SAVE, VER_SAVE, NEW_HDR_SIZE) == SETHEAD_EMPTY) {
-			journal.jprintf(" - bad size %d!\n", size);
-			return load_fail(ERR_SETTINGS_HEADER, from_RAM);
-		}
+	const int8_t status = read_settings_block(buffer, capacity, from_RAM, true, size);
+	if(status != OK) {
+		journal.jprintf(" - settings block rejected (%d)\n", (int)status);
+		return load_fail(status, from_RAM);
 	}
 	journal.jprintf(", size %d, crc: ", size + 2);
-	size -= 2;                                   // без контрольной суммы в конце
+	size -= sizeof(uint16_t);
 #ifdef LOAD_VERIFICATION
 	uint16_t crc = calc_crc16(buffer, size, 0xFFFF);
-	if(crc != *((uint16_t *)(buffer + size))) {
-		journal.jprintf("Error: %04x != %04x!\n", crc, *((uint16_t *)(buffer + size)));
+	const uint16_t stored = rec_hdr_tag(buffer + size);
+	if(crc != stored) {
+		journal.jprintf("Error: %04x != %04x!\n", crc, stored);
 		return load_fail(ERR_CRC16_EEPROM, from_RAM);
 	}
 	journal.jprintf("%04x", crc);
@@ -402,7 +395,10 @@ xReadError:
 	// Обработчики after_load (шаговик, шина 1-Wire) запоминаются и вызываются уже после блока.
 	// static_assert ниже: маски по одному биту на датчик.
 	static_assert(TNUMBER <= 32 && ANUMBER <= 32 && IPNUMBER <= 32, "маски after_load рассчитаны на 32 датчика");
-	uint32_t afterT = 0, afterA = 0, afterIP = 0;
+	uint32_t afterT = 0, afterA = 0;
+#ifdef SENSOR_IP
+	uint32_t afterIP = 0;
+#endif
 #ifdef EEV_DEF
 	bool afterEEV = false;
 #endif
@@ -425,11 +421,11 @@ xReadError:
 	}
 #endif
 	uint8_t suspended = TaskSuspendAll();         // 1, только если планировщик работает (при старте задач ещё нет)
-	while(p + REC_HDR_SIZE <= p_max) {
+	while(p_max - p >= REC_HDR_SIZE) {
 		uint16_t tag = rec_hdr_tag(p);
 		uint16_t len = rec_hdr_len(p);
 		uint8_t *data = p + REC_HDR_SIZE;
-		if(data + len > p_max) break;            // обрубленная запись - дальше читать нечего
+		if(len > p_max - data) break;            // обрубленная запись - дальше читать нечего
 		p = data + len;
 		uint8_t n = len ? data[0] : 0;           // номер элемента массива лежит первым байтом
 		switch(tag) {
@@ -440,20 +436,20 @@ xReadError:
 		case NTAG_Message:  copy_min(message.get_save_addr(), data, len, message.get_save_size()); break;
 		case NTAG_FC:       copy_min(dFC.get_save_addr(),     data, len, dFC.get_save_size());     break;
 		case NTAG_sTemp:
-			if(n < TNUMBER) { copy_min(sTemp[n].get_save_addr(), data, len, sTemp[n].get_save_size()); afterT |= 1UL << n; }
+			if(len && n < TNUMBER) { copy_min(sTemp[n].get_save_addr(), data, len, sTemp[n].get_save_size()); afterT |= 1UL << n; }
 			break;
 		case NTAG_sADC:
-			if(n < ANUMBER) { copy_min(sADC[n].get_save_addr(), data, len, sADC[n].get_save_size()); afterA |= 1UL << n; }
+			if(len && n < ANUMBER) { copy_min(sADC[n].get_save_addr(), data, len, sADC[n].get_save_size()); afterA |= 1UL << n; }
 			break;
 		case NTAG_sInput:
-			if(n < INUMBER) copy_min(sInput[n].get_save_addr(), data, len, sInput[n].get_save_size());
+			if(len && n < INUMBER) copy_min(sInput[n].get_save_addr(), data, len, sInput[n].get_save_size());
 			break;
 		case NTAG_sFrequency:
-			if(n < FNUMBER) copy_min(sFrequency[n].get_save_addr(), data, len, sFrequency[n].get_save_size());
+			if(len && n < FNUMBER) copy_min(sFrequency[n].get_save_addr(), data, len, sFrequency[n].get_save_size());
 			break;
 #ifdef SENSOR_IP
 		case NTAG_sIP:
-			if(n < IPNUMBER) { copy_min(sIP[n].get_save_addr(), data, len, sIP[n].get_save_size()); afterIP |= 1UL << n; }
+			if(len && n < IPNUMBER) { copy_min(sIP[n].get_save_addr(), data, len, sIP[n].get_save_size()); afterIP |= 1UL << n; }
 			break;
 #endif
 #ifdef EEV_DEF
@@ -551,35 +547,38 @@ xNotEqual:
 // чтение счетчиков теплового насоса в ЕЕПРОМ
 int8_t HeatPump::load_motoHour()          
 {
-	if(readEEPROM_I2C(I2C_COUNT_EEPROM, &motoHour.Header, sizeof(motoHour.Header))) { // прочитать заголовок
+	type_motoHour loaded{};
+	if(readEEPROM_I2C(I2C_COUNT_EEPROM, &loaded.Header, sizeof(loaded.Header))) { // прочитать заголовок
 		set_Warning(ErrorCatalog::kMOTO_HOUR, "counters", 0, "Не удалось прочитать моточасы");
 		return ERR_LOAD2_EEPROM;
 	}
-	if(motoHour.Header != I2C_COUNT_EEPROM_HEADER) { // заголовок плохой
+	if(loaded.Header != I2C_COUNT_EEPROM_HEADER) { // заголовок плохой
 		journal.jprintf("Bad header counters, skip load\n");
 		return ERR_HEADER2_EEPROM;
 	}
-	if(readEEPROM_I2C(I2C_COUNT_EEPROM + sizeof(motoHour.Header), (byte*) &motoHour + sizeof(motoHour.Header), sizeof(motoHour) - sizeof(motoHour.Header))) { // прочитать счетчики
+	if(readEEPROM_I2C(I2C_COUNT_EEPROM + sizeof(loaded.Header), (byte*)&loaded + sizeof(loaded.Header), sizeof(loaded) - sizeof(loaded.Header))) { // прочитать счетчики
 		set_Warning(ErrorCatalog::kMOTO_HOUR, "counters", 0, "Не удалось прочитать моточасы");
 		return ERR_LOAD2_EEPROM;
 	}
 	if(legacy_motohour_needed(Option.ver)) {
 		// Байты из EEPROM разложены по СТАРОЙ схеме, а лежат уже в новой
 		// структуре: копируем их и читаем по старым смещениям.
-		memcpy(&motoHour_saved, &motoHour, sizeof(motoHour_saved));
-		motohour_migrate_from_138(motoHour, *(const type_motoHour_old*)&motoHour_saved);
+		type_motoHour_old old;
+		memcpy(&old, &loaded, sizeof(old));
+		motohour_migrate_from_138(loaded, old);
 	}
-	memcpy(&motoHour_saved, &motoHour, sizeof(motoHour_saved));
+	memcpy(&motoHour, &loaded, sizeof(loaded));
+	memcpy(&motoHour_saved, &loaded, sizeof(loaded));
 	journal.printf(" Load counters OK, read: %d bytes\n", sizeof(motoHour));
 	return OK;
 }
-// Сборос сезонного счетчика моточасов
+// Сброс сезонного счетчика моточасов
 // параметр true - сброс всех счетчиков
-void HeatPump::resetCount(boolean full)
+int8_t HeatPump::resetCount(boolean full)
 {
 	motohour_reset(motoHour, full, rtcSAM3X8.unixtime(),
 	               motohour_IN_work, motohour_OUT_work);
-	save_motoHour();  // записать счетчики
+	return save_motoHour();
 }
 
 // Обновление счетчиков моточасов, вызывается раз в минуту

@@ -74,7 +74,12 @@ int base64_dec_len(char *input, int inputLen);
 // ---- Util.cpp: CRC16 и сериализация ----
 uint16_t calc_crc16(unsigned char * pcBlock, unsigned short len, uint16_t crc = 0xFFFF);
 uint16_t _crc16(uint16_t crc, uint8_t a);             // побайтно, для потоковых расчётов
-void load_struct(void *to, uint8_t **from, uint16_t to_size);
+// Читатели старого формата. При неполной записи курсор и назначение не меняются.
+const uint8_t *settings_legacy_record(const uint8_t *&p, const uint8_t *end, uint16_t &len);
+const uint8_t *settings_legacy_next(const uint8_t *&p, const uint8_t *end, uint16_t &len,
+                                   int16_t &tag, int16_t tagLimit);
+bool settings_legacy_valid(const uint8_t *p, const uint8_t *end, int16_t tagLimit, int16_t lastArrayTag);
+bool load_struct(void *to, const uint8_t **from, const uint8_t *end, uint16_t to_size);
 
 // Общий буфер вывода и шестнадцатеричные преобразования. Определены в Util.cpp.
 // ВНИМАНИЕ: буфер ОДИН на всех, включая ResetCause. Пользоваться только в
@@ -155,6 +160,8 @@ SettingsHead settings_head_check(uint16_t size, uint8_t ver, uint8_t max_ver, ui
 // двух байт файла и считал по нему CRC от начала буфера (6 КБ), а size бывает до 65535: чужой или
 // испорченный файл уводил чтение за конец буфера, size < 2 заворачивал size -= 2 в 65534.
 bool settings_len_ok(uint16_t size, int32_t avail);
+// Полный размер блока из файла, включая поле длины, или 0 при неполном блоке.
+uint32_t settings_file_block_size(const uint8_t *buffer, int32_t avail);
 // Предел частоты инвертора при работе от генератора (резервное питание) из сохранённых настроек. Поле хранится
 // в EEPROM, а в старых настройках его не было: читалось 0, и с флагом fBackupPower задание частоты срезалось
 // до нуля (OmronFC.cpp, set_target). Ноль и отрицательное значение заменяются значением по умолчанию.
@@ -288,7 +295,7 @@ void settings_scan(const uint8_t *p, const uint8_t *p_max, uint16_t end_tag, uin
 struct ProfileScan {
 	uint8_t  slots;        // годных записей
 	uint8_t  bad_len;      // длина записи не равна ожидаемой
-	uint8_t  bad_slot;     // номер слота не меньше max_slots
+	uint8_t  bad_slot;     // номер слота вне диапазона или повторён
 	uint8_t  bad_tag;      // чужой тег вместо записи профиля или END
 	uint8_t  truncated;    // запись вылезает за границу буфера
 	bool     end_seen;     // встретилась запись END
