@@ -1,6 +1,5 @@
 /*
  * Copyright (c) 2016-2026 by Pavel Panfilov <firstlast2007@gmail.com>  telegram @pav20000
- * &                       by Vadim Kulakov vad7@yahoo.com, vad711
  * "Народный контроллер 2.0" для тепловых насосов.
  * Данное программное обеспечение предназначено для управления
  * различными типами тепловых насосов для отопления и ГВС.
@@ -15,6 +14,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 // ---- функции общего использования ----
 /*
  * Функции общего назначения. Делятся на две части:
@@ -142,7 +142,7 @@ void     rec_hdr_put(uint8_t *buf, uint16_t tag, uint16_t len);  // положи
 // (возврат 0 - успех), ctx передаётся ей как есть. crc на входе - начальное значение, на выходе - CRC
 // записанных данных. Возврат: 0 - записано и CRC стабильна, 1 - запись отказала, 2 - данные менялись все attempts раз.
 // Раньше CRC считалась один раз ПОСЛЕ записи, и изменение структуры между записью и подсчётом давало
-// несовпадение при контрольном чтении (ERR_SETTINGS_VERIFY, останов ТН); от него защищала остановка планировщика.
+// несовпадение при контрольном чтении (код SETTINGS_DATA, останов ТН); от него защищала остановка планировщика.
 typedef int (*RecWriteFn)(void *ctx, const uint8_t *data, uint16_t size);
 int8_t   Record_WriteStable(RecWriteFn wr, void *ctx, const uint8_t *src, uint16_t size, uint16_t *crc, uint8_t attempts);
 uint16_t rec_hdr_tag(const uint8_t *buf);                        // тег записи
@@ -150,6 +150,13 @@ uint16_t rec_hdr_len(const uint8_t *buf);                        // длина �
 
 // Проверка заголовка и каркаса блока настроек нового формата (чистая логика,
 // проверяется на хосте). Блок: [длина:2][пролог][записи][контрольная сумма:2].
+enum class SettingsDataCause : uint8_t {
+	Length = 1, // Длина блока выходит за пределы буфера или области EEPROM.
+	Header,     // Заголовок отсутствует или версия несовместима.
+	Crc,        // Контрольная сумма блока не совпала.
+	Structure   // Повреждена последовательность записей или отсутствует END.
+};
+
 enum SettingsHead { SETHEAD_OK = 0, SETHEAD_EMPTY, SETHEAD_NEWER };
 // size - длина после поля длины (с контрольной суммой), ver - байт версии.
 // EMPTY: область не опознана (пустая память 0xFFFF, нулевая или короче пролога,

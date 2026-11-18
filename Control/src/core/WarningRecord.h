@@ -15,17 +15,20 @@
  * GNU General Public License for more details.
  */
 
+// Описывает снимок предупреждения и формирует ключ для подавления повторных уведомлений.
+
 #ifndef Control_WarningRecord_h
 #define Control_WarningRecord_h
 
 #include <string.h>
-#include "ErrorCatalog.h"
+#include "DriveError.h"
 
 struct WarningRecord {
 	ErrorCatalog::ErrCode code; // Номер предупреждения или 0 при его отсутствии
 	uint16_t cause; // Устойчивая причина для подавления повторов
 	uint32_t time; // Время регистрации в секундах Unix
 	char device[16]; // Короткое имя устройства, завершённое нулём
+	ErrorDetail detail; // Исходные данные события или пустая деталь.
 
 	// Сравнивает код, устройство и причину с другой записью. Возвращает true для повтора.
 	bool SameCause(const WarningRecord &other) const

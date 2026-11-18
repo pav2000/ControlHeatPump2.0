@@ -88,7 +88,7 @@ uint8_t Overheat_SensorsNeeded(uint8_t rule);
 
 // Считает перегрев. prev - предыдущее значение: при ошибке и в случае, когда
 // формула выбранного правила в сборке отсутствует, перегрев НЕ меняется.
-// error - признак ERR_TYPE_OVERHEAT, ошибку регистрирует вызывающий.
+// error - признак TYPE_OVERHEAT, ошибку регистрирует вызывающий.
 int16_t Overheat_Calc(const OverheatIn &in, int16_t prev, bool *error);
 
 #endif

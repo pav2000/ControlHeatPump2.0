@@ -15,6 +15,8 @@
  * GNU General Public License for more details.
  */
 
+// Единый список строк каталога, подключаемый для объявления кодов и формирования метаданных.
+
 // Номер, идентификатор, группа, источник, обычная регистрация, описание.
 
 ERROR_DEF(TEMP_MIN, -1, SENSORS, "TEMP", Alarm, "температура ниже допустимой границы")
@@ -32,7 +34,7 @@ ERROR_DEF(EEV_CONFIG, -11, CONTROL, "EEV", Alarm, "Выбранное прави
 ERROR_DEF(EEV_DRIVER, -12, CONTROL, "EEV", Alarm, "Сработала диагностика драйвера ЭРВ")
 ERROR_DEF(COMP_START_BLOCKED, -13, CONTROL, "COMP", Alarm, "Попытка пуска компрессора при активной ошибке")
 ERROR_DEF(COMP_NO_PUMP, -14, CONTROL, "COMP", Alarm, "Попытка пуска компрессора при выключенном насосе")
-ERROR_DEF(HARD_STATE, -15, CONTROL, "SYS", Alarm, "Оборудование находится в недопустимом состоянии")
+ERROR_DEF(HARD_STATE, -15, CONTROL, "SYS", Alarm, "Контроллер или оборудование находится в недопустимом состоянии")
 ERROR_DEF(TEMP_DELTA_CON, -16, CONTROL, "TEMP", Alarm, "Разность температур на конденсаторе выше допустимой")
 ERROR_DEF(DEFROST_TIMEOUT, -17, CONTROL, "SYS", Alarm, "Разморозка не завершилась в срок")
 ERROR_DEF(PID_FEED_LIMIT, -18, CONTROL, "TEMP", Alarm, "Превышен предел температуры подачи при регулировании")
@@ -72,7 +74,7 @@ ERROR_DEF(PROFILE_READ, -48, SETTINGS, "I2C", RequiredAtBoot, "Не удалос
 ERROR_DEF(PROFILE_DATA, -49, SETTINGS, "CFG", RequiredAtBoot, "Некорректная длина или CRC профиля")
 
 ERROR_DEF(MOTO_HOUR, -50, STORAGE_SYSTEM, "I2C", Warning, "Ошибка чтения или записи моточасов")
-ERROR_DEF(I2C_MEMORY, -51, STORAGE_SYSTEM, "I2C", Alarm, "Тип микросхемы памяти отличается от ожидаемого")
+ERROR_DEF(I2C_MEMORY, -51, STORAGE_SYSTEM, "I2C", Alarm, "Память I2C недоступна или отличается от ожидаемой")
 ERROR_DEF(JOURNAL, -52, STORAGE_SYSTEM, "I2C", Warning, "Не удалось открыть, прочитать или записать журнал")
 ERROR_DEF(SD, -53, STORAGE_SYSTEM, "SD", Warning, "Ошибка инициализации, чтения или записи SD-карты")
 ERROR_DEF(MEMORY, -54, STORAGE_SYSTEM, "SYS", Alarm, "Недостаточно памяти для данных")

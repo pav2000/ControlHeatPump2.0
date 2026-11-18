@@ -47,7 +47,10 @@ uint32_t SerialFlashChip::Capacity = 0;
 #define FLAG_MULTI_DIE		0x08	// multiple die, don't read cross 32M barrier
 #define FLAG_256K_BLOCKS	0x10	// has 256K erase blocks
 
+// nextEraseDie — номер следующего кристалла, eraseDieCount — число кристаллов для стирания.
+// resumeCommand — отложенная команда возобновления прерванной операции.
 static uint8_t nextEraseDie, eraseDieCount, resumeCommand;
+// Размер одного кристалла в байтах, нужен для вычисления адреса стирания.
 static uint32_t eraseDieSize;
 
 // pav2000 Передаёт чипу однобайтовую команду cmd. Возвращает true при успешном обмене SPI.

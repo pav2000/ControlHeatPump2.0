@@ -15,6 +15,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 #ifndef Profile_h
 #define Profile_h
 #include "../log/Journal.h"

@@ -15,6 +15,8 @@
  * GNU General Public License for more details.
  */
 
+// Собирает признаки для предупреждений о часах, свободной памяти и устойчивых сбоях SPI/DMA.
+
 #include "ServiceWarnings.h"
 #include "HeatPump.h"
 #include "../hw/Clock.h"
@@ -51,7 +53,7 @@ void ServiceWarningsPoll()
 		static TimedWarning time; // Эпизод недостоверных часов.
 		const bool trusted = ClockTimeTrusted(now);
 		if(time.Update(now, !trusted, trusted, TIME_UNTRUSTED_CONFIRM_S, 0))
-			HP.set_Warning(ErrorCatalog::kTIME, "RTC", 0, nullptr, true);
+			HP.set_Warning(ErrorCatalog::Code::kTIME, "RTC", 0, nullptr, true);
 	}
 	if(HEAP_LOW_WARN_ENABLED) {
 		static TimedWarning heap; // Эпизод малого запаса памяти.
@@ -60,11 +62,12 @@ void ServiceWarningsPoll()
 		               HEAP_LOW_CONFIRM_S, HEAP_RECOVER_CONFIRM_S)) {
 			char detail[64];
 			m_snprintf(detail, sizeof(detail), "Свободно %d байт, порог %d", (int)bytes, HEAP_LOW_BYTES);
-			HP.set_Warning(ErrorCatalog::kHEAP_LOW, "RAM", 0, detail, true);
+			HP.set_Warning(ErrorCatalog::Code::kHEAP_LOW, "RAM", 0, detail, true);
 		}
 	}
 	if(IO_BUS_WARN_ENABLED) {
 		static SpiWarning spi; // Счётчики последовательных неблагополучных окон.
+		// Пороги для счётчиков тайм-аутов SPI, тайм-аутов DMA и переполнений DMA.
 		static constexpr unsigned limits[] = {IO_BUS_TIMEOUT_LIMIT, IO_DMA_TIMEOUT_LIMIT,
 		                                      IO_DMA_OVERRUN_LIMIT}; // Пороги в порядке снимка SPI.
 		const uint8_t reason = spi.Update(now, readSpiWarningSample(), IO_BUS_WINDOW_S, limits, IO_BAD_WINDOWS);
@@ -73,7 +76,7 @@ void ServiceWarningsPoll()
 			m_snprintf(detail, sizeof(detail), "Повторные сбои:%s%s%s",
 			           reason & 1 ? " SPI timeout" : "", reason & 2 ? " DMA timeout" : "",
 			           reason & 4 ? " SPI overrun" : "");
-			HP.set_Warning(ErrorCatalog::kIO_BUS, "SPI", reason, detail, true);
+			HP.set_Warning(ErrorCatalog::Code::kIO_BUS, "SPI", reason, detail, true);
 		}
 	}
 }

@@ -15,6 +15,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 // ---- Работа со временем ----
 #include "../../Constant.h"                       // Вся конфигурация и константы проекта Должен быть первым !!!!
 #include <rtc_clock.h>                      // Работа со встроенными часами

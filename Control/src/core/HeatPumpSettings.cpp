@@ -15,6 +15,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 /*
  * Настройки ТН: сохранение и чтение в i2c EEPROM (формат с тегами и старый),
  * счётчики моточасов, сброс к заводским значениям, а также разбор и выдача
@@ -56,43 +57,50 @@ static void copy_min(void *to, const uint8_t *from, uint16_t have, uint16_t want
 	if(to) memcpy(to, from, have <= want ? have : want);
 }
 
-// Читает тело с CRC в buffer из EEPROM или сдвигает buffer к телу файла при from_RAM.
-// capacity — ёмкость буфера или длина файла, newFormat выбирает проверку пролога.
-// Возвращает OK с размером тела в size либо код отказа.
-static int8_t read_settings_block(uint8_t *&buffer, uint16_t capacity, uint8_t from_RAM,
-                                  bool newFormat, uint16_t &size)
+// Читает тело с CRC из EEPROM либо файла в buffer ёмкостью capacity (from_RAM определяет источник).
+// newFormat включает проверку пролога, size получает размер, cause — локальную причину отказа.
+// Возвращает код результата из каталога, включая ноль при успехе.
+static ErrorCatalog::Code read_settings_block(uint8_t *&buffer, uint16_t capacity, uint8_t from_RAM,
+                                  bool newFormat, uint16_t &size, uint16_t &cause)
 {
 	if(from_RAM) {
 		journal.jprintf("FILE");
 		const uint32_t block = settings_file_block_size(buffer, capacity);
-		if(!block) return ERR_BAD_LEN_EEPROM;
+		if(!block) {
+			cause = static_cast<uint16_t>(SettingsDataCause::Length);
+			return ErrorCatalog::Code::kSETTINGS_DATA;
+		}
 		size = block - sizeof(size);
 		buffer += sizeof(size);
 	} else {
 		journal.jprintf("I2C");
-		if(!buffer || readEEPROM_I2C(I2C_SETTING_EEPROM, (byte*)&size, sizeof(size)))
-			return ERR_LOAD_EEPROM;
+		if(!buffer || (cause = readEEPROM_I2C(I2C_SETTING_EEPROM, (byte*)&size, sizeof(size))))
+			return ErrorCatalog::Code::kSETTINGS_READ;
 	}
-	if(newFormat && settings_head_check(size, VER_SAVE, VER_SAVE, NEW_HDR_SIZE) == SETHEAD_EMPTY)
-		return ERR_SETTINGS_HEADER;
+	if(newFormat && settings_head_check(size, VER_SAVE, VER_SAVE, NEW_HDR_SIZE) == SETHEAD_EMPTY) {
+		cause = static_cast<uint16_t>(SettingsDataCause::Header);
+		return ErrorCatalog::Code::kSETTINGS_DATA;
+	}
 	if(!from_RAM) {
-		if(size > capacity || !settings_len_ok(size, I2C_PROFILE_EEPROM - I2C_SETTING_EEPROM))
-			return ERR_BAD_LEN_EEPROM;
-		if(readEEPROM_I2C(I2C_SETTING_EEPROM + sizeof(size), buffer, size)) return ERR_LOAD_EEPROM;
+		if(size > capacity || !settings_len_ok(size, I2C_PROFILE_EEPROM - I2C_SETTING_EEPROM)) {
+			cause = static_cast<uint16_t>(SettingsDataCause::Length);
+			return ErrorCatalog::Code::kSETTINGS_DATA;
+		}
+		if((cause = readEEPROM_I2C(I2C_SETTING_EEPROM + sizeof(size), buffer, size))) return ErrorCatalog::Code::kSETTINGS_READ;
 	}
-	return OK;
+	return ErrorCatalog::Code::kOK;
 }
 
 // Загружает старый формат. buffer и capacity задают буфер EEPROM или файл при from_RAM.
 // Возвращает длину блока с префиксом и CRC либо отрицательный код.
 int32_t HeatPump::load(uint8_t *buffer, uint16_t capacity, uint8_t from_RAM)
 {
-	uint16_t size;
+	uint16_t size, cause = 0;
 	journal.jprintf(" Load settings from ");
-	const int8_t status = read_settings_block(buffer, capacity, from_RAM, false, size);
-	if(status != OK) {
-		journal.jprintf(" - settings block rejected (%d)\n", (int)status);
-		return load_fail(status, from_RAM);
+	const auto status = read_settings_block(buffer, capacity, from_RAM, false, size, cause);
+	if(status != ErrorCatalog::Code::kOK) {
+		journal.jprintf(" - settings block rejected (%d), cause %u\n", (int)status, (unsigned)cause);
+		return load_fail(status, from_RAM, cause);
 	}
 	journal.jprintf(", size %d, crc: ", size + 2);
 	size -= sizeof(uint16_t);
@@ -102,7 +110,7 @@ int32_t HeatPump::load(uint8_t *buffer, uint16_t capacity, uint8_t from_RAM)
 	const uint16_t stored = rec_hdr_tag(buffer_max);
 	if(crc != stored) {
 		journal.jprintf("Error: %04x != %04x!\n", crc, stored);
-		return load_fail(ERR_CRC16_EEPROM, from_RAM);
+		return load_fail(ErrorCatalog::Code::kSETTINGS_DATA, from_RAM, static_cast<uint16_t>(SettingsDataCause::Crc));
 	}
 	journal.jprintf("%04x", crc);
 #else
@@ -110,14 +118,14 @@ int32_t HeatPump::load(uint8_t *buffer, uint16_t capacity, uint8_t from_RAM)
 #endif
 	if(!settings_legacy_valid(buffer, buffer_max, SAVE_TYPE_LIMIT, SAVE_TYPE_sIP)) {
 		journal.jprintf(" - invalid legacy record structure!\n");
-		return load_fail(ERR_SETTINGS_STRUCT, from_RAM);
+		return load_fail(ErrorCatalog::Code::kSETTINGS_DATA, from_RAM, static_cast<uint16_t>(SettingsDataCause::Structure));
 	}
 #ifdef EEV_DEF
 	const type_settingsEEV *currentEEV = (const type_settingsEEV*)dEEV.get_save_addr();
 	if(!eev_bounds_scan(buffer, buffer_max, true, SAVE_TYPE_dEEV, offsetof(type_settingsEEV, minSteps),
 	                    offsetof(type_settingsEEV, maxSteps), currentEEV->minSteps, currentEEV->maxSteps, EEV_CLOSE_STEP)) {
 		journal.jprintf(" - invalid EEV settings!\n");
-		return load_fail(ERR_CONFIG, from_RAM);
+		return load_fail(ErrorCatalog::Code::kCONFIG, from_RAM);
 	}
 #endif
 	const uint8_t *p = buffer;
@@ -236,7 +244,7 @@ int32_t HeatPump::save_all(bool saveCounters)
 	SettingsLock lock(saving);
 	if(!lock) {
 		journal.jprintf(" Save settings: busy, another save is in progress\n");
-		return ERR_I2C_BUSY;
+		return ErrorNumber(ErrorCatalog::Code::kI2C_BUSY);
 	}
 	Prof.cache_store(Prof.get_idProfile());        // текущий профиль - в кеш, оттуда пишется область
 	int32_t ret = Prof.save_region();
@@ -245,9 +253,10 @@ int32_t HeatPump::save_all(bool saveCounters)
 		if(ret == OK) {
 			ret = save_new();                     // настройки последними
 			if(ret < 0) {
-				const char *detail = ret == ERR_SETTINGS_VERIFY ? "Проверка записи настроек не прошла" :
-				                     ret == ERR_LOAD_EEPROM ? "Контрольное чтение настроек не удалось" : nullptr;
-				set_Warning(ErrorCatalog::kSETTINGS_WRITE, "settings", -ret, detail);
+				const char *detail = ret == ErrorNumber(ErrorCatalog::Code::kSETTINGS_DATA) ? "Проверка записи настроек не прошла" :
+				                     ret == ErrorNumber(ErrorCatalog::Code::kSETTINGS_READ) ? "Контрольное чтение настроек не удалось" : nullptr;
+				set_Warning(ErrorCatalog::Code::kSETTINGS_WRITE, "settings", -ret, detail);
+				ret = ErrorNumber(ErrorCatalog::Code::kSETTINGS_WRITE);
 			}
 		}
 	}
@@ -277,7 +286,7 @@ int32_t HeatPump::save_new(void)
 	// Больше не нужна: старая обработка нужна ТОЛЬКО до конверсии, а тогда
 	// её включает сам Option.ver. Байт остаётся нулём от memset выше и
 	// НЕ переиспользуется: прошивки до этой правки читают его как эпоху.
-	if(writeEEPROM_I2C(addr, hdr, sizeof(hdr))) return ERR_SAVE_EEPROM;
+	if(writeEEPROM_I2C(addr, hdr, sizeof(hdr))) return ErrorNumber(ErrorCatalog::Code::kSETTINGS_WRITE);
 	crc = calc_crc16(hdr, sizeof(hdr), crc);
 	addr += sizeof(hdr);
 	Option.ver = VER_SAVE;
@@ -313,35 +322,35 @@ int32_t HeatPump::save_new(void)
 #endif
 	if((result = save_rec(addr, NTAG_END, NULL, 0, crc)) != OK) return result;
 
-	if(writeEEPROM_I2C(addr, (uint8_t *)&crc, sizeof(crc))) return ERR_SAVE_EEPROM;
+	if(writeEEPROM_I2C(addr, (uint8_t *)&crc, sizeof(crc))) return ErrorNumber(ErrorCatalog::Code::kSETTINGS_WRITE);
 	addr = addr + sizeof(crc) - (I2C_SETTING_EEPROM + 2);          // превратить в длину
-	if(writeEEPROM_I2C(I2C_SETTING_EEPROM, (uint8_t *)&addr, 2)) return ERR_SAVE_EEPROM;
+	if(writeEEPROM_I2C(I2C_SETTING_EEPROM, (uint8_t *)&addr, 2)) return ErrorNumber(ErrorCatalog::Code::kSETTINGS_WRITE);
 	result = check_crc16_eeprom(I2C_SETTING_EEPROM + 2, addr - 2);
-	if(result != OK) return result == ERR_CRC16_EEPROM ? ERR_SETTINGS_VERIFY : result;
+	if(result != OK) return result;
 	addr += 2;
 	journal.jprintf("OK, wrote: %d bytes, crc: %04x\n", (int)addr, crc);
 	return addr;
 }
 
-// Ошибка загрузки настроек. При чтении из I2C (старт ТН) она идёт в журнал
-// ошибок и уведомление: при выключенном ТН set_Error ничего не останавливает,
-// а пуск ошибку сбрасывает. При загрузке файла из веба - ТОЛЬКО код возврата:
-// запись в HP.error останавливала регулирование (vUpdate выходит при error != OK)
-// и скрывала настоящие ошибки (Error_Claim не занимает занятое поле) до сброса.
-int32_t HeatPump::load_fail(int8_t code, uint8_t from_RAM)
+// Возвращает числовой код code и при загрузке из EEPROM регистрирует аварию с причиной cause.
+// При импорте из файла (from_RAM != 0) состояние действующей автоматики сохраняется.
+int32_t HeatPump::load_fail(ErrorCatalog::Code code, uint8_t from_RAM, uint16_t cause)
 {
-	if(!from_RAM) set_Error(code, (char*)nameHeatPump);
-	return code;
+	if(!from_RAM) {
+		raise_Error(code, nameHeatPump, {ErrorDetailKind::Local, cause, 0});
+	}
+	return ErrorNumber(code);
 }
 
-// Замечание о загрузке: настройки применены, но владельцу надо знать.
-void HeatPump::load_warn(int8_t code, uint8_t from_RAM)
+// Регистрирует причину cause для частичной загрузки из EEPROM (from_RAM == 0).
+void HeatPump::load_warn(SettingsDataCause cause, uint8_t from_RAM)
 {
-	if(!from_RAM) set_Error(code, (char*)nameHeatPump);
+	if(!from_RAM) raise_Error(ErrorCatalog::Code::kSETTINGS_DATA, nameHeatPump,
+	                         {ErrorDetailKind::Local, static_cast<uint16_t>(cause), 0});
 }
 
 // Загружает расписание и кеш профилей, активирует выбранный профиль.
-// Возвращает OK либо первую локальную ошибку, записанную в детали аварии загрузки.
+// Возвращает OK либо SETTINGS_PARTS; код отказавшей части сохраняет в деталях аварии.
 int8_t HeatPump::load_parts(void)
 {
 	const int16_t schedule = Schdlr.load();
@@ -352,21 +361,21 @@ int8_t HeatPump::load_parts(void)
 	journal.jprintf(" Settings: schedule=%d, profiles=%d\n", (int)schedule, (int)profile);
 	// Сохраняем исходную причину в статусе операции и в деталях общей аварии загрузки.
 	const int8_t result = schedule < 0 ? schedule : profile;
-	raise_Error(ERR_SETTINGS_PARTS, ErrorCatalog::kSETTINGS_PARTS, schedule < 0 ? "Scheduler" : "Profile",
+	raise_Error(ErrorCatalog::Code::kSETTINGS_PARTS, schedule < 0 ? "Scheduler" : "Profile",
 	            {ErrorDetailKind::Local, static_cast<uint16_t>(-result), 0});
-	return result;
+	return ErrorNumber(ErrorCatalog::Code::kSETTINGS_PARTS);
 }
 
 // Загружает новый формат. buffer и capacity задают буфер EEPROM или файл при from_RAM.
 // Возвращает длину блока с префиксом и CRC либо отрицательный код.
 int32_t HeatPump::load_new(uint8_t *buffer, uint16_t capacity, uint8_t from_RAM)
 {
-	uint16_t size;
+	uint16_t size, cause = 0;
 	journal.jprintf(" Load settings from ");
-	const int8_t status = read_settings_block(buffer, capacity, from_RAM, true, size);
-	if(status != OK) {
-		journal.jprintf(" - settings block rejected (%d)\n", (int)status);
-		return load_fail(status, from_RAM);
+	const auto status = read_settings_block(buffer, capacity, from_RAM, true, size, cause);
+	if(status != ErrorCatalog::Code::kOK) {
+		journal.jprintf(" - settings block rejected (%d), cause %u\n", (int)status, (unsigned)cause);
+		return load_fail(status, from_RAM, cause);
 	}
 	journal.jprintf(", size %d, crc: ", size + 2);
 	size -= sizeof(uint16_t);
@@ -375,7 +384,7 @@ int32_t HeatPump::load_new(uint8_t *buffer, uint16_t capacity, uint8_t from_RAM)
 	const uint16_t stored = rec_hdr_tag(buffer + size);
 	if(crc != stored) {
 		journal.jprintf("Error: %04x != %04x!\n", crc, stored);
-		return load_fail(ERR_CRC16_EEPROM, from_RAM);
+		return load_fail(ErrorCatalog::Code::kSETTINGS_DATA, from_RAM, static_cast<uint16_t>(SettingsDataCause::Crc));
 	}
 	journal.jprintf("%04x", crc);
 #else
@@ -386,12 +395,12 @@ int32_t HeatPump::load_new(uint8_t *buffer, uint16_t capacity, uint8_t from_RAM)
 	SettingsHead head = settings_head_check(size + 2, ver, VER_SAVE, NEW_HDR_SIZE);
 	if(head == SETHEAD_EMPTY) {                  // версия 0 или 0xFF - блок не наш
 		journal.jprintf("- unknown version!\n");
-		return load_fail(ERR_SETTINGS_HEADER, from_RAM);
+		return load_fail(ErrorCatalog::Code::kSETTINGS_DATA, from_RAM, static_cast<uint16_t>(SettingsDataCause::Header));
 	}
 	if(head == SETHEAD_NEWER) {                  // записано более новой прошивкой: читаем что знаем
 		journal.jprintf("(newer than firmware v.%d!) ", VER_SAVE);
-		if(from_RAM) return load_fail(ERR_SETTINGS_HEADER, from_RAM);
-		load_warn(ERR_SETTINGS_HEADER, from_RAM);
+		if(from_RAM) return load_fail(ErrorCatalog::Code::kSETTINGS_DATA, from_RAM, static_cast<uint16_t>(SettingsDataCause::Header));
+		load_warn(SettingsDataCause::Header, from_RAM);
 	}
 
 	uint8_t *p = buffer + (NEW_HDR_SIZE - 2);    // пролог уже разобран
@@ -416,14 +425,14 @@ int32_t HeatPump::load_new(uint8_t *buffer, uint16_t capacity, uint8_t from_RAM)
 	bool bad_struct = sc.truncated || !sc.end_seen || (sc.unknown && head == SETHEAD_OK);
 	if(bad_struct) {
 		journal.jprintf("structure: records %d, truncated %d, unknown %d, end %d! ", sc.records, sc.truncated, sc.unknown, sc.end_seen);
-		if(from_RAM) return load_fail(ERR_SETTINGS_STRUCT, from_RAM);
+		if(from_RAM) return load_fail(ErrorCatalog::Code::kSETTINGS_DATA, from_RAM, static_cast<uint16_t>(SettingsDataCause::Structure));
 	}
 #ifdef EEV_DEF
 	const type_settingsEEV *currentEEV = (const type_settingsEEV*)dEEV.get_save_addr();
 	if(!eev_bounds_scan(p, p_max, false, NTAG_dEEV, offsetof(type_settingsEEV, minSteps),
 	                    offsetof(type_settingsEEV, maxSteps), currentEEV->minSteps, currentEEV->maxSteps, EEV_CLOSE_STEP)) {
 		journal.jprintf(" - invalid EEV settings!\n");
-		return load_fail(ERR_CONFIG, from_RAM);
+		return load_fail(ErrorCatalog::Code::kCONFIG, from_RAM);
 	}
 #endif
 	uint8_t suspended = TaskSuspendAll();         // 1, только если планировщик работает (при старте задач ещё нет)
@@ -489,7 +498,7 @@ int32_t HeatPump::load_new(uint8_t *buffer, uint16_t capacity, uint8_t from_RAM)
 	for(uint8_t i = 0; i < FNUMBER; i++) sFrequency[i].after_load();
 	dbg_after_load();
 	journal.jprintf(bad_struct ? "WARNING\n" : "OK\n");
-	if(bad_struct) load_warn(ERR_SETTINGS_STRUCT, from_RAM);
+	if(bad_struct) load_warn(SettingsDataCause::Structure, from_RAM);
 	return size + 4;                             // длина всего блока: size без CRC, плюс CRC и поле длины. По ней веб ищет профили в файле
 }
 
@@ -507,14 +516,14 @@ int8_t HeatPump::check_crc16_eeprom(int32_t addr, uint16_t size)
 	static uint8_t blk[64];
 	while(size) {
 		uint16_t n = size > sizeof(blk) ? sizeof(blk) : size;
-		if(readEEPROM_I2C(addr, blk, n)) return ERR_LOAD_EEPROM;
+		if(readEEPROM_I2C(addr, blk, n)) return ErrorNumber(ErrorCatalog::Code::kSETTINGS_READ);
 		crc = calc_crc16(blk, n, crc);
 		addr += n;
 		size -= n;
 	}
 	uint16_t crc2;
-	if(readEEPROM_I2C(addr, (uint8_t *)&crc2, sizeof(crc2))) return ERR_LOAD_EEPROM;   // чтение -2 за вычетом CRC16 из длины
-	if(crc == crc2) return OK; else return ERR_CRC16_EEPROM;
+	if(readEEPROM_I2C(addr, (uint8_t *)&crc2, sizeof(crc2))) return ErrorNumber(ErrorCatalog::Code::kSETTINGS_READ);   // чтение -2 за вычетом CRC16 из длины
+	if(crc == crc2) return OK; else return ErrorNumber(ErrorCatalog::Code::kSETTINGS_DATA);
 }
 
 // ---- СЧЕТЧИКИ ----
@@ -541,8 +550,8 @@ xNotEqual:
 		}
 		uint8_t errcode;
 		if((errcode = writeEEPROM_I2C(I2C_COUNT_EEPROM + ptr, (byte*)&motoHour + ptr, ptre - ptr))) {
-			set_Warning(ErrorCatalog::kMOTO_HOUR, "counters", errcode, "Не удалось записать моточасы");
-			return ERR_SAVE2_EEPROM;
+			set_Warning(ErrorCatalog::Code::kMOTO_HOUR, "counters", errcode, "Не удалось записать моточасы");
+			return ErrorNumber(ErrorCatalog::Code::kMOTO_HOUR);
 		}
 		ptr = ptre;
 	} while(ptr < sizeof(motoHour));
@@ -551,21 +560,21 @@ xNotEqual:
 }
 
 // Читает моточасы из EEPROM и обновляет оба снимка после полного чтения.
-// Возвращает OK, код отсутствия заголовка либо код ошибки чтения.
-int8_t HeatPump::load_motoHour()          
+// Возвращает результат чтения, включая признак пустой области.
+MotoHourLoad HeatPump::load_motoHour()
 {
 	type_motoHour loaded{};
-	if(readEEPROM_I2C(I2C_COUNT_EEPROM, &loaded.Header, sizeof(loaded.Header))) { // прочитать заголовок
-		set_Warning(ErrorCatalog::kMOTO_HOUR, "counters", 0, "Не удалось прочитать моточасы");
-		return ERR_LOAD2_EEPROM;
+	if(const auto raw = readEEPROM_I2C(I2C_COUNT_EEPROM, &loaded.Header, sizeof(loaded.Header))) {
+		set_Warning(ErrorCatalog::Code::kMOTO_HOUR, "counter header", raw, "Не удалось прочитать заголовок моточасов");
+		return MotoHourLoad::ReadFailed;
 	}
 	if(loaded.Header != I2C_COUNT_EEPROM_HEADER) { // заголовок плохой
 		journal.jprintf("Bad header counters, skip load\n");
-		return ERR_HEADER2_EEPROM;
+		return MotoHourLoad::Empty;
 	}
-	if(readEEPROM_I2C(I2C_COUNT_EEPROM + sizeof(loaded.Header), (byte*)&loaded + sizeof(loaded.Header), sizeof(loaded) - sizeof(loaded.Header))) { // прочитать счетчики
-		set_Warning(ErrorCatalog::kMOTO_HOUR, "counters", 0, "Не удалось прочитать моточасы");
-		return ERR_LOAD2_EEPROM;
+	if(const auto raw = readEEPROM_I2C(I2C_COUNT_EEPROM + sizeof(loaded.Header), (byte*)&loaded + sizeof(loaded.Header), sizeof(loaded) - sizeof(loaded.Header))) { // прочитать счетчики
+		set_Warning(ErrorCatalog::Code::kMOTO_HOUR, "counters", raw, "Не удалось прочитать моточасы");
+		return MotoHourLoad::ReadFailed;
 	}
 	if(legacy_motohour_needed(Option.ver)) {
 		// Байты из EEPROM разложены по СТАРОЙ схеме, а лежат уже в новой
@@ -577,7 +586,7 @@ int8_t HeatPump::load_motoHour()
 	memcpy(&motoHour, &loaded, sizeof(loaded));
 	memcpy(&motoHour_saved, &loaded, sizeof(loaded));
 	journal.printf(" Load counters OK, read: %d bytes\n", sizeof(motoHour));
-	return OK;
+	return MotoHourLoad::Loaded;
 }
 // Сбрасывает сезонные счётчики, при full также общие. Возвращает статус записи моточасов.
 int8_t HeatPump::resetCount(boolean full)

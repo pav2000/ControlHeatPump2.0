@@ -65,16 +65,16 @@ Strings are null terminated.  The remainder of the chip is file data.
 namespace {
 using Status = SerialFlashStatus;
 
-constexpr uint32_t Signature = 0xFA96554C;
-constexpr uint16_t DefaultSlots = 300;
-constexpr uint32_t DefaultNamesSize = 12780;
-constexpr uint32_t HeaderSize = 8;
-constexpr uint32_t EntrySize = 10;
+constexpr uint32_t Signature = 0xFA96554C; // Сигнатура инициализированного каталога.
+constexpr uint16_t DefaultSlots = 300; // Число записей при создании каталога.
+constexpr uint32_t DefaultNamesSize = 12780; // Размер области имён нового каталога, байт.
+constexpr uint32_t HeaderSize = 8; // Размер заголовка каталога, байт.
+constexpr uint32_t EntrySize = 10; // Размер записи каталога во flash, байт.
 
 struct Directory {
-	uint16_t slots;
-	uint32_t names;
-	uint32_t data;
+	uint16_t slots; // Число мест под файлы.
+	uint32_t names; // Первый адрес области имён.
+	uint32_t data;  // Первый адрес области содержимого файлов.
 
 	// pav2000 Возвращает адрес хеша записи каталога с номером index.
 	uint32_t hashAddress(uint16_t index) const { return HeaderSize + index * 2u; }
@@ -83,9 +83,9 @@ struct Directory {
 };
 
 struct Entry {
-	uint32_t address;
-	uint32_t size;
-	uint32_t name;
+	uint32_t address; // Адрес начала содержимого файла.
+	uint32_t size;    // Размер содержимого файла, байт.
+	uint32_t name;    // Абсолютный адрес имени файла в памяти.
 };
 
 // pav2000 Читает каталог в dir и инициализирует его на чистой памяти. Возвращает статус операции.

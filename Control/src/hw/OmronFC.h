@@ -15,6 +15,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 // ---------------------------------------------------------------------------
 // Описание: Класс работы с инвертором Omron MX2
 // Паблик методы класса унифицированы для всех инверторов

@@ -15,6 +15,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 //  Описание вспомогательных лассов данных, предназначенных для получения информации о ТН
 #ifndef Information_h
 #define Information_h
@@ -48,8 +49,6 @@
 
 #include "../net/Network.h"   // sendPacketRTOS и прочий транспорт
 STRCONST(MessageLongString,  "Jornal: Input string too long, skip string!");  
-STRCONST(errorReadI2C,  "$ERROR - read I2C memory\n");
-STRCONST(errorWriteI2C,  "$ERROR - write I2C memory\n");
 STRCONST(promtUser,  "> ");   
 
 class Journal :public Print
@@ -66,12 +65,13 @@ public:
   void jprintf_date(const char *format, ...) MINI_PRINTF_FMT(2, 3);			// +DateTime, далее печать в консоль и журнал
   int32_t send_Data(uint8_t thread);                     // отдать журнал в сеть клиенту  Возвращает число записанных байт
   int32_t available(void);                               // Возвращает размер журнала
-  int8_t   get_err(void) { return err; };
+  // Возвращает состояние носителя и последней операции журнала.
+  JournalStatus get_err(void) { return err; };
   virtual size_t write (uint8_t c);                       // чтобы print работал для это класса
   void Format(void);                           		    // форматирование журнала в еепром
   void CreateLocks(void);                                 // создать замки журнала, зовётся из setup() до старта шедулера
 private:
-  int8_t err;                                             // ошибка журнала
+  JournalStatus err;                                             // ошибка журнала
   uint8_t writeLockTimeouts{};                             // последовательные пропуски записи из-за замка I2C
   int32_t bufferHead, bufferTail;                        // Начало и конец
   uint8_t full;                                           // признак полного буфера

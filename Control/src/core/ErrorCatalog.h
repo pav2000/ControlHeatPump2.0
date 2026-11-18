@@ -15,6 +15,8 @@
  * GNU General Public License for more details.
  */
 
+// Определяет коды, группы и способы регистрации событий, а также интерфейс доступа к каталогу.
+
 #ifndef Control_ErrorCatalog_h
 #define Control_ErrorCatalog_h
 
@@ -22,14 +24,19 @@
 
 namespace ErrorCatalog {
 
+// Числовое представление кода для сохранения и передачи через интерфейсы.
 using ErrCode = int8_t;
 
 // Каждый код описан в строке ErrorCatalogRows.h вместе с источником и способом регистрации.
-enum Code : ErrCode {
+enum class Code : ErrCode {
+	kOK = 0, // Активного события нет.
 #define ERROR_DEF(name, code, group, source, registration, description) k##name = code,
 #include "ErrorCatalogRows.h"
 #undef ERROR_DEF
 };
+
+// Возвращает номер события для числовых интерфейсов и результатов операций.
+constexpr ErrCode ErrorNumber(Code code) { return static_cast<ErrCode>(code); }
 
 enum class Group : uint8_t {
 	SENSORS,        // Датчики и защиты
@@ -61,10 +68,10 @@ struct Entry {
 
 // Возвращает запись для отрицательного кода из справочника, иначе nullptr.
 const Entry *Find(ErrCode code);
+// Возвращает запись по типизированному коду события либо nullptr.
+inline const Entry *Find(Code code) { return Find(ErrorNumber(code)); }
 // Возвращает запись по индексу index в порядке каталога, иначе nullptr.
 const Entry *At(uint8_t index);
-// Возвращает номер события для прежнего статуса или 0, если соответствия нет.
-ErrCode FromLegacy(ErrCode legacy);
 // Возвращает число строк справочника.
 uint8_t Count();
 

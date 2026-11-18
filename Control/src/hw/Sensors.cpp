@@ -15,6 +15,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 /*
  * Датчики и реле на выводах платы: аналоговые датчики давления (sensorADC) с таймером TC0 и
  * прерыванием АЦП, дискретные входы (sensorDigitalInput), частотные датчики (sensorFrequency)
@@ -146,7 +147,7 @@ void sensorADC::initSensorADC(uint8_t sensor, uint8_t pinA, uint16_t filter_size
 	else adc_filter_max = 1;
 	adc_filter = (uint16_t*) malloc(sizeof(uint16_t) * adc_filter_max);
 	if(adc_filter == NULL) {   // ОШИБКА если память не выделена
-		set_Error(ERR_OUT_OF_MEMORY, (char*) "sensorADC");
+		set_Error(ErrorCatalog::Code::kMEMORY, (char*) "sensorADC");
 		return;
 	}
 	memset(adc_filter, 0, sizeof(uint16_t) * adc_filter_max);
@@ -245,13 +246,13 @@ void sensorADC::initSensorADC(uint8_t sensor, uint8_t pinA, uint16_t filter_size
 	 }
 	 // Проверка на ошибки именно здесь обрабатывются ошибки и передаются на верх
 	 if(Value < cfg.minValue) {
-		 err = ERR_ANALOG_MIN;
-		 set_Error(err, name);
+		 err = ErrorNumber(ErrorCatalog::Code::kPRESS_RANGE_LOW);
+		 set_Error(ErrorCatalog::Code::kPRESS_RANGE_LOW, name);
 		 return err;
 	 }
 	 if(Value > cfg.maxValue) {
-		 err = ERR_ANALOG_MAX;
-		 set_Error(err, name);
+		 err = ErrorNumber(ErrorCatalog::Code::kPRESS_RANGE_HIGH);
+		 set_Error(ErrorCatalog::Code::kPRESS_RANGE_HIGH, name);
 		 return err;
 	 }
 	 // Дошли до сюда значит ошибок нет
@@ -350,8 +351,8 @@ int8_t sensorDigitalInput::Read(boolean fast)
 	}
 	if(type == pALARM && Input == cfg.alarmInput)     // Срабатывание аварийного датчика (только его!)
 	{
-		err = ERR_DINPUT;
-		set_Error(err, name);
+		err = ErrorNumber(ErrorCatalog::Code::kDINPUT_ALARM);
+		set_Error(ErrorCatalog::Code::kDINPUT_ALARM, name);
 	}
 	return err;
 }
@@ -571,7 +572,7 @@ static SAFETY_OUT relay_safety_out(uint8_t n)
 // Если состояния совпадают то ничего не делаем, 0/-1 - выкл основной алгоритм, fR_Status* - включить, -fR_Status* - выключить)
 int8_t devRelay::set_Relay(int8_t r, bool planned)
 {
-	if(!(flags & (1 << fPresent))) return ERR_DEVICE;  // Реле не установлено  и пытаемся его включить
+	if(!(flags & (1 << fPresent))) return ErrorNumber(ErrorCatalog::Code::kCONFIG);  // Реле не установлено  и пытаемся его включить
 	const char *src = r == fR_StatusAllOff ? "all" : (r == fR_StatusManual || r == -fR_StatusManual) ? "manual" : "auto";
 #ifdef RBOILER
 	const bool boiler = BOILER_TEMP_INTERLOCK_ENABLED && number == RBOILER;
@@ -582,7 +583,7 @@ int8_t devRelay::set_Relay(int8_t r, bool planned)
 	const uint32_t irq = boiler ? irqSave() : 0;
 	if(boiler && r > 0 && HP.boilerHeatBlocked()) {
 		irqRestore(irq);
-		return ERR_DEVICE;
+		return ErrorNumber(ErrorCatalog::Code::kTEMP_MAX);
 	}
 	flags = Relay_ApplyStatus(flags, r);
 	r = (flags & fR_StatusMask) != 0;

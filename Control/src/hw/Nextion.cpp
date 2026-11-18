@@ -15,6 +15,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 #include "Nextion.h"
 #include "../core/HeatPump.h"     // HP, счётчики, PressToTemp
 #include "../log/Journal.h"      // journal
@@ -637,7 +638,8 @@ void Nextion::StatusLine()
 	char tm_[NOW_TIME_LEN];
 	char *tm = NowTimeToStr(tm_);
 	uint16_t newcrc = calc_crc16((uint8_t*)tm, 5);
-	newcrc = _crc16(newcrc, HP.get_errcode());
+	const int8_t errorCode = HP.get_errcode();
+	newcrc = _crc16(newcrc, errorCode);
 	newcrc = _crc16(newcrc, HP.get_modeHouse());
 	newcrc = _crc16(newcrc, (HP.IsWorkingNow() << 1) | HP.get_BoilerON());
 	char *ss = HP.StateToStr();
@@ -648,7 +650,7 @@ void Nextion::StatusLine()
 		tm[5] = '\0';
 		setComponentText("time", tm);  // Обновить время
 		// Ошибки
-		if(HP.get_errcode() == OK) {
+		if(errorCode == OK) {
 			sendCommand("vis ok,1");
 			sendCommand("vis er,0");
 		} else {
@@ -656,7 +658,7 @@ void Nextion::StatusLine()
 			sendCommand("vis ok,0");
 			if(PageID == NXTID_PAGE_MAIN) {
 				Encode_UTF8_to_ISO8859_5(ntemp, "Ошибка", sizeof(ntemp)-1);
-				_itoa(HP.get_errcode(), ntemp);
+				_itoa(errorCode, ntemp);
 				setComponentText("er", ntemp);
 			}
 		}

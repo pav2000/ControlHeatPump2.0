@@ -33,7 +33,14 @@
 class SerialFlashFile;
 
 enum class SerialFlashStatus : int8_t {
-	Ok = 0, Exists = -1, Corrupt = -2, Full = -3, NoSpace = -4, Io = -5, Invalid = -6, NotFound = -7
+	Ok = 0,       // Операция успешна.
+	Exists = -1,  // Файл с таким именем существует.
+	Corrupt = -2, // Структура каталога или запись повреждена.
+	Full = -3,    // Свободных записей каталога нет.
+	NoSpace = -4, // В области имён или данных недостаточно места.
+	Io = -5,      // Отказ обмена с микросхемой.
+	Invalid = -6, // Недопустимые аргументы операции.
+	NotFound = -7 // Запись с данным именем отсутствует.
 };
 
 class SerialFlashChip

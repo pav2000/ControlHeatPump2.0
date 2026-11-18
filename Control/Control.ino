@@ -377,24 +377,33 @@ void vServiceHP(void *);
 // цикла записи (~5 мс) не отвечает, FRAM отвечает немедленно (на этом построен цикл ожидания в
 // extEEPROM::write).
 // Звать НАДО до journal.Init(): журнал читается по длине JOURNAL_LEN, выведенной из выбранного
-// макроса; при завышенной длине чтение уходит за конец чипа, Init выставляет
-// ERR_READ_I2C_JOURNAL, и setup принимает это за сбой шины (переподнимает I2C трижды с паузами).
-enum { I2C_MEM_OK = 0, I2C_MEM_NO_CHIP, I2C_MEM_TOO_SMALL, I2C_MEM_TOO_BIG };
-static uint8_t i2cMemCheck = I2C_MEM_OK;
+// макроса; при завышенной длине чтение уходит за конец чипа. Ошибка чтения журнала
+// без этой проверки приводит к трём попыткам восстановления I2C с паузами.
+enum class I2cMemoryCheck : uint8_t {
+	Ok,       // Число отвечающих банков совпадает с конфигурацией.
+	NoChip,   // Основной банк памяти не ответил.
+	TooSmall, // Для выбранной конфигурации нужен второй банк.
+	TooBig    // Второй банк есть, конфигурация использует только первый.
+};
+// Результат проверки памяти перед инициализацией журнала.
+static I2cMemoryCheck i2cMemCheck = I2cMemoryCheck::Ok;
 
-static uint8_t i2c_check_memory(void)
+// Проверяет доступные банки I²C. Возвращает результат сверки с конфигурацией.
+static I2cMemoryCheck i2c_check_memory(void);
+// Проверяет отклик банков I²C и возвращает результат сверки с конфигурацией памяти.
+static I2cMemoryCheck i2c_check_memory(void)
 {
 	Wire.begin();                                  // идемпотентно, Init ниже зовёт то же
 	Wire.beginTransmission(I2C_ADR_EEPROM);
-	if(Wire.endTransmission() != 0) return I2C_MEM_NO_CHIP;
+	if(Wire.endTransmission() != 0) return I2cMemoryCheck::NoChip;
 	Wire.beginTransmission(I2C_ADR_EEPROM + 1);    // второй банк FM24V10
 	bool second = Wire.endTransmission() == 0;
 #if I2C_MEMORY_TOTAL != I2C_SIZE_EEPROM
-	if(!second) return I2C_MEM_TOO_SMALL;          // объявлено 128 КБ, а банк один
+	if(!second) return I2cMemoryCheck::TooSmall;          // объявлено 128 КБ, а банк один
 #else
-	if(second)  return I2C_MEM_TOO_BIG;            // объявлено 64 КБ, а банка два
+	if(second)  return I2cMemoryCheck::TooBig;            // объявлено 64 КБ, а банка два
 #endif
-	return I2C_MEM_OK;
+	return I2cMemoryCheck::Ok;
 }
 
 // Словами для get_CONST1 - чтобы расхождение было видно не только в журнале,
@@ -402,9 +411,10 @@ static uint8_t i2c_check_memory(void)
 const char *i2c_mem_check_note(void)
 {
 	switch(i2cMemCheck) {
-	case I2C_MEM_TOO_SMALL: return " - НО ВТОРОЙ БАНК НЕ ОТВЕЧАЕТ, выбран не тот чип!";
-	case I2C_MEM_TOO_BIG:   return " - НО НА ПЛАТЕ ВТОРОЙ БАНК ЕСТЬ, используется половина чипа";
-	case I2C_MEM_NO_CHIP:   return " - НО ЧИП НЕ ОТВЕЧАЕТ";
+	case I2cMemoryCheck::Ok: return "";
+	case I2cMemoryCheck::TooSmall: return " - НО ВТОРОЙ БАНК НЕ ОТВЕЧАЕТ, выбран не тот чип!";
+	case I2cMemoryCheck::TooBig:   return " - НО НА ПЛАТЕ ВТОРОЙ БАНК ЕСТЬ, используется половина чипа";
+	case I2cMemoryCheck::NoChip:   return " - НО ЧИП НЕ ОТВЕЧАЕТ";
 	}
 	return "";
 }
@@ -420,6 +430,9 @@ static bool        keyWasDownAtBoot = false;// кнопка была нажат�
 // vReadSensor_delay1ms, то есть только после старта шедулера.
 static bool        keyOnOffReady = false;
 static uint32_t    keyReleasedAt = 0;
+
+// Выключает выходы и сбрасывает плату после сбоя ядра с кодом n.
+extern "C" void vApplicationFaultHook(int n) __attribute__((noreturn));
 
 // Инициализирует контроллер, загружает данные EEPROM и запускает задачи FreeRTOS.
 void setup() {
@@ -550,13 +563,7 @@ void setup() {
 	// размером PRINTF_BUF (256 байт), а кириллица в utf-8 занимает два байта
 	// на букву. Длинный многострочный формат обрезается молча - проверено на
 	// стенде, сообщение оборвалось на полуслове.
-	if(i2cMemCheck == I2C_MEM_TOO_SMALL) {
-		journal.jprintf_time("$ERROR I2C memory: выбран I2C_FRAM_128KB,\n");
-		journal.jprintf(" но второй банк (0x%X) не отвечает - на плате чип на 64 КБ.\n", I2C_ADR_EEPROM + 1);
-		journal.jprintf(" Журнал объявлен длиной %d, вдвое больше чипа.\n", JOURNAL_LEN);
-		journal.jprintf(" Обмен за границей 65536 не проходит.\n");
-		journal.jprintf(" Выберите I2C_EEPROM_64KB в Config.h и перезалейте.\n");
-	} else if(i2cMemCheck == I2C_MEM_TOO_BIG) {
+	if(i2cMemCheck == I2cMemoryCheck::TooBig) {
 		journal.jprintf("I2C memory: отвечает второй банк (0x%X),\n", I2C_ADR_EEPROM + 1);
 		journal.jprintf(" на плате FM24V10 на 128 КБ, а выбран I2C_EEPROM_64KB.\n");
 		journal.jprintf(" Используется половина чипа, журнал %d вместо 122880.\n", JOURNAL_LEN);
@@ -604,10 +611,12 @@ void setup() {
 			task = wdtNames[boot.task];
 		}
 		// Историческая запись о предыдущем запуске, поле активной аварии не занимаем.
-		const auto *event = ErrorCatalog::Find(ErrorCatalog::kABNORMAL_RESET);
-		journal.jprintf_time("$ERROR %d %s %s%s%s  — %s, %u подряд (предел %u)\n",
-		                     (int)event->code, event->source, tag, *task ? " " : "", task,
-		                     event->description, (unsigned)boot.resets, (unsigned)BOOT_MAX_RESETS);
+		char source[48], meaning[112];
+		m_snprintf(source, sizeof(source), "%s%s%s", tag, *task ? " " : "", task);
+		const auto *entry = ErrorCatalog::Find(ErrorCatalog::Code::kABNORMAL_RESET);
+		m_snprintf(meaning, sizeof(meaning), "%s, %u подряд (предел %u)",
+		           entry->description, (unsigned)boot.resets, (unsigned)BOOT_MAX_RESETS);
+		HP.log_Event(ErrorCatalog::Code::kABNORMAL_RESET, source, {}, meaning);
 	}
 
 #ifdef PIN_LED1                            // Включение (точнее индикация) питания платы если необходимо
@@ -630,15 +639,15 @@ void setup() {
 	journal.jprintf("1. Setting and checking I2C devices . . .\n");
 
 	uint8_t eepStatus=0;
-	// При I2C_MEM_TOO_SMALL ошибка журнала объяснена: чип меньше объявленного.
+	// При I2cMemoryCheck::TooSmall ошибка журнала объяснена: чип меньше объявленного.
 	// Переподнимать шину бессмысленно - это 1.5 с пауз и три ложных сообщения.
-	if(journal.get_err() && i2cMemCheck != I2C_MEM_TOO_SMALL) { // I2C память и журнал в ней уже пытались инициализировать
+	if(journal.get_err() != JournalStatus::Ok && i2cMemCheck != I2cMemoryCheck::TooSmall) { // I2C память и журнал в ней уже пытались инициализировать
 		Wire.begin();
 		for(uint8_t i=0; i<I2C_NUM_INIT; i++ )
 		{
 			if ((eepStatus=eepromI2C.begin(I2C_SPEED))>0)    // переходим на I2C_SPEED и пытаемся инициализировать
 			{
-				journal.jprintf_time("$ERROR - I2C mem failed, status = %d\n", eepStatus);
+				journal.jprintf_time("I2C mem attempt failed, status = %d\n", eepStatus);
 #ifdef POWER_CONTROL
 				digitalWriteDirect(PIN_POWER_ON, HIGH);
 				digitalWriteDirect(PIN_LED1, LOW);
@@ -659,10 +668,16 @@ void setup() {
 	if(eepStatus)  // если I2C память не инициализирована, делаем попытку запустится на малой частоте один раз!
 	{
 		if((eepStatus=eepromI2C.begin(twiClock100kHz))>0) {
-			journal.jprintf_time("$ERROR - I2C mem init failed on speed %d kHz, status = %d\n",twiClock100kHz/1000,eepStatus);
+			char detail[80];
+			m_snprintf(detail, sizeof(detail), "Память недоступна на %d кГц", twiClock100kHz / 1000);
+			HP.log_Event(ErrorCatalog::Code::kI2C_MEMORY, "EEPROM", {ErrorDetailKind::Local, eepStatus, 0}, detail);
 			eepromI2C.begin(I2C_SPEED);
 			goto x_I2C_init_std_message;
-		} else journal.jprintf("I2C bus low speed, init on %d kHz - OK\n",twiClock100kHz/1000);
+		} else {
+			char detail[80];
+			m_snprintf(detail, sizeof(detail), "Память работает на резервной частоте %d кГц", twiClock100kHz / 1000);
+			HP.log_Event("I2C", "EEPROM", detail);
+		}
 	} else {
 x_I2C_init_std_message:
 		journal.jprintf("I2C init on %d kHz - OK\n",I2C_SPEED/1000);
@@ -678,7 +693,7 @@ x_I2C_init_std_message:
 		{
 #ifdef ONEWIRE_DS2482         // если есть мост
 			if(address == I2C_ADR_DS2482) {
-				error = OneWireBus.Init();
+				error = static_cast<byte>(OneWireBus.Init());
 			} else
 #endif
 			{
@@ -715,7 +730,7 @@ x_I2C_init_std_message:
 	} //  (eepStatus==0)
 
 #ifndef ONEWIRE_DS2482         // если нет моста
-	if(OneWireBus.Init()) journal.jprintf("Error init 1-Wire: %d\n", OneWireBus.GetLastErr());
+	if(OneWireBus.Init() != OneWireStatus::Ok) journal.jprintf("Error init 1-Wire: %d\n", (int)OneWireBus.GetLastErr());
 	else journal.jprintf("1-Wire init Ok\n");
 #endif
 
@@ -729,7 +744,7 @@ x_I2C_init_std_message:
 	// расхождение было видно в морде и в get_error, а не только в журнале.
 	// Второй случай (чип больше объявленного) ошибкой не считается: всё
 	// работает, просто половина микросхемы простаивает.
-	if(i2cMemCheck == I2C_MEM_TOO_SMALL) set_Error(ERR_I2C_MEM_CONF, (char*)"I2C memory");
+	if(i2cMemCheck == I2cMemoryCheck::TooSmall) HP.raise_Error(ErrorCatalog::Code::kI2C_MEMORY, "EEPROM", {}, "Второй банк памяти не отвечает, выбран объём 128 КБ");
 
 	// 5. Режим загрузки, выбранный кнопкой KEY1 (замер сделан в начале setup)
 	//    короткое нажатие  - встроенная морда из кода
@@ -754,7 +769,7 @@ x_I2C_init_std_message:
 
 	// 6. Чтение ЕЕПРОМ, надо раньше чем инициализация носителей веб морды, что бы знать откуда грузить
 	journal.jprintf("4. Load data from I2C memory . . .\n");
-	if(HP.load_motoHour()==ERR_HEADER2_EEPROM)           // Загрузить счетчики ТН,
+	if(HP.load_motoHour() == MotoHourLoad::Empty)           // Загрузить счетчики ТН,
 	{
 		journal.jprintf(" I2C memory is empty, a default settings will be used!\n");
 		HP.save_motoHour();
@@ -857,63 +872,63 @@ x_I2C_init_std_message:
 	Diag.mRTOS=Diag.mRTOS+64+4*configMINIMAL_STACK_SIZE;  // задача бездействия
 
 	// ПРИОРИТЕТ 4 Высший приоритет датчики читаются всегда и шаговик ЭРВ всегда шагает если нужно
-	if (xTaskCreate(vReadSensor,"ReadSensor",STACK_vReadSensor,NULL,4,&Tasks.xHandleReadSensor)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY)    set_Error(ERR_MEM_FREERTOS,(char*)nameFREERTOS);
+	if (xTaskCreate(vReadSensor,"ReadSensor",STACK_vReadSensor,NULL,4,&Tasks.xHandleReadSensor)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY)    set_Error(ErrorCatalog::Code::kRTOS,(char*)nameFREERTOS);
 	Diag.mRTOS=Diag.mRTOS+64+4*STACK_vReadSensor;// 200
 
 #ifdef EEV_DEF
-	if (xTaskCreate(vUpdateStepperEEV,"StepperEEV",STACK_vUpdateStepperEEV,NULL,4,&HP.dEEV.stepperEEV.xHandleStepperEEV)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY)  set_Error(ERR_MEM_FREERTOS,(char*)nameFREERTOS);
+	if (xTaskCreate(vUpdateStepperEEV,"StepperEEV",STACK_vUpdateStepperEEV,NULL,4,&HP.dEEV.stepperEEV.xHandleStepperEEV)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY)  set_Error(ErrorCatalog::Code::kRTOS,(char*)nameFREERTOS);
 	Diag.mRTOS=Diag.mRTOS+64+4*STACK_vUpdateStepperEEV; // 50, 100, 150
 #endif
 
 	// ПРИОРИТЕТ 3 Очень высокий приоритет Выполнение команд управления (разбор очереди комманд) - должен быть выше чем задачи обновления ТН и ЭРВ
-	if(xTaskCreate(vUpdateCommand,"CommandHP", STACK_vUpdateCommand,NULL,3,&Tasks.xHandleUpdateCommand)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY)     set_Error(ERR_MEM_FREERTOS,(char*)nameFREERTOS);
+	if(xTaskCreate(vUpdateCommand,"CommandHP", STACK_vUpdateCommand,NULL,3,&Tasks.xHandleUpdateCommand)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY)     set_Error(ErrorCatalog::Code::kRTOS,(char*)nameFREERTOS);
 	Diag.mRTOS=Diag.mRTOS+64+4*STACK_vUpdateCommand;// 200
 
 
 	// ПРИОРИТЕТ 2 высокий - это управление ТН управление ЭРВ, сервис
-	if(xTaskCreate(vServiceHP, "ServiceHP", STACK_vServiceHP, NULL, 2, &Tasks.xHandleSericeHP)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY) set_Error(ERR_MEM_FREERTOS,(char*)nameFREERTOS);
+	if(xTaskCreate(vServiceHP, "ServiceHP", STACK_vServiceHP, NULL, 2, &Tasks.xHandleSericeHP)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY) set_Error(ErrorCatalog::Code::kRTOS,(char*)nameFREERTOS);
 	Diag.mRTOS=Diag.mRTOS+64+4*STACK_vServiceHP;// 200
 
 	Tasks.xCommandSemaphore = xSemaphoreCreateMutex();  // мьютекс: захват и отдача всегда в одной задаче                       // Создание семафора
-	if (Tasks.xCommandSemaphore==NULL) set_Error(ERR_MEM_FREERTOS,(char*)nameFREERTOS);
+	if (Tasks.xCommandSemaphore==NULL) set_Error(ErrorCatalog::Code::kRTOS,(char*)nameFREERTOS);
 
-	if (xTaskCreate(vUpdate,"UpdateHP",STACK_vUpdate,NULL,2,&Tasks.xHandleUpdate)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY)    set_Error(ERR_MEM_FREERTOS,(char*)nameFREERTOS);
+	if (xTaskCreate(vUpdate,"UpdateHP",STACK_vUpdate,NULL,2,&Tasks.xHandleUpdate)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY)    set_Error(ErrorCatalog::Code::kRTOS,(char*)nameFREERTOS);
 	Diag.mRTOS=Diag.mRTOS+64+4*STACK_vUpdate;// см. STACK_vUpdate в Config.h
 	Tasks.Task_vUpdate_run = false;
 
 #ifdef EEV_DEF
-	if (xTaskCreate(vUpdateEEV,"UpdateEEV",STACK_vUpdateEEV,NULL,2,&Tasks.xHandleUpdateEEV)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY)     set_Error(ERR_MEM_FREERTOS,(char*)nameFREERTOS);
+	if (xTaskCreate(vUpdateEEV,"UpdateEEV",STACK_vUpdateEEV,NULL,2,&Tasks.xHandleUpdateEEV)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY)     set_Error(ErrorCatalog::Code::kRTOS,(char*)nameFREERTOS);
 	Diag.mRTOS=Diag.mRTOS+64+4*STACK_vUpdateEEV;
 #endif  
 
 	// ПРИОРИТЕТ 1 средний - обслуживание вебморды в несколько потоков и дисплея Nextion
 	// ВНИМАНИЕ первый поток должен иметь больший стек для обработки фоновых сетевых задач
 	// 1 - поток
-	if ( xTaskCreate(vWeb0,"Web0", STACK_vWebX+14,NULL,1,&Tasks.xHandleUpdateWeb0)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY) set_Error(ERR_MEM_FREERTOS,(char*)nameFREERTOS);
+	if ( xTaskCreate(vWeb0,"Web0", STACK_vWebX+14,NULL,1,&Tasks.xHandleUpdateWeb0)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY) set_Error(ErrorCatalog::Code::kRTOS,(char*)nameFREERTOS);
 	Diag.mRTOS=Diag.mRTOS+64+4*(STACK_vWebX+14);
 #if W5200_THREAD >= 2 // - потока
-	if ( xTaskCreate(vWeb1,"Web1", STACK_vWebX,NULL,1,&Tasks.xHandleUpdateWeb1)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY) set_Error(ERR_MEM_FREERTOS,(char*)nameFREERTOS);
+	if ( xTaskCreate(vWeb1,"Web1", STACK_vWebX,NULL,1,&Tasks.xHandleUpdateWeb1)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY) set_Error(ErrorCatalog::Code::kRTOS,(char*)nameFREERTOS);
 	Diag.mRTOS=Diag.mRTOS+64+4*STACK_vWebX;
 #endif
 #if W5200_THREAD >= 3 // - потока
-	if ( xTaskCreate(vWeb2,"Web2", STACK_vWebX,NULL,1,&Tasks.xHandleUpdateWeb2)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY) set_Error(ERR_MEM_FREERTOS,(char*)nameFREERTOS);
+	if ( xTaskCreate(vWeb2,"Web2", STACK_vWebX,NULL,1,&Tasks.xHandleUpdateWeb2)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY) set_Error(ErrorCatalog::Code::kRTOS,(char*)nameFREERTOS);
 	Diag.mRTOS=Diag.mRTOS+64+4*STACK_vWebX;
 #endif
 #if W5200_THREAD >= 4 // - потока
-	if ( xTaskCreate(vWeb3,"Web3", STACK_vWebX,NULL,1,&Tasks.xHandleUpdateWeb3)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY) set_Error(ERR_MEM_FREERTOS,(char*)nameFREERTOS);
+	if ( xTaskCreate(vWeb3,"Web3", STACK_vWebX,NULL,1,&Tasks.xHandleUpdateWeb3)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY) set_Error(ErrorCatalog::Code::kRTOS,(char*)nameFREERTOS);
 	Diag.mRTOS=Diag.mRTOS+64+4*STACK_vWebX;
 #endif
 
 	xWebThreadSemaphore = xSemaphoreCreateMutex();   // мьютекс: сеть + шина SPI               // Создание мютекса
-	if (xWebThreadSemaphore==NULL) set_Error(ERR_MEM_FREERTOS,(char*)nameFREERTOS);
+	if (xWebThreadSemaphore==NULL) set_Error(ErrorCatalog::Code::kRTOS,(char*)nameFREERTOS);
 	xI2CSemaphore = xSemaphoreCreateMutex();         // мьютекс: FRAM, часы, мастер OneWire                     // Создание мютекса
-	if (xI2CSemaphore==NULL) set_Error(ERR_MEM_FREERTOS,(char*)nameFREERTOS);
+	if (xI2CSemaphore==NULL) set_Error(ErrorCatalog::Code::kRTOS,(char*)nameFREERTOS);
 	journal.CreateLocks();                           // замки журнала: L1 строки/кольцо, L2 писатель EEPROM
 	// Дополнительные семафоры (почему то именно здесь) Создается когда есть Modbus
 	if(Modbus.get_present())
 	{
 		xModbusSemaphore = xSemaphoreCreateMutex();   // мьютекс: нужна передача приоритета                       // Создание мютекса
-		if (xModbusSemaphore==NULL) set_Error(ERR_MEM_FREERTOS,(char*)nameFREERTOS);
+		if (xModbusSemaphore==NULL) set_Error(ErrorCatalog::Code::kRTOS,(char*)nameFREERTOS);
 	}
 
 	journal.jprintf(" Create tasks - OK, size %d bytes\n",(int)(Diag.mRTOS));
@@ -925,7 +940,7 @@ x_I2C_init_std_message:
 			// (на стенде -39 «инвертор не найден»): причину отмены не было бы видно в морде. Она важнее - вытесняем.
 			// Планировщик ещё не запущен, прямая запись безопасна; прежняя ошибка осталась в журнале.
 			HP.drop_error_at_boot();
-			set_Error(ERR_RESET_LOOP, (char*)nameFREERTOS);
+			set_Error(ErrorCatalog::Code::kRESET_LOOP, (char*)nameFREERTOS);
 		} else HP.sendCommand(pRESTART);
 	}
 
@@ -986,7 +1001,9 @@ x_I2C_init_std_message:
 		wdtReady = 1;
 	}
 	vTaskStartScheduler();              // СТАРТ !!
-	journal.jprintf("FreeRTOS FAILURE!\n");
+	noInterrupts();
+	GPBR->SYS_GPBR[GPBR_RTOS] = GPBR_RTOS_READ | RTOS_SCHEDULER_RETURN;
+	vApplicationFaultHook(RTOS_SCHEDULER_RETURN);
 }
 
 void loop() {}
@@ -1263,7 +1280,7 @@ static void checkSuctionSuperheat(uint8_t mode, uint32_t start, bool valid, int1
 	char detail[48];
 	m_snprintf(detail, sizeof(detail), "%.2d K %s %.2d K", value, low ? "<=" : ">=",
 	           low ? limits.low : limits.high);
-	HP.set_Warning(low ? ErrorCatalog::kEEV_SUPERHEAT_LOW : ErrorCatalog::kEEV_SUPERHEAT_HIGH,
+	HP.set_Warning(low ? ErrorCatalog::Code::kEEV_SUPERHEAT_LOW : ErrorCatalog::Code::kEEV_SUPERHEAT_HIGH,
 	               "TCOMPIN", 0, detail, true);
 }
 #endif
@@ -1400,22 +1417,22 @@ void vReadSensor(void *)
 		if (digitalReadDirect(PIN_STEP_DIAG)) // Перечитываем два раза
 		{
 			vReadSensor_delay1ms(5);
-			if (digitalReadDirect(PIN_STEP_DIAG)) set_Error(ERR_DRV_EEV,(char*)__FUNCTION__); // Контроль за работой драйвера ЭРВ
+			if (digitalReadDirect(PIN_STEP_DIAG)) set_Error(ErrorCatalog::Code::kEEV_DRIVER,(char*)__FUNCTION__); // Контроль за работой драйвера ЭРВ
 		}
 #endif
 
-#ifdef FLOW_CONTROL                // если надо проверяем потоки (защита от отказа насосов) ERR_MIN_FLOW
+#ifdef FLOW_CONTROL                // если надо проверяем потоки (защита от отказа насосов) MIN_FLOW
 	if(HP.is_compressor_on())      // Только если компрессор включен 
 		for(uint8_t i = 0; i < FNUMBER; i++){   // Проверка потока по каждому датчику
 			if(HP.sFrequency[i].get_checkFlow() && HP.sFrequency[i].get_Value() < HP.sFrequency[i].get_minValue()) {     // Поток меньше минимального ошибка останавливаем ТН
 				journal.jprintf("%s low flow: %.3f\n",(char*) HP.sFrequency[i].get_name(), (float) HP.sFrequency[i].get_Value() / 1000);
-				set_Error(ERR_MIN_FLOW, (char*) HP.sFrequency[i].get_name());
+				set_Error(ErrorCatalog::Code::kFLOW_LOW, (char*) HP.sFrequency[i].get_name());
 			}
 		}
 #endif
 #ifdef SEVA  //Если определен лепестковый датчик протока - это переливная схема ТН - надо контролировать проток при работе
  	if(HP.dRelay[RPUMPI].get_Relay())                                                                                             // Только если включен насос геоконтура  (PUMP_IN)
-		if (HP.sInput[SEVA].get_Input()==SEVA_OFF) set_Error(ERR_SEVA_FLOW,(char*)"SEVA");                                        // Нет протока: ошибка останавливает ТН. НЕ return - это тело задачи, возврат из неё аварийный выход FreeRTOS
+		if (HP.sInput[SEVA].get_Input()==SEVA_OFF) set_Error(ErrorCatalog::Code::kFLOW_LOW,(char*)"SEVA");                                        // Нет протока: ошибка останавливает ТН. НЕ return - это тело задачи, возврат из неё аварийный выход FreeRTOS
 #endif
 
 		//  Синхронизация часов с I2C часами если стоит соответсвующий флаг
@@ -1556,10 +1573,12 @@ static void relayAct(devRelay &r, uint8_t act)
 // Задача UpdateHP управляет ТН, выбирает расписание и профиль. Параметр FreeRTOS не используется.
  void vUpdate( void * )
 {
+	bool badStateLogged = false; // Сообщение уже выдано в текущем эпизоде.
 	#ifdef RPUMPB
 	static uint32_t RPUMPBTick=0;
 	#endif
 	static uint8_t  Scheduler_check_day = 0;
+	// Сохранение расписания отложено до освобождения I²C.
 	static bool schedulerSavePending = false;
 	for(;;)
 	{
@@ -1611,7 +1630,7 @@ static void relayAct(devRelay &r, uint8_t act)
 					}
 				}
 			}
-			if(schedulerSavePending) schedulerSavePending = HP.Schdlr.save() == ERR_I2C_BUSY;
+			if(schedulerSavePending) schedulerSavePending = HP.Schdlr.save() == ErrorNumber(ErrorCatalog::Code::kI2C_BUSY);
 			// Какой профиль ДОЛЖЕН быть сейчас активен и что для этого сделать - решение в SchedulerCalc
 			int8_t _profile = HP.Schdlr.calc_active_profile();
 			uint8_t _state = HP.get_State();
@@ -1644,15 +1663,18 @@ static void relayAct(devRelay &r, uint8_t act)
 		}
 		// 4. Отработка пауз всегда они разные в зависимости от состояния ТН!!
 delayTask:	// чтобы задача отдавала часть времени другим
-		switch (HP.get_State())  // Состояние ТН
+		const auto hpState = HP.get_State();
+		switch (hpState)  // Состояние ТН
 		{
 		case pOFF_HP:                          // 0 ТН выключен
 		case pSTOPING_HP:                      // 2 Останавливается
+			badStateLogged = false;
 			journal.jprintf((const char*)" Stop task UpdateHP\n");
 			Tasks.Task_vUpdate_run = false;
 			break;
-		case pSTARTING_HP: Watchdog_Sleep(WDT_UpdateHP, 10000); break; // 1 Стартует  - этого не должно быть в этом месте
+		case pSTARTING_HP: badStateLogged = false; Watchdog_Sleep(WDT_UpdateHP, 10000); break; // 1 Стартует  - этого не должно быть в этом месте
 		case pWORK_HP:                           // 3 Работает   - анализ режима работы get_modWork()
+			badStateLogged = false;
 			if((HP.get_modWork() & pHEAT)) {	// Отопление
 				if(HP.get_ruleHeat()==pHYSTERESIS)  Watchdog_Sleep(WDT_UpdateHP, TIME_CONTROL);    // Гистерезис
 				else
@@ -1669,11 +1691,16 @@ delayTask:	// чтобы задача отдавала часть времени
 			break;
 		case pWAIT_HP:                          // 4 Ожидание ТН (расписание - пустое место)   проверям раз в 5 сек
 		case pERROR_HP: 						// 5 Ошибка ТН
+			badStateLogged = false;
 			Watchdog_Sleep(WDT_UpdateHP, UPDATE_HP_WAIT_PERIOD);
 			break;
 		case pERROR_CODE:                       // 6 - Эта ошибка возникать не должна!
 		default:
-			journal.jprintf_time((const char*)"$ERROR: Bad state HP in function %s\n",(char*)__FUNCTION__);
+			if(!badStateLogged) {
+				badStateLogged = true;
+				HP.log_Event(ErrorCatalog::Code::kHARD_STATE, "HP",
+				             {ErrorDetailKind::Local, static_cast<uint16_t>(hpState), 0});
+			}
 		} //  switch (HP.get_State())
 
 		if(!Tasks.Task_vUpdate_run) continue;

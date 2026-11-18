@@ -15,11 +15,13 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 #ifndef devOneWire_h
 #define devOneWire_h
  
 #include "../../Constant.h"                     // Должен быть первым !!!! кое что берется в стандартных либах для настройки либ, Config.h входит в него
 #include <DS2482.h>                       // мост OneWire аппаратная реализация доработана
+#include "OneWireStatus.h"
 #include <OneWire.h>                      // OneWire библиотека OneWire шина програмная
 
 #define DS2482_CONFIG	(DS2482_CONFIG_APU)	// 0 - не конфигурить
@@ -50,29 +52,26 @@ extern uint8_t OW_scanTableIdx;
 extern uint8_t OW_scan_flags;            // 1 - идёт сканирование
 int8_t 				 OW_prepare_buffers(void);
 
-#define OW_RAW_BADDATA 0x40                             // rawErr: байты прочитаны, но scratchpad не прошёл проверку
 class deviceOneWire 								    // Класс шина   OneWire
 {
   public:
 #ifdef ONEWIRE_DS2482
-	deviceOneWire(uint8_t addr, uint8_t _bus): OneWireDrv(addr) { err = 0; rawErr = 0; bus = _bus; }
+	deviceOneWire(uint8_t addr, uint8_t _bus): OneWireDrv(addr) { err = OneWireStatus::Ok; bus = _bus; }
 #else
-	deviceOneWire(uint8_t pin_num): OneWireDrv(pin_num) { err = 0; rawErr = 0; bus = 0; }
+	deviceOneWire(uint8_t pin_num): OneWireDrv(pin_num) { err = OneWireStatus::Ok; bus = 0; }
 #endif
-	int8_t	Init(void);
+	OneWireStatus	Init(void);
     int16_t	CalcTemp(uint8_t addr_0, uint8_t *data, uint8_t only_temp_readed);	// Вычислить температуру в сотых градуса по считанному scratchpad
-	int8_t	Scan(char *result_str);                    // сканирование шины, с записью в буфер результатов возвращает число найденых датчиков
-	int8_t  PrepareTemp();                              // запуск преобразования всех датчиков на шине возвращает код ошибки
-	int8_t  Read(uint8_t *addr, int16_t &val);          // чтение данных DS18B20, возвращает код ошибки, делает все преобразования
-	int8_t  SetResolution(uint8_t *addr, uint8_t rs, uint8_t dont_lock_bus = 0);	// установить разрешение конкретного датчика
-	int8_t  GetLastErr() { return err; }       			// Получить последнюю ошибку
-	uint8_t get_rawErr() { return rawErr; }             // Подробность последней ошибки обмена ERR_ONEWIRE_RW: код драйвера 2..5 или OW_RAW_BADDATA
-	int8_t  lock_I2C_bus_reset(uint8_t checkpresence);	// блокирование семафора, проверка наличия ds2482, reset 1-wire.
+	OneWireStatus	Scan(char *result_str);                    // Заполняет строку результата и возвращает статус сканирования.
+	OneWireStatus  PrepareTemp();                              // запуск преобразования всех датчиков на шине возвращает код ошибки
+	OneWireReadResult Read(uint8_t *addr, int16_t &val);          // чтение DS18B20 с исходным статусом обмена
+	OneWireStatus  SetResolution(uint8_t *addr, uint8_t rs, uint8_t dont_lock_bus = 0);	// установить разрешение конкретного датчика
+	OneWireStatus  GetLastErr() { return err; }       			// Получить последнюю ошибку
+	OneWireStatus  lock_I2C_bus_reset(uint8_t checkpresence);	// блокирование семафора, проверка наличия ds2482, reset 1-wire.
 	void	release_I2C_bus();
   private:
 	bool    wr(uint8_t b);                              // записать байт в шину; false - не записался (DS2482: сбой I2C)
-	int8_t err;                                         // ошибка шины (работа) при ошибке останов ТН
-	uint8_t rawErr;                                     // подробность последней ошибки обмена
+	OneWireStatus err;                                         // ошибка шины (работа) при ошибке останов ТН
 	uint8_t	bus;										// 0 - первый DS2482, 1 - второй, 2 - третий, 3 - четвертый
 #ifdef ONEWIRE_DS2482
 	DS2482	OneWireDrv;                                 // мастер OneWire аппаратная

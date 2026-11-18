@@ -15,6 +15,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 /*
  * Веб-API контроллера: диспетчер /api (ver, meta, get, set, do, chart), группы параметров,
  * действия и узкий путь удалённых датчиков IP. Протокол - tools/api/spec.md, ядро разбора
@@ -33,7 +34,7 @@
 #include "../log/Statistics.h"   // Stats, имена файлов статистики
 #include "../hw/Clock.h"        // get_NTP_result: итог последней синхронизации времени
 #include "../util/Util.h"         // _itoa, ftoa, dptoa, byteToHex, addressToHex
-#include "../core/ErrorCodes.h"   // Spi0_Check - конфигурация SPI0 для вкладки «SPI&Web»
+#include "../core/ControlPolicy.h"   // Spi0_Check - конфигурация SPI0 для вкладки «SPI&Web»
 #include <new>
 #include <SerialFlash.h>          // объём флеш для sys.spi
 
@@ -150,7 +151,7 @@ static void wc_CONST(char *strReturn)
 		strcat(strReturn,"CONFIG_NAME|Имя конфигурации|");strcat(strReturn,CONFIG_NAME);strcat(strReturn,";");
 		strcat(strReturn,"CONFIG_NOTE|");strcat(strReturn,CONFIG_NOTE);strcat(strReturn,"|;");
 		strcat(strReturn,"configCPU_CLOCK_HZ|Частота CPU (МГц)|");_itoa(configCPU_CLOCK_HZ/1000000,strReturn);strcat(strReturn,";");
-		// Частоты SPI - фактические, по делителю, который стоит в шине (84 МГц / SCBR): запрошенные SD_CLOCK 30 и 50 МГц флеш
+		// Частоты SPI - фактические, по делителю, который стоит в шине (84 МГц / SCBR): запрошенные частоты SD и Flash могут отличаться от фактических
 		// округляются вниз до 28 и 42. Устройство, которое не инициализировалось (нет карты), - 0.
 		strcat(strReturn,"SD_SPI_SPEED|Частота SPI SD карты (МГц)|");_itoa(spiBusMHz(SPIDEV_SD), strReturn);strcat(strReturn,";");
 		strcat(strReturn,"W5200_SPI_SPEED|Частота SPI сети "); strcat(strReturn,nameWiznet);strcat(strReturn," (МГц)|");_itoa(spiBusMHz(SPIDEV_NET), strReturn);strcat(strReturn,";");
@@ -473,7 +474,7 @@ uint8_t sensorIpRequest(uint8_t thread, int8_t sock)
 // Работает ТОЛЬКО в Socket[thread].inBuf/outBuf, без static-буферов и strtok. Мьютекс
 // xWebThreadSemaphore уже взят в web_server().
 // ---------------------------------------------------------------------------
-#define API_PROTO    2       // версия протокола; морда сверяет её через /api/ver
+#define API_PROTO    3       // версия протокола; морда сверяет её через /api/ver
 #define API_SCRATCH  256     // рабочая область ядра (разбор значений) в хвосте outBuf: чтение и meta
 #define API_SCRATCH_W 2300   // для set и do: значение до 2 КБ (поток календаря расписания), запрос целиком не длиннее ~1950 байт
 
@@ -531,13 +532,7 @@ struct ApiEventSnapshot {
 	char warningText[160]; // Текст того же предупреждения
 };
 
-// Восстанавливает исходные данные из ключа предупреждения Modbus.
-static ErrorDetail api_warning_detail(WarningRecord warning)
-{
-	if(warning.code > ErrorCatalog::kMODBUS_EXCEPTION || warning.code < ErrorCatalog::kMODBUS_UNKNOWN) return {};
-	return ModbusDetail({0, static_cast<ModbusKind>(warning.cause >> 8), static_cast<uint8_t>(warning.cause)});
-}
-
+// Читает поле состояния по hook в ответ o, используя снимок аварии при его наличии. Возвращает статус API.
 static int api_get_state(uint8_t hook, uint8_t, ApiOut *o)
 {
 	char t[64]; t[0] = 0;
@@ -553,7 +548,7 @@ static int api_get_state(uint8_t hook, uint8_t, ApiOut *o)
 		else api_put(o, "null");
 		break;
 	case S_WARNING_DETAIL:
-		if(o->events) api_put_event_detail(o, o->events->warning.code, o->events->warning.device, api_warning_detail(o->events->warning));
+		if(o->events) api_put_event_detail(o, o->events->warning.code, o->events->warning.device, o->events->warning.detail);
 		else api_put(o, "null");
 		break;
 	case S_TIME:    HP.get_datetime((char*) time_TIME, t); api_put_str(o, t); break;
@@ -677,10 +672,11 @@ static const ApiParam apiSysTab[] = {
 	{ "webstat", 0, 0, 0, 0, 1, PT_CALL, PF_RO,         MK_TABLE, Y_WEBSTAT, 0 },    // метрики веб-сервера (WebShared.h), обнуляются действием reset.webstat
 	{ "spi",     0, 0, 0, 0, 1, PT_CALL, PF_RO,         MK_TABLE, Y_SPI,     0 },    // шина SPI: устройства, частоты, счётчики (вкладка «SPI&Web»), сброс - reset.spi
 };
-// Число записей на одну часть каталога. Части запрашиваются раздельно.
+// Предельное число записей каталога на одну страницу API.
 static constexpr int API_ERR_PAGE = 24;
-// Имена групп и способов регистрации в порядке перечислений справочника.
+// Имена групп каталога в JSON, в порядке ErrorCatalog::Group.
 static const char *const apiErrorGroups[] = {"SENSORS", "CONTROL", "INVERTER", "MODBUS_POWER", "SETTINGS", "STORAGE_SYSTEM", "INFRASTRUCTURE", "STAGE_TWO"};
+// Имена способов регистрации в JSON, в порядке ErrorCatalog::Registration.
 static const char *const apiErrorRegistration[] = {"ERROR", "WARN", "REQUIRED_AT_BOOT", "BY_DEVICE", "BY_OPERATION", "LOG_ONLY"};
 
 // Пишет в o выбранную часть каталога с явными номерами и метаданными.
@@ -821,6 +817,7 @@ static int api_sys_table(uint8_t hook, ApiOut *o)
 	api_str_inplace(o);
 	return AE_OK;
 }
+// Записывает системный параметр или страницу диагностики по hook в ответ o. Возвращает статус API.
 static int api_get_sys(uint8_t hook, uint8_t, ApiOut *o)
 {
 	if(hook == Y_SOCKETS) socketInfoApi(o);
@@ -1101,7 +1098,7 @@ static int apiAct_power_off(ApiOut *o, const char *) { HP.sendCommand(pSTOP);  a
 static int apiAct_save_all(ApiOut *o, const char *)
 {
 	int32_t r = HP.save_all(true);     // профили, расписание и настройки новым форматом
-	if(r == ERR_I2C_BUSY) return AE_BUSY;   // другое сохранение ещё идёт
+	if(r == ErrorNumber(ErrorCatalog::Code::kI2C_BUSY)) return AE_BUSY;   // другое сохранение ещё идёт
 	if(r < 0) return AE_FAIL;
 	api_put_int(o, r);             // число записанных байт, как отвечал set_SAVE
 	return AE_OK;
@@ -1117,7 +1114,7 @@ static int apiAct_reset_settings(ApiOut *o, const char *)
 	uint16_t d = 0;
 	const uint8_t status = writeEEPROM_I2C(I2C_SETTING_EEPROM, (byte*)&d, sizeof(d));
 	if(status) {
-		HP.set_Warning(ErrorCatalog::kSETTINGS_WRITE, "settings", status, "Не удалось сбросить настройки");
+		HP.set_Warning(ErrorCatalog::Code::kSETTINGS_WRITE, "settings", status, "Не удалось сбросить настройки");
 		return AE_FAIL;
 	}
 	HP.sendCommand(pRESET);                             // контроллер перезагрузится с заводскими настройками
@@ -1170,17 +1167,23 @@ static int apiAct_onewire_scan(ApiOut *o, const char *)
 	return AE_OK;
 }
 #ifdef USE_ELECTROMETER_SDM
+// Программирует настройки SDM120. Аргумент команды не используется. Пишет подтверждение в o и возвращает статус API.
 static int apiAct_sdm_program(ApiOut *o, const char *)
 {
+#ifdef DEMO
+	(void)o;
+	return AE_NA;
+#endif
 	if(!HP.dSDM.get_present()) return AE_NA;                   // счётчика нет
-	HP.dSDM.progConnect();                                     // параметры связи записаны, счётчик надо сбросить
+	if(!HP.dSDM.progConnect()) return AE_FAIL;               // параметры связи записаны, счётчик надо сбросить
 	api_put(o, "\"ok\"");
 	return AE_OK;
 }
+// Проверяет связь с SDM120. Аргумент команды не используется. Пишет подтверждение в o и возвращает статус API.
 static int apiAct_sdm_link(ApiOut *o, const char *)
 {
 	if(!HP.dSDM.get_present()) return AE_NA;
-	HP.dSDM.uplinkSDM();                                       // проверка связи, сброс флага сбоя
+	if(!HP.dSDM.uplinkSDM()) return AE_FAIL;                 // проверка связи, сброс флага сбоя
 	api_put(o, "\"ok\"");
 	return AE_OK;
 }
@@ -1191,6 +1194,10 @@ static int apiAct_eev_zero(ApiOut *o, const char *) { if(!HP.beginEEVService()) 
 // Инвертор: действия идут через очередь команд или прямой вызов
 static int apiAct_fc_program(ApiOut *o, const char *)
 {
+#ifdef DEMO
+	(void)o;
+	return AE_NA;
+#endif
 	if(!HP.dFC.get_present()) return AE_NA;
 	if(HP.get_modWork() != pOFF) return AE_BUSY;                // только на выключенном ТН
 	HP.sendCommand(pPROG_FC);
@@ -1298,7 +1305,7 @@ static int apiAct_schedule_load(ApiOut *o, const char *)
 	return AE_OK;
 }
 // Сохраняет расписание и записывает OK в o при успехе. Возвращает статус веб-API.
-static int apiAct_save_schedule(ApiOut *o, const char *) { int8_t r = HP.Schdlr.save(); if(r == ERR_I2C_BUSY) return AE_BUSY; if(r < 0) return AE_FAIL; api_put_int(o, r); return AE_OK; }
+static int apiAct_save_schedule(ApiOut *o, const char *) { int8_t r = HP.Schdlr.save(); if(r == ErrorNumber(ErrorCatalog::Code::kI2C_BUSY)) return AE_BUSY; if(r < 0) return AE_FAIL; api_put_int(o, r); return AE_OK; }
 static int apiAct_chart_clear(ApiOut *o, const char *) { HP.clearChart(); api_put(o, "\"ok\""); return AE_OK; }   // сбросить ряды в ОЗУ
 // Статистика и подготовка к обновлению: счётчики, статистика, история на SD
 static int api_save_stats(ApiOut *o)
@@ -1385,9 +1392,20 @@ static int apiAct_tasks_reset(ApiOut *o, const char *)
 	return AE_NA;
 #endif
 }
-// Регистры Modbus: p = «устройство:тип:адрес» (чтение) или «устройство:тип:адрес=значение» (запись). Чтение: w, l, i (input),
-// h, f (holding), c (coil); запись: h, f, c. Адрес и значение - десятичные (шестнадцатеричные переводит морда).
-// Ответ - {"v":число} или {"err":код ошибки Modbus} (например -2: нет ответа); неверный p - bad_value.
+// Записывает в o код каталога и исходный байт отказа result, если он получен по шине.
+static void api_put_modbus_failure(ApiOut *o, ModbusResult result)
+{
+	api_put(o, "{\"err\":"); api_put_int(o, result.Number());
+	if(result.kind == ModbusKind::Exception || result.kind == ModbusKind::Transport ||
+	   (result.kind == ModbusKind::Local && result.raw)) {
+		api_put(o, ",\"kind\":"); api_put_str(o, ErrorDetailToken(ModbusDetail(result).kind));
+		api_put(o, ",\"raw\":"); api_put_int(o, result.raw);
+	}
+	api_putc(o, '}');
+}
+
+// Разбирает p формата «устройство:тип:адрес[=значение]» и пишет в o результат обмена.
+// wr разрешает запись перед контрольным чтением. Возвращает статус обработки API.
 static int api_modbus(ApiOut *o, const char *p, bool wr)
 {
 	char *c1 = (char *) strchr(p, ':');
@@ -1399,30 +1417,30 @@ static int api_modbus(ApiOut *o, const char *p, bool wr)
 	const char *val = 0;
 	if(wr) { val = strchr(av, '='); if(!val || !val[1]) return AE_BAD_VALUE; val++; }
 	if(id == FC_MODBUS_ADR && par) par--;                      // в документации инвертора нумерация регистров с 1, а в Modbus с 0
-	int i = OK;
+	ModbusResult result{};
 	if(wr) {
 		float x = my_atof(val);
 		if(x == ATOF_ERROR) return AE_BAD_VALUE;
-		if(type == 'h') i = Modbus.writeHoldingRegisters16(id, par, (int32_t) x);
-		else if(type == 'f') i = Modbus.writeHoldingRegistersFloat(id, par, x);            // float целиком: приведение к int32_t теряло дробную часть
-		else if(type == 'c') i = Modbus.writeSingleCoil(id, par, (int) x);
+		if(type == 'h') result = Modbus.writeHoldingRegisters16(id, par, (int32_t) x);
+		else if(type == 'f') result = Modbus.writeHoldingRegistersFloat(id, par, x);            // float целиком: приведение к int32_t теряло дробную часть
+		else if(type == 'c') result = Modbus.writeSingleCoil(id, par, (int) x);
 		else return AE_BAD_VALUE;
 		_delay(MODBUS_TIME_TRANSMISION * 10);                  // пауза перед чтением обратно
 	}
-	if(i == OK) {
+	if(result.Succeeded()) {
 		uint16_t w16 = 0; int32_t l32 = 0; float f = 0;
 		api_put(o, "{\"v\":");
-		if(type == 'w') { if((i = Modbus.readInputRegisters16(id, par, &w16)) == OK) api_put_int(o, w16); }
-		else if(type == 'l') { if((i = Modbus.readInputRegisters32(id, par, (uint32_t *)&l32)) == OK) api_put_int(o, l32); }
-		else if(type == 'i') { if((i = Modbus.readInputRegistersFloat(id, par, &f)) == OK) api_put_dec(o, (int32_t) (f * 100), 100); }
-		else if(type == 'h') { if((i = Modbus.readHoldingRegisters16(id, par, &w16)) == OK) api_put_int(o, w16); }
-		else if(type == 'f') { if((i = Modbus.readHoldingRegistersFloat(id, par, &f)) == OK) api_put_dec(o, (int32_t) (f * 100), 100); }
-		else if(type == 'c') { if((i = Modbus.readCoil(id, par, (boolean *)&w16)) == OK) api_put_int(o, w16 & 1); }
+		if(type == 'w') { if((result = Modbus.readInputRegisters16(id, par, &w16)).Succeeded()) api_put_int(o, w16); }
+		else if(type == 'l') { if((result = Modbus.readInputRegisters32(id, par, (uint32_t *)&l32)).Succeeded()) api_put_int(o, l32); }
+		else if(type == 'i') { if((result = Modbus.readInputRegistersFloat(id, par, &f)).Succeeded()) api_put_dec(o, (int32_t) (f * 100), 100); }
+		else if(type == 'h') { if((result = Modbus.readHoldingRegisters16(id, par, &w16)).Succeeded()) api_put_int(o, w16); }
+		else if(type == 'f') { if((result = Modbus.readHoldingRegistersFloat(id, par, &f)).Succeeded()) api_put_dec(o, (int32_t) (f * 100), 100); }
+		else if(type == 'c') { if((result = Modbus.readCoil(id, par, (boolean *)&w16)).Succeeded()) api_put_int(o, w16 & 1); }
 		else return AE_BAD_VALUE;
-		if(i == OK) { api_putc(o, '}'); return AE_OK; }
+		if(result.Succeeded()) { api_putc(o, '}'); return AE_OK; }
 		o->len -= 5; o->p[o->len] = 0;                         // откат заготовки «{"v":»
 	}
-	api_put(o, "{\"err\":"); api_put_int(o, i); api_putc(o, '}');
+	api_put_modbus_failure(o, result);
 	return AE_OK;
 }
 static int apiAct_modbus_read(ApiOut *o, const char *p) { return api_modbus(o, p, false); }

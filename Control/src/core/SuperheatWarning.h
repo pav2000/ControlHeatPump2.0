@@ -15,6 +15,8 @@
  * GNU General Public License for more details.
  */
 
+// Отслеживает выдержку и восстановление по двум порогам перегрева на всасывании.
+
 #ifndef SUPERHEAT_WARNING_H
 #define SUPERHEAT_WARNING_H
 

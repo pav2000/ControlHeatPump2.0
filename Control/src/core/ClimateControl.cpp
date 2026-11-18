@@ -14,6 +14,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 /*
  * Решение об управлении компрессором. Перенесено из HeatPump::UpdateHeat и
  * HeatPump::UpdateCool без изменения логики: порядок ветвей, типы величин и
@@ -35,7 +36,7 @@ static void clear(ClimateOut &out)
 	out.comp = pCOMP_NONE;
 	out.set_ret = false;
 	out.ret = pNone;
-	out.error = OK;
+	out.error = ErrorCatalog::Code::kOK;
 	out.touch_pid_time = false;
 	out.set_target = false;
 	out.target = 0;
@@ -143,7 +144,7 @@ void ClimateDecide(const ClimateIn &in, const ClimateRules &r,
 	// Превышение разности температур конденсатора при работающем компрессоре
 	// (есть задержка при переключении с ГВС)
 	if(in.comp_on && in.now - in.off_boiler > in.delay_boiler_off && abs(in.feed - in.ret_t) > in.dt) {
-		out.error = ERR_DTEMP_CON;
+		out.error = ErrorCatalog::Code::kTEMP_DELTA_CON;
 		out.comp = pCOMP_NONE;
 		return;
 	}
@@ -152,7 +153,7 @@ void ClimateDecide(const ClimateIn &in, const ClimateRules &r,
 	target = in.target;
 
 	if(r.check_r4way && in.comp_on && !in.on_boiler && in.r4way_check && in.r4way_on) {
-		out.error = ERR_WRONG_HARD_STATE;          // 4-ходовой в другом положении
+		out.error = ErrorCatalog::Code::kHARD_STATE;          // 4-ходовой в другом положении
 		out.comp = pCOMP_NONE;
 		return;
 	}
@@ -187,7 +188,7 @@ void ClimateDecide(const ClimateIn &in, const ClimateRules &r,
 		if(in.on_boiler)   { out.comp = pCOMP_OFF; return; }
 		if(feed_limit) {
 			// Достижение предела подачи под ПИД - это ошибка, регулятор не работает
-			out.set_ret = true; out.ret = r.p_off_feed; out.error = ERR_PID_FEED; out.comp = pCOMP_OFF;
+			out.set_ret = true; out.ret = r.p_off_feed; out.error = ErrorCatalog::Code::kPID_FEED_LIMIT; out.comp = pCOMP_OFF;
 			return;
 		}
 		// Ограничение мощности от генератора - жёсткое, поэтому первое
@@ -316,7 +317,7 @@ void ClimateDecideBoiler(const ClimateIn &in, PID_STRUCT &pid, PID_WORK_STRUCT &
 
 	// Инвертор, ПИД
 	if(in.feed_limit_temp > in.tempInLim) {
-		out.set_ret = true; out.ret = pBp1; out.error = ERR_PID_FEED; out.comp = pCOMP_OFF; return;
+		out.set_ret = true; out.ret = pBp1; out.error = ErrorCatalog::Code::kPID_FEED_LIMIT; out.comp = pCOMP_OFF; return;
 	}
 	if(!in.turbo && in.add_heating && in.heater_allowed) {
 		if(in.tboiler > in.tempRBOILER - (in.on_boiler || in.urgent ? 0 : in.dAddHeat)) {

@@ -82,13 +82,22 @@ int8_t devOmronMX2::initFC()
   #endif
   flags=0x00;                               		 // флаги  0 - наличие FC
   _data.setup_flags=0x00;                                // флаги
+#ifdef DEMO
+  if(DEVICEFC) {
+      SETBIT1(flags, fFC);
+      note = (char*)noteFC_OK;
+      set_target(_data.startFreq, false, _data.minFreqUser, _data.maxFreqUser);
+      get_readState();
+  }
+  return err;
+#endif
   if(!Modbus.get_present())                        // modbus отсутствует
       {
        SETBIT0(flags,fFC);          // Инвертор не работает
        journal.jprintf("%s, modbus not found, block.\n",name); 
-       err=ERR_NO_MODBUS;
+       err=ErrorNumber(ErrorCatalog::Code::kMODBUS_UNAVAILABLE);
 #ifndef FC_ANALOG_CONTROL
-       if(DEVICEFC) HP.raise_Error(err, ErrorCatalog::kMODBUS_UNAVAILABLE, "OMRON");
+       if(DEVICEFC) HP.raise_Error(ErrorCatalog::Code::kMODBUS_UNAVAILABLE, "OMRON");
 #endif
        return err; 
       }
@@ -104,7 +113,7 @@ int8_t devOmronMX2::initFC()
   	  analogWrite(pin,dac);
   #else									// НЕ Аналоговое управление
       const auto link = Modbus.LinkTestOmronMX2();
-      err = link.status;
+      err = link.Number();
       check_blockFC(link);
       if (err!=OK)  return err;          // связи нет выходим
       journal.jprintf("Test link Modbus %s: OK\r\n",name);   // Тест пройден
@@ -128,8 +137,8 @@ int8_t devOmronMX2::initFC()
                     if(r == INITSTOP_FAIL) {
                         SETBIT1(flags, fErrFC);
                         if(err == OK) {
-                            err = ERR_FC_RCOMP;
-                            HP.raise_Error(err, ErrorCatalog::kCOMP_NO_STOP, "OMRON");
+                            err = ErrorNumber(ErrorCatalog::Code::kCOMP_NO_STOP);
+                            HP.raise_Error(ErrorCatalog::Code::kCOMP_NO_STOP, "OMRON");
                         }
                         break;
                     }
@@ -143,11 +152,11 @@ int8_t devOmronMX2::initFC()
         case 4:                                                                // ОСТАНОВКА С ВЫБЕГОМ  ждать остановки
                 break;
         case 6:                                                                // ТОРМОЖЕНИЕ ПОСТОЯННЫМ ТОКОМ
-        case 7: err=ERR_MODBUS_STATE; HP.raise_Error(err, ErrorCatalog::kFC_STATE, "OMRON", {ErrorDetailKind::State, static_cast<uint16_t>(state), 0});  break;             // ВЫПОЛНЕНИЕ ПОВТОРНОЙ ПОПЫТКИ Подъем ошибки на верх и останов ТН
+        case 7: err=ErrorNumber(ErrorCatalog::Code::kFC_STATE); HP.raise_Error(ErrorCatalog::Code::kFC_STATE, "OMRON", {ErrorDetailKind::State, static_cast<uint16_t>(state), 0});  break;             // ВЫПОЛНЕНИЕ ПОВТОРНОЙ ПОПЫТКИ Подъем ошибки на верх и останов ТН
         case 8: break;                                                         // АВАРИЙНОЕ ОТКЛЮЧЕНИЕ
         case 9: break;                                                         // ПОНИЖЕННОЕ ПИТАНИЕ
         case -1:break;
-        default:err=ERR_MODBUS_STATE; HP.raise_Error(err, ErrorCatalog::kFC_STATE, "OMRON", {ErrorDetailKind::State, static_cast<uint16_t>(state), 0});  break;             // Подъем ошибки на верх и останов ТН
+        default:err=ErrorNumber(ErrorCatalog::Code::kFC_STATE); HP.raise_Error(ErrorCatalog::Code::kFC_STATE, "OMRON", {ErrorDetailKind::State, static_cast<uint16_t>(state), 0});  break;             // Подъем ошибки на верх и останов ТН
       }
       if (err!=OK) return err;
    #endif  // #ifndef FC_ANALOG_CONTROL
@@ -183,6 +192,9 @@ int8_t devOmronMX2::progReg32(uint16_t adrReg, char* nameReg, uint32_t valReg)
 // Программирование инвертора под конкретный компрессор
 int8_t devOmronMX2::progFC() 
 {
+#ifdef DEMO
+  return ErrorNumber(ErrorCatalog::Code::kMODBUS_UNAVAILABLE);
+#endif
 #ifndef FC_ANALOG_CONTROL    // НЕ АНАЛОГОВОЕ УПРАВЛЕНИЕ	
 	journal.jprintf("Programming %s . . .\r\n",name);
 	// Настройка инвертора под конкретный компрессор Регистры Hxxx Двигатель с постоянными магнитами (PM-двигатель)
@@ -259,16 +271,16 @@ int8_t  devOmronMX2::set_target(int16_t x,boolean show, int16_t _min, int16_t _m
           }
           if(testMode == NORMAL || testMode == HARD_TEST) {
               const auto actual = read_0x03_32(MX2_TARGET_FR, &exchange);
-              if(exchange != OK) {
-                  err = exchange.status;
+              if(!exchange.Succeeded()) {
+                  err = exchange.Number();
                   SETBIT1(flags, fErrFC);
                   HP.raise_ModbusError(exchange, "OMRON");
                   return err;
               }
               if(actual != static_cast<uint32_t>(x)) {
-                  err = ERR_FC_ERROR;
+                  err = ErrorNumber(ErrorCatalog::Code::kFC_SETPOINT);
                   SETBIT1(flags, fErrFC);
-                  HP.raise_Error(err, ErrorCatalog::kFC_SETPOINT, "OMRON");
+                  HP.raise_Error(ErrorCatalog::Code::kFC_SETPOINT, "OMRON");
                   return err;
               }
           }
@@ -315,7 +327,7 @@ int8_t devOmronMX2::set_levelOff(int16_t x)
 void devOmronMX2::check_blockFC(ModbusResult result)
 {
 #ifndef FC_ANALOG_CONTROL
-    if(result == OK) {
+    if(result.Succeeded()) {
         number_err = 0;
         return;
     }
@@ -327,7 +339,7 @@ void devOmronMX2::check_blockFC(ModbusResult result)
 
     SETBIT1(flags, fErrFC);
     note = (char*)noteFC_NO;
-    HP.raise_ModbusError(result, "OMRON", started ? ErrorCatalog::kFC_NO_LINK : ErrorCatalog::kFC_INIT);
+    HP.raise_ModbusError(result, "OMRON", started ? ErrorCatalog::Code::kFC_NO_LINK : ErrorCatalog::Code::kFC_INIT);
 #else
     (void)result;
 #endif
@@ -337,6 +349,12 @@ void devOmronMX2::check_blockFC(ModbusResult result)
 // Вызывается из задачи чтения датчиков период FC_TIME_READ
 int8_t devOmronMX2::get_readState()
 {
+#ifdef DEMO
+  const bool running = GETBIT(flags, fOnOff);
+  state = get_present() ? (running ? 3 : 2) : ERR_LINK_FC;
+  freqFC = running ? FC : 0;
+  return err = OK;
+#endif
 if(testMode != NORMAL && testMode != HARD_TEST) {
 	SETBIT0(flags, fErrFC);
 	state = 0;
@@ -350,13 +368,15 @@ err=OK;
   for(uint8_t i=0;i<FC_NUM_READ;i++)   // делаем FC_NUM_READ попыток чтения
       { 
         state=read_0x03_16(MX2_STATE, &exchange);                     // прочитать состояние
-        err = exchange.status;
+        err = exchange.Number();
         if (err==OK)                                       // Прочитано верно
          {
           if ((GETBIT(flags,fOnOff))&&(state!=3 && state!=8)) continue; else break;  // ТН включил компрессор а инвертор не имеет правильного состяния пытаемся прочитать еще один раз в противном случае все ок выходим
          } 
         _delay(FC_DELAY_REPEAT); 
-        journal.jprintf(cErrorRS485,name,__FUNCTION__,err);// Выводим сообщение о повторном чтении
+        if(DBG_ON(DBG_FCW))
+            journal.jprintf_time("%s: опрос состояния, тип %u, ответ 0x%02X, попытка %u/%u\n",
+                                 name, (unsigned)exchange.kind, (unsigned)exchange.raw, i + 1, FC_NUM_READ);
         numErr++;                                          // число ошибок чтение по Modbus
       }
   if (err!=OK)                                              // Ошибка Modbus
@@ -364,16 +384,15 @@ err=OK;
        state=ERR_LINK_FC;                                  // признак потери связи с инвертором
        if(exchange.kind == ModbusKind::Transport) {                         // шина молчит
         if(xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED && !Modbus.link_lost(GETBIT(flags,fOnOff))) {     // критерий потери ещё не выполнен - ждём следующего опроса
-         journal.jprintf(" %s: no answer (%d), wait. . .\n",name,err);
          return err;
         }
-        journal.jprintf(" %s: link lost, last error %d\n",name,err);
-        err=ERR_FC_NO_LINK;
+        err = xTaskGetSchedulerState() == taskSCHEDULER_NOT_STARTED
+            ? ErrorNumber(ErrorCatalog::Code::kFC_INIT) : ErrorNumber(ErrorCatalog::Code::kFC_NO_LINK);
        }
        SETBIT1(flags,fErrFC);                              // Блок инвертора
        faultCount = UINT16_MAX;
        HP.raise_ModbusError(exchange, "OMRON", xTaskGetSchedulerState() == taskSCHEDULER_NOT_STARTED
-                            ? ErrorCatalog::kFC_INIT : ErrorCatalog::kFC_NO_LINK);
+                            ? ErrorCatalog::Code::kFC_INIT : ErrorCatalog::Code::kFC_NO_LINK);
        return err;                                          // Возврат
       }
   if(state == 8) {
@@ -382,20 +401,20 @@ err=OK;
   }
   if(GETBIT(flags, fOnOff) && startCompressor && Uptime_s() - startCompressor > FC_ACCEL_TIME / 100) {
       if(state == 2) {
-          err = ERR_MODBUS_STATE;
-          HP.raise_Error(err, ErrorCatalog::kCOMP_NO_START, "OMRON", {ErrorDetailKind::State, 2, 0});
+          err = ErrorNumber(ErrorCatalog::Code::kCOMP_NO_START);
+          HP.raise_Error(ErrorCatalog::Code::kCOMP_NO_START, "OMRON", {ErrorDetailKind::State, 2, 0});
           return err;
       }
       if(state < 0 || state == 1 || state > 9) {
-          err = ERR_MODBUS_STATE;
-          HP.raise_Error(err, ErrorCatalog::kFC_STATE, "OMRON",
+          err = ErrorNumber(ErrorCatalog::Code::kFC_STATE);
+          HP.raise_Error(ErrorCatalog::Code::kFC_STATE, "OMRON",
                               {ErrorDetailKind::State, static_cast<uint16_t>(state), 0});
           return err;
       }
   }
   if(faultCount == UINT16_MAX) {
       uint16_t count;
-      if(Modbus.readHoldingRegisters16(FC_MODBUS_ADR, MX2_NUM_ERR - 1, &count) == OK) faultCount = count;
+      if(Modbus.readHoldingRegisters16(FC_MODBUS_ADR, MX2_NUM_ERR - 1, &count).Succeeded()) faultCount = count;
   }
 #ifdef FC_USE_RCOMP
   if(stopStage)                                             // подана остановка через RCOMP: проверить, что инвертор остановился
@@ -407,7 +426,7 @@ err=OK;
     case STOPCHK_FALLBACK:                                  // RCOMP снят, а инвертор вращается: останавливаем частотой 0
          journal.jprintf(" %s: still running %d s after RCOMP off, set 0 Hz via Modbus\n",name,(int)(since/1000));
          for(uint8_t i=0;i<FC_NUM_READ;i++) { err=write_0x10_32(MX2_TARGET_FR,0,&exchange); if(err==OK) break; _delay(100); }
-         if(exchange != OK) {
+         if(!exchange.Succeeded()) {
              stopStage = 0;
              HP.raise_ModbusError(exchange, "OMRON");
              return err;
@@ -417,8 +436,8 @@ err=OK;
     case STOPCHK_FAIL:                                      // не остановился и так
          stopStage=0;
          SETBIT1(flags,fErrFC);                             // Установить флаг блокировки
-         err=ERR_FC_RCOMP;
-         HP.raise_Error(err, ErrorCatalog::kCOMP_NO_STOP, "OMRON");                        // Подъем ошибки на верх и останов ТН
+         err=ErrorNumber(ErrorCatalog::Code::kCOMP_NO_STOP);
+         HP.raise_Error(ErrorCatalog::Code::kCOMP_NO_STOP, "OMRON");                        // Подъем ошибки на верх и останов ТН
          return err;
     default: break;                                         // ещё тормозит - ждём следующего опроса
    }
@@ -451,37 +470,41 @@ void devOmronMX2::reportTrip()
     HP.stopForError();
     const uint16_t previous = faultCount;
     faultCount = UINT16_MAX;
-    err = ERR_MODBUS_STATE;
+    err = ErrorNumber(ErrorCatalog::Code::kFC_TRIP);
     if(HP.get_errcode() != OK) return;
     uint16_t count, after, history[2];
     if(previous != UINT16_MAX &&
-       Modbus.readHoldingRegisters16(FC_MODBUS_ADR, MX2_NUM_ERR - 1, &count) == OK &&
+       Modbus.readHoldingRegisters16(FC_MODBUS_ADR, MX2_NUM_ERR - 1, &count).Succeeded() &&
        count == previous + 1 &&
-       Modbus.readHoldingRegistersNN(FC_MODBUS_ADR, MX2_ERROR1 - 1, 2, history) == OK &&
-       Modbus.readHoldingRegisters16(FC_MODBUS_ADR, MX2_NUM_ERR - 1, &after) == OK &&
+       Modbus.readHoldingRegistersNN(FC_MODBUS_ADR, MX2_ERROR1 - 1, 2, history).Succeeded() &&
+       Modbus.readHoldingRegisters16(FC_MODBUS_ADR, MX2_NUM_ERR - 1, &after).Succeeded() &&
        OmronCurrentFault(previous, count, after, history[0])) {
-        HP.raise_Error(err, ErrorCatalog::kINVERTER_FAULT, "OMRON",
-                            {ErrorDetailKind::Fault, history[0], history[1]}, nullptr, true);
+        err = ErrorNumber(ErrorCatalog::Code::kINVERTER_FAULT);
+        HP.record_Error(ErrorCatalog::Code::kINVERTER_FAULT, "OMRON",
+                            {ErrorDetailKind::Fault, history[0], history[1]});
     } else {
-        HP.raise_Error(err, ErrorCatalog::kFC_TRIP, "OMRON", {ErrorDetailKind::State, 8, 0}, nullptr, true);
+        HP.record_Error(ErrorCatalog::Code::kFC_TRIP, "OMRON", {ErrorDetailKind::State, 8, 0});
     }
 }
 #endif
 
+#ifndef FC_ANALOG_CONTROL
 // Немедленно снимает команду «Ход» и возвращает статус записи без вложенной регистрации.
 int8_t devOmronMX2::emergency_stop()
 {
-#ifdef FC_ANALOG_CONTROL
-    return OK;
-#else
+#ifdef DEMO
+    SETBIT0(flags, fOnOff);
+    startCompressor = 0;
+    return get_readState();
+#endif
     ModbusResult result{};
     for(uint8_t i = 0; i < FC_NUM_READ; ++i) {
         result = Modbus.writeSingleCoil(FC_MODBUS_ADR, MX2_START - 1, false);
-        if(result == OK) break;
+        if(result.Succeeded()) break;
     }
-    return result.status;
-#endif
+    return result.Number();
 }
+#endif
 
 // Команда ход на инвертор (целевая частота НЕ ВЫСТАВЛЯЕТСЯ)
 // Может быть подана команда через реле и через Modbus в зависимости от ключей компиляции
@@ -500,8 +523,8 @@ err=OK;
       #else // DEMO
              // Боевая часть
             if (((testMode==NORMAL)||(testMode==HARD_TEST))&&(((!get_present())||(GETBIT(flags,fErrFC))))) {
-                err = ERR_MODBUS_BLOCK;
-                HP.raise_Error(err, ErrorCatalog::kFC_BLOCK, "OMRON");
+                err = ErrorNumber(ErrorCatalog::Code::kFC_BLOCK);
+                HP.raise_Error(ErrorCatalog::Code::kFC_BLOCK, "OMRON");
                 return err;
             }
           
@@ -534,7 +557,7 @@ err=OK;
             #ifdef FC_USE_RCOMP   // Использовать отдельный провод для команды ход/стоп
                 HP.dRelay[RCOMP].set_ON();                // ПЛОХО через глобальную переменную
             #else               
-                state=ERR_LINK_FC; err=ERR_FC_CONF_ANALOG; SETBIT1(flags,fErrFC); HP.raise_Error(err, ErrorCatalog::kFC_CONFIG, "OMRON");
+                state=ERR_LINK_FC; err=ErrorNumber(ErrorCatalog::Code::kFC_CONFIG); SETBIT1(flags,fErrFC); HP.raise_Error(ErrorCatalog::Code::kFC_CONFIG, "OMRON");
             #endif    
             }
             SETBIT1(flags,fOnOff);startCompressor=Uptime_s(); journal.jprintf(" %s ON\n",name);
@@ -563,7 +586,7 @@ err=OK;
           #ifdef FC_USE_RCOMP   // Использовать отдельный провод для команды ход/стоп с проверкой выполнения
               HP.dRelay[RCOMP].set_OFF();            // ПЛОХО через глобальную переменную
                _delay(1000);                         // задержка на прохождение команды; _delay сам выбирает задержку: initFC зовёт stop_FC до старта планировщика
-               state=read_0x03_16(MX2_STATE, &exchange); err = exchange.status;        // 0:Начальное состояние, 2:Остановка 3:Вращение 4:Остановка с выбегом 5:Толчковый ход 6:Торможение  постоянным током 7:Выполнение  повторной попытки 8:Аварийное  отключение 9:Пониженное напряжение -1:Блокировка]
+               state=read_0x03_16(MX2_STATE, &exchange); err = exchange.Number();        // 0:Начальное состояние, 2:Остановка 3:Вращение 4:Остановка с выбегом 5:Толчковый ход 6:Торможение  постоянным током 7:Выполнение  повторной попытки 8:Аварийное  отключение 9:Пониженное напряжение -1:Блокировка]
                stopStage = 1;                        // торможение занимает до FC_DEACCEL_TIME: остановку проверит get_readState
                stopTick = GetTickCount();
           #else                  // подать команду ход/стоп через Modbus
@@ -586,7 +609,7 @@ err=OK;
           #ifdef FC_USE_RCOMP   // Использовать отдельный провод для команды ход/стоп
               HP.dRelay[RCOMP].set_OFF();                    // ПЛОХО через глобальную переменную
           #else                  // подать команду ход/стоп через Modbus
-              state=ERR_LINK_FC; err=ERR_FC_CONF_ANALOG; SETBIT1(flags,fErrFC); HP.raise_Error(err, ErrorCatalog::kFC_CONFIG, "OMRON");
+              state=ERR_LINK_FC; err=ErrorNumber(ErrorCatalog::Code::kFC_CONFIG); SETBIT1(flags,fErrFC); HP.raise_Error(ErrorCatalog::Code::kFC_CONFIG, "OMRON");
           #endif   
            }
           SETBIT0(flags,fOnOff);startCompressor=0; journal.jprintf(" %s OFF\n",name);
@@ -710,6 +733,10 @@ boolean devOmronMX2::set_paramFC(char *var, float x)
 // Получить информацию о инверторе, информация добавляется в buf
 char * devOmronMX2::get_infoFC(char *buf)
 {
+#ifdef DEMO
+  strcat(buf, "|DEMO, эмуляция инвертора|;");
+  return buf;
+#endif
   if(testMode != NORMAL && testMode != HARD_TEST) {
 	  strcat(buf, "|TEST MODE|;");
 	  return buf;
@@ -760,49 +787,58 @@ return buf;
 // Сброс ошибок инвертора по Modbus
 boolean devOmronMX2::reset_errorFC()
 {
+#ifdef DEMO
+    return reset_FC();
+#endif
 #ifndef FC_ANALOG_CONTROL
     faultCount = UINT16_MAX;
     ModbusResult result{};
     write_0x06_16(MX2_INIT_DEF, 0x01, &result);
-    if(result == OK) {
+    if(result.Succeeded()) {
         _delay(FC_DELAY_READ);
         const int16_t mode = read_0x03_16(MX2_INIT_DEF, &result);
-        if(result == OK && mode != 0x01) {
-            err = ERR_RESET_FC;
-            HP.raise_Error(err, ErrorCatalog::kFC_RESET, "OMRON");
+        if(result.Succeeded() && mode != 0x01) {
+            err = ErrorNumber(ErrorCatalog::Code::kFC_RESET);
+            HP.raise_Error(ErrorCatalog::Code::kFC_RESET, "OMRON");
             return false;
         }
-        if(result == OK) write_0x06_16(MX2_INIT_RUN, 0x01, &result);
+        if(result.Succeeded()) write_0x06_16(MX2_INIT_RUN, 0x01, &result);
     }
-    if(result != OK) HP.raise_ModbusError(result, "OMRON");
-    err = result.status;
+    if(!result.Succeeded()) HP.raise_ModbusError(result, "OMRON");
+    err = result.Number();
 #endif
     return err == OK;
 }
 
+// Сбрасывает отказ Omron и подтверждает состояние привода. Возвращает true при успешном сбросе.
 boolean devOmronMX2::reset_FC()
 {
+#ifdef DEMO
+    SETBIT0(flags, fErrFC);
+    get_readState();
+    return true;
+#endif
 #ifndef FC_ANALOG_CONTROL
     faultCount = UINT16_MAX;
     auto result = retryExchange(__FUNCTION__, [] {
         return Modbus.writeSingleCoil(FC_MODBUS_ADR, MX2_RESET - 1, true);
     }, false, true);
-    if(result == OK) {
+    if(result.Succeeded()) {
         _delay(FC_DELAY_READ);
         uint16_t currentState;
         result = retryExchange(__FUNCTION__, [&] {
             return Modbus.readHoldingRegisters16(FC_MODBUS_ADR, MX2_STATE - 1, &currentState);
         }, false, true);
-        if(result == OK) state = currentState;
+        if(result.Succeeded()) state = currentState;
     }
-    if(result != OK) HP.raise_ModbusError(result, "OMRON");
+    if(!result.Succeeded()) HP.raise_ModbusError(result, "OMRON");
     else if(state == 8) {
-        err = ERR_RESET_FC;
-        HP.raise_Error(err, ErrorCatalog::kFC_RESET, "OMRON", {ErrorDetailKind::State, 8, 0});
+        err = ErrorNumber(ErrorCatalog::Code::kFC_RESET);
+        HP.raise_Error(ErrorCatalog::Code::kFC_RESET, "OMRON", {ErrorDetailKind::State, 8, 0});
         return false;
     }
-    if(result == OK) SETBIT0(flags, fErrFC);
-    err = result.status;
+    if(result.Succeeded()) SETBIT0(flags, fErrFC);
+    err = result.Number();
 #endif
     return err == OK;
 }
@@ -811,6 +847,10 @@ boolean devOmronMX2::reset_FC()
 // 
 int16_t devOmronMX2::read_stateFC()
 {
+#ifdef DEMO
+  get_readState();
+  return state;
+#endif
 #ifndef FC_ANALOG_CONTROL    // НЕ АНАЛОГОВОЕ УПРАВЛЕНИЕ
   state=read_0x03_16(MX2_STATE);  // прочитать состояние
   if(DBG_ON(DBG_FCW) && GETBIT(flags, fOnOff)) {
@@ -824,6 +864,9 @@ int16_t devOmronMX2::read_stateFC()
 // Температура радиатора
 int16_t devOmronMX2::read_tempFC()
 {
+#ifdef DEMO
+  return 0;
+#endif
 #ifndef FC_ANALOG_CONTROL    // НЕ АНАЛОГОВОЕ УПРАВЛЕНИЕ
   return read_0x03_16(MX2_TEMP);
 #else
@@ -834,27 +877,29 @@ int16_t devOmronMX2::read_tempFC()
 #ifndef FC_ANALOG_CONTROL    // НЕ АНАЛОГОВОЕ УПРАВЛЕНИЕ
     // Чтение отдельного бита в регистр cmd возвращает код ,  ошибка обновляется
     // Реализовано FC_NUM_READ попыток чтения/записи в инвертор
-// Повторяет exchange до успеха и возвращает последний результат.
-// operation — имя для журнала, report включает проверку блокировки.
-// allowBlocked разрешает обмен при сбросе заблокированного привода.
+// Принимает операцию exchange и возвращает итог повтора. operation — имя для отладки.
+// report включает оценку блокировки, allowBlocked допускает обмен с заблокированным приводом.
 template<class Operation>
 ModbusResult devOmronMX2::retryExchange(const char *operation, Operation exchange, bool report, bool allowBlocked)
 {
     if(!get_present() || (!allowBlocked && GETBIT(flags, fErrFC)))
-        return {ERR_MODBUS_BLOCK, ModbusKind::Unavailable, 0};
+        return {ModbusKind::Unavailable, 0};
     ModbusResult result{};
     for(uint8_t i = 0; i < FC_NUM_READ; ++i) {
         result = exchange();
-        if(result == OK) break;
+        if(result.Succeeded()) break;
         _delay(FC_DELAY_REPEAT);
-        journal.jprintf(cErrorRS485, name, operation, result.status);
+        if(DBG_ON(DBG_FCW))
+            journal.jprintf_time("%s: %s, тип %u, ответ 0x%02X, попытка %u/%u\n",
+                                 name, operation, (unsigned)result.kind, (unsigned)result.raw, i + 1, FC_NUM_READ);
         ++numErr;
     }
-    err = result.status;
+    err = result.Number();
     if(report) check_blockFC(result);
     return result;
 }
 
+// Читает бит cmd, нумерация от единицы. Возвращает значение бита либо false при отказе.
 boolean devOmronMX2::read_0x01_bit(uint16_t cmd)
 {
     boolean value = false;
@@ -862,6 +907,7 @@ boolean devOmronMX2::read_0x01_bit(uint16_t cmd)
     return value;
 }
 
+// Читает 16-битный регистр cmd с нумерацией от единицы. Возвращает значение или 0 при отказе, причина доступна через exchange, если он задан.
 int16_t devOmronMX2::read_0x03_16(uint16_t cmd, ModbusResult *exchange)
 {
     uint16_t value = 0;
@@ -870,6 +916,7 @@ int16_t devOmronMX2::read_0x03_16(uint16_t cmd, ModbusResult *exchange)
     return value;
 }
 
+// Читает 32-битное значение с регистра cmd, нумерация от единицы. Возвращает значение или 0 при отказе и сохраняет исход в exchange, если он задан.
 uint32_t devOmronMX2::read_0x03_32(uint16_t cmd, ModbusResult *exchange)
 {
     uint32_t value = 0;
@@ -878,37 +925,41 @@ uint32_t devOmronMX2::read_0x03_32(uint16_t cmd, ModbusResult *exchange)
     return value;
 }
 
+// Читает историю отказа с регистра cmd в буфер инвертора. Возвращает числовой статус обмена.
 int16_t devOmronMX2::read_0x03_error(uint16_t cmd)
 {
     memset(error.inputBuf, 0, sizeof(error.inputBuf));
     const auto result = retryExchange(__FUNCTION__, [&] { return Modbus.readHoldingRegistersNN(FC_MODBUS_ADR, cmd - 1, 10, error.inputBuf); }, true);
-    if(result == OK) {
+    if(result.Succeeded()) {
         const uint16_t run = error.inputBuf[6], powerOn = error.inputBuf[8];
         error.inputBuf[6] = error.inputBuf[7]; error.inputBuf[7] = run;
         error.inputBuf[8] = error.inputBuf[9]; error.inputBuf[9] = powerOn;
     }
-    return result.status;
+    return result.Number();
 }
 
+// Записывает enabled в бит cmd. Возвращает числовой статус и сохраняет исход в exchange, если он задан.
 int8_t devOmronMX2::write_0x05_bit(uint16_t cmd, boolean enabled, ModbusResult *exchange)
 {
     const auto result = retryExchange(__FUNCTION__, [&] { return Modbus.writeSingleCoil(FC_MODBUS_ADR, cmd - 1, enabled); }, !exchange);
     if(exchange) *exchange = result;
-    return result.status;
+    return result.Number();
 }
 
+// Записывает 16-битное data в регистр cmd. Возвращает числовой статус и сохраняет исход в exchange, если он задан.
 int8_t devOmronMX2::write_0x06_16(uint16_t cmd, uint16_t data, ModbusResult *exchange)
 {
     const auto result = retryExchange(__FUNCTION__, [&] { return Modbus.writeHoldingRegisters16(FC_MODBUS_ADR, cmd - 1, data); }, !exchange);
     if(exchange) *exchange = result;
-    return result.status;
+    return result.Number();
 }
 
+// Записывает 32-битное data начиная с регистра cmd. Возвращает числовой статус и сохраняет исход в exchange, если он задан.
 int8_t devOmronMX2::write_0x10_32(uint16_t cmd, uint32_t data, ModbusResult *exchange)
 {
     const auto result = retryExchange(__FUNCTION__, [&] { return Modbus.writeHoldingRegisters32(FC_MODBUS_ADR, cmd - 1, data); }, !exchange);
     if(exchange) *exchange = result;
-    return result.status;
+    return result.Number();
 }
 #endif  // FC_ANALOG_CONTROL    // НЕ АНАЛОГОВОЕ УПРАВЛЕНИЕ
 

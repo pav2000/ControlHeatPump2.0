@@ -15,6 +15,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 /*
  * Шина 1-Wire: отдельная единица трансляции.
  *
@@ -82,14 +83,14 @@ xReturnTemp:
 	return raw * 100 / 16;
 }
 
-int8_t	deviceOneWire::Init(void)
+OneWireStatus	deviceOneWire::Init(void)
 {
-	err = 0;
-	if(lock_I2C_bus_reset(1) == OK) {
+	err = OneWireStatus::Ok;
+	if(lock_I2C_bus_reset(1) == OneWireStatus::Ok) {
 #ifdef ONEWIRE_DS2482
-		if(!OneWireDrv.reset_bridge()) err = ERR_DS2482_ONEWIRE;
+		if(!OneWireDrv.reset_bridge()) err = OneWireStatus::BridgeFailed;
 #if DS2482_CONFIG != 0
-		if(!err && !OneWireDrv.configure(DS2482_CONFIG)) err = ERR_DS2482_ONEWIRE;
+		if(err == OneWireStatus::Ok && !OneWireDrv.configure(DS2482_CONFIG)) err = OneWireStatus::BridgeFailed;
 #endif
 		release_I2C_bus();
 #endif
@@ -97,30 +98,29 @@ int8_t	deviceOneWire::Init(void)
 	return err;
 }
 
-// Возвращает OK или err. Если checkpresence=1, то только проверка на присутствие ds2482; семафор взведен, если нет ошибки
-//
 // SEM-HOLD: xI2CSemaphore
-// Функция взводит замок шины и возвращается с ним - это её работа, парно
-// к release_I2C_bus(). Отдаёт замок сама только на путях ошибки.
-int8_t  deviceOneWire::lock_I2C_bus_reset(uint8_t checkpresence)
+
+// Захватывает шину и сбрасывает OneWire. При checkpresence проверяет наличие DS2482.
+// Возвращает статус. После успеха вызывающий освобождает замок через release_I2C_bus().
+OneWireStatus  deviceOneWire::lock_I2C_bus_reset(uint8_t checkpresence)
 {
 	uint8_t presence = 0;
-	err = OK;
+	err = OneWireStatus::Ok;
 #ifdef ONEWIRE_DS2482
 	if(SemaphoreTake(xI2CSemaphore,(I2C_TIME_WAIT/portTICK_PERIOD_MS))==pdFALSE) {
 		journal.printf((char*)cErrorMutex,__FUNCTION__,MutexI2CBusy);
-		err = ERR_I2C_BUSY;
+		err = OneWireStatus::Busy;
 		return err;
 	}
 	if(checkpresence) {
 		if(!OneWireDrv.check_presence()){    // Проверяем наличие на i2с шине  ds2482
-			err = ERR_DS2482_NOT_FOUND;
+			err = OneWireStatus::BridgeMissing;
 			release_I2C_bus();
 		}
 		return err;
 	}
 #else
-	if(checkpresence) return OK;
+	if(checkpresence) return OneWireStatus::Ok;
 #endif
 	for(uint8_t i = 0; i < RES_ONEWIRE_ERR; i++)   // Три попытки сбросить датчики, если не проходит то это ошибка
 	{
@@ -129,7 +129,7 @@ int8_t  deviceOneWire::lock_I2C_bus_reset(uint8_t checkpresence)
 		if(!OneWireDrv.reset_bridge()) {
 			Recover_I2C_bus();
 			if(!OneWireDrv.reset_bridge()) {
-				err = ERR_DS2482_NOT_FOUND;
+				err = OneWireStatus::BridgeMissing;
 				break;
 			}
 		}
@@ -144,7 +144,7 @@ int8_t  deviceOneWire::lock_I2C_bus_reset(uint8_t checkpresence)
 		_delay(50);                               // Сброс не прошел, сделаем паузу
 	}
 	if(!presence){
-		if(err == OK) err = ERR_ONEWIRE;
+		if(err == OneWireStatus::Ok) err = OneWireStatus::NoPresence;
 		release_I2C_bus();
 	}
 	return err;
@@ -158,10 +158,9 @@ inline void	deviceOneWire::release_I2C_bus()
 #endif
 }
 
-// сканирование шины, с записью в буфер результатов возвращает код ошибки или число найденых датчиков
-// строка с найденными датчика кладется в buf возвращает ошибку или OK
+// Заполняет result_str списком датчиков и возвращает статус сканирования.
 // Формат: <Номер п.п.>:<тип датчика>:<температура>:<серийный номер>:<шина>;
-int8_t  deviceOneWire::Scan(char *result_str)
+OneWireStatus  deviceOneWire::Scan(char *result_str)
 {
 #ifdef DEMO // В демо режиме выводим строку констант
 	// Строка которая выдается в демо режиме при сканировании onewire
@@ -175,6 +174,7 @@ int8_t  deviceOneWire::Scan(char *result_str)
 	}
 	OW_scanTable[1].address[0]=0x0;
 	OW_scanTable[2].address[0]=0xaa;
+	return OneWireStatus::Ok;
 #else // сканирование датчика
 	byte i;
 	byte data[12];
@@ -182,8 +182,8 @@ int8_t  deviceOneWire::Scan(char *result_str)
 	bool i2c_lost = false;    // замок I2C отпущен на время вывода в журнал и не вернулся: отдавать его в конце нельзя
 	Watchdog_AliveHere();
 
-	if(lock_I2C_bus_reset(0)) { // reset 1-wire
-		if(err == ERR_ONEWIRE) journal.jprintf("1-Wire bus %d is empty. . .\n", bus + 1);
+	if(lock_I2C_bus_reset(0) != OneWireStatus::Ok) { // reset 1-wire
+		if(err == OneWireStatus::NoPresence) journal.jprintf("1-Wire bus %d is empty. . .\n", bus + 1);
 		return err;
 	}
 	OneWireDrv.skip(); // Все датчики
@@ -196,7 +196,7 @@ int8_t  deviceOneWire::Scan(char *result_str)
 		while(OneWireDrv.search(addr)) // до тех пор пока есть свободные адреса
 		{
 			Watchdog_AliveHere();
-			err = OK;
+			err = OneWireStatus::Ok;
 			//  Датчик найден!
 			// 1. Номер по порядку
 			OW_scanTable[OW_scanTableIdx].num = OW_scanTableIdx + 1;
@@ -216,8 +216,8 @@ int8_t  deviceOneWire::Scan(char *result_str)
 			}
 			strcat(result_str, ":");
 			// 5. Получение данных
-			if(!OneWireDrv.reset()) err = ERR_ONEWIRE;
-			if(err == OK) {
+			if(!OneWireDrv.reset()) err = OneWireStatus::NoPresence;
+			if(err == OneWireStatus::Ok) {
 				OneWireDrv.select(addr);
 				OneWireDrv.write(0xBE);
 				for(i=0; i<9; i++) data[i] = OneWireDrv.read(); // Читаем данные, нам необходимо 9 байт
@@ -229,7 +229,7 @@ int8_t  deviceOneWire::Scan(char *result_str)
 				strcat(result_str, "(");
 				_itoa(((data[4] & 0x60) >> 5) + 9, result_str);
 				strcat(result_str, "b)");
-				if(data[4] != DS18B20_p12BIT) if(SetResolution(addr, DS18B20_p12BIT, 1)) strcat(result_str, "!");
+				if(data[4] != DS18B20_p12BIT) if(SetResolution(addr, DS18B20_p12BIT, 1) != OneWireStatus::Ok) strcat(result_str, "!");
 			}
 			strcat(result_str, ":");
 			// 8. Адрес добавить
@@ -252,7 +252,7 @@ int8_t  deviceOneWire::Scan(char *result_str)
 #ifdef ONEWIRE_DS2482
 			if(SemaphoreTake(xI2CSemaphore, (I2C_TIME_WAIT/portTICK_PERIOD_MS)) == pdFALSE) {
 				journal.printf((char*)cErrorMutex,__FUNCTION__,MutexI2CBusy);
-				err = ERR_I2C_BUSY;
+				err = OneWireStatus::Busy;
 				i2c_lost = true;
 				break;
 			}
@@ -264,8 +264,8 @@ int8_t  deviceOneWire::Scan(char *result_str)
 		journal.jprintf("Error reset 1-Wire bus %d\n", bus + 1);
 	}
 	if(!i2c_lost) release_I2C_bus();
+	return i2c_lost ? OneWireStatus::Busy : OneWireStatus::Ok;
 #endif  // DEMO
-	return OK;
 }
 
 // Запись байта в шину. У DS2482 сбой I2C даёт false, у программной шины записи
@@ -280,65 +280,64 @@ bool deviceOneWire::wr(uint8_t b)
 #endif
 }
 
-// чтение данных DS18B20, возвращает код ошибки, делает все преобразования,
-// выполняется после подготовки температуры - PrepareTemp()
-// прочитанная температура кладется в val = t * 100
-int8_t  deviceOneWire::Read(byte *addr, int16_t &val)
+// Читает scratchpad датчика addr после PrepareTemp. При наличии двух байтов
+// записывает в val температуру в сотых градуса. Возвращает статус и байт причины.
+OneWireReadResult deviceOneWire::Read(byte *addr, int16_t &val)
 {
-	int8_t i;
-	byte data[9];
+	const OneWireStatus lock = lock_I2C_bus_reset(0);
+	if(lock != OneWireStatus::Ok) return {lock, 0};
 
-	if((i = lock_I2C_bus_reset(0))) return i;
 	OneWireDrv.select(addr);
-	OneWireDrv.write(0xBE); // Команда на чтение регистра температуры
-	for(i = 0; i < 9; i++) {
-		int16_t r = OneWireDrv.read();
-		if(r < 0) { // ошибка во время чтения
-			release_I2C_bus();
-			if(i > 1) goto xReadedOnly2b; // успели прочитать температуру
-			rawErr = abs(r);              // код драйвера 2..5 - подробность для журнала
-			return ERR_ONEWIRE_RW;
+	if(!wr(0xBE)) { // READ SCRATCHPAD
+		release_I2C_bus();
+		return {OneWireStatus::Transfer, 0};
+	}
+	byte data[9];
+	OneWireReadResult result{OneWireStatus::Ok, 0};
+	for(uint8_t i = 0; i < sizeof(data); i++) {
+		const int16_t r = OneWireDrv.read();
+		if(r < 0) {
+			result = {i >= 2 ? OneWireStatus::Partial : OneWireStatus::Transfer, static_cast<uint8_t>(-r)};
+			break;
 		}
 		data[i] = r;
 	}
 	release_I2C_bus();
-
-	// Данные получены
-	i = OK;
-	if(OneWireDrv.crc8(data,8) != data[8]) {
-xReadedOnly2b:
-		i = ERR_ONEWIRE_CRC;  // Проверка контрольной суммы
-	}
-	val = CalcTemp(addr[0], data, i != OK);
-	if(val == ERROR_TEMPERATURE) { rawErr = OW_RAW_BADDATA; i = ERR_ONEWIRE_RW; } // Прочитаны "плохие данные"
-	return i;
+	if(result.status == OneWireStatus::Transfer) return result;
+	if(result.status == OneWireStatus::Ok && OneWireDrv.crc8(data, 8) != data[8]) result.status = OneWireStatus::Crc;
+	val = CalcTemp(addr[0], data, result.status != OneWireStatus::Ok);
+	if(val == ERROR_TEMPERATURE) return {OneWireStatus::Transfer, OW_RAW_BADDATA};
+	return result;
 }
 
-// установить разрешение, блокировка шины, возврат OK или err
-int8_t deviceOneWire::SetResolution(uint8_t *addr, uint8_t rs, uint8_t dont_lock_bus)
+// установить разрешение, блокировка шины, возврат OneWireStatus::Ok или err
+OneWireStatus deviceOneWire::SetResolution(uint8_t *addr, uint8_t rs, uint8_t dont_lock_bus)
 {
-	err = 0;
+	err = OneWireStatus::Ok;
 	if(addr[0] == tDS18S20) return err; // not supported
-	if(!dont_lock_bus && lock_I2C_bus_reset(0)) return err = ERR_ONEWIRE;
-	else if(!OneWireDrv.reset()) return err = ERR_ONEWIRE;
+	if(!dont_lock_bus && lock_I2C_bus_reset(0) != OneWireStatus::Ok) return err;
+	if(!OneWireDrv.reset()) {
+		if(!dont_lock_bus) release_I2C_bus();
+		return err = OneWireStatus::NoPresence;
+	}
     OneWireDrv.select(addr);
     if(!(wr(0x4E)    // WRITE SCRATCHPAD
       && wr(0x00)    // верх и низ для аварийных температур не используется
       && wr(0x00)
       && wr(rs))) {  // это разрядность конвертации 0x7f - 12бит 0x5f- 11бит 0x3f-10бит 0x1f-9 бит
-    	err = ERR_ONEWIRE_RW;
+        err = OneWireStatus::Transfer;
     	if(!dont_lock_bus) release_I2C_bus();
     	return err;
     }
     if(rs == DS18B20_p12BIT) {
         if(!OneWireDrv.reset()){
-        	err = ERR_ONEWIRE;
+            err = OneWireStatus::NoPresence;
         	if(!dont_lock_bus) release_I2C_bus();
         	return err;
         }
         OneWireDrv.select(addr);
     	if(!wr(0x48)) {  // Записать в чип разрешение на всякий случай
-    		err = ERR_ONEWIRE_RW;
+            err = OneWireStatus::Transfer;
     		if(!dont_lock_bus) release_I2C_bus();
     		return err;
     	}
@@ -348,15 +347,15 @@ int8_t deviceOneWire::SetResolution(uint8_t *addr, uint8_t rs, uint8_t dont_lock
 }
 
 // запуск преобразования всех датчиков на шине возвращает код ошибки
-int8_t  deviceOneWire::PrepareTemp()
+OneWireStatus  deviceOneWire::PrepareTemp()
 {
-	uint8_t err = lock_I2C_bus_reset(0);
-	if(err) return err;
+	const OneWireStatus err = lock_I2C_bus_reset(0);
+	if(err != OneWireStatus::Ok) return err;
 	// начать преобразование температурных ВСЕХ датчиков две команды
 	OneWireDrv.skip();    		// skip ROM command
 	bool ok = wr(0x44);	   		// convert temp
 	release_I2C_bus();
-	return ok ? OK : ERR_ONEWIRE_RW;   // не записалась команда - датчики остались бы со старым значением
+	return ok ? OneWireStatus::Ok : OneWireStatus::Transfer;   // не записалась команда - датчики остались бы со старым значением
 }
 
 // Борьба с зависшими устройствами на шине  I2C (в первую очередь часы) неудачный сброс

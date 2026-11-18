@@ -3,7 +3,9 @@
 
 #include "utility/w5100.h"
 
+// Сокет не содержит данных для чтения.
 constexpr int16_t SOCKET_RX_EMPTY = -1;
+// Ошибка чтения сокета или непригодный заголовок пакета.
 constexpr int16_t SOCKET_RX_ERROR = -2;
 
 uint8_t socket(SOCKET s, uint8_t protocol, uint16_t port, uint8_t flag);

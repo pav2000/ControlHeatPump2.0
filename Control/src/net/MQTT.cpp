@@ -158,13 +158,13 @@ boolean clientMQTT::dnsUpdate()
 // Записать настройки в eeprom i2c на входе адрес с какого, на выходе конечный адрес, число меньше 0 это код ошибки
 int32_t clientMQTT::save(int32_t adr)
 {
- if (writeEEPROM_I2C(adr, (byte*)&mqttSettintg, sizeof(mqttSettintg))) { set_Error(ERR_SAVE_EEPROM,(char*)nameHeatPump); return ERR_SAVE_EEPROM;}  adr=adr+sizeof(mqttSettintg);           // записать параметры MQTT
+ if (writeEEPROM_I2C(adr, (byte*)&mqttSettintg, sizeof(mqttSettintg))) { set_Error(ErrorCatalog::Code::kSETTINGS_WRITE,(char*)nameHeatPump); return ErrorNumber(ErrorCatalog::Code::kSETTINGS_WRITE);}  adr=adr+sizeof(mqttSettintg);           // записать параметры MQTT
  return adr;
 }
 // Считать настройки из eeprom i2c на входе адрес с какого, на выходе конечный адрес, число меньше 0 это код ошибки
 int32_t clientMQTT::load(int32_t adr)
 {
-  if (readEEPROM_I2C(adr, (byte*)&mqttSettintg, sizeof(mqttSettintg))) { set_Error(ERR_LOAD_EEPROM,(char*)nameHeatPump); return ERR_LOAD_EEPROM;}  adr=adr+sizeof(mqttSettintg);           // прочитать параметры MQTT
+  if (readEEPROM_I2C(adr, (byte*)&mqttSettintg, sizeof(mqttSettintg))) { set_Error(ErrorCatalog::Code::kSETTINGS_READ,(char*)nameHeatPump); return ErrorNumber(ErrorCatalog::Code::kSETTINGS_READ);}  adr=adr+sizeof(mqttSettintg);           // прочитать параметры MQTT
   return adr;
 }
 // Считать настройки из буфера на входе адрес с какого, на выходе конечный адрес, число меньше 0 это код ошибки
@@ -208,7 +208,7 @@ void clientMQTT::finishCycle(MqttResult result)
 	if(!get_MqttUse() || !mqttFailures.Update(result, MQTT_NUM_ERR_OFF)) return;
 	if(MQTT_WARN_ENABLED && !mqttFailures.warned) {
 		const bool publish = result == MqttResult::Publish;
-		HP.set_Warning(ErrorCatalog::kMQTT, "MQTT", publish ? 2 : 1,
+		HP.set_Warning(ErrorCatalog::Code::kMQTT, "MQTT", publish ? 2 : 1,
 		               publish ? "Отказ публикации" : "Отказ подключения", true);
 		mqttFailures.warned = true;
 	}
@@ -229,27 +229,25 @@ void clientMQTT::recoverNARMON()
        break;
   case pMQTT_SOCK:                                   // Попытка реанимировать системный сокет
        Diag.num_resMQTT++;
-       if(closeSockSys(true)) journal.jprintf_time((char*)ResSock);
+       if(closeSockSys(true)) HP.log_Event("NET", "W5500", "Системный сокет сброшен");
        break;
   case pMQTT_DNS:                                    // Сокет не помог, возможно сервер сменил адрес
        Diag.num_resMQTT++;
        if(closeSockSys(true))
          {
-          journal.jprintf_time((char*)ResDHCP);
           _delay(50);
           check_address(mqttSettintg.narodMon_server,tempIP);      // Адрес НЕ сохраняем в настройках, только в ОЗУ
           if((tempIP!=zeroIP)&&(tempIP!=mqttSettintg.narodMon_serverIP))
             {
              mqttSettintg.narodMon_serverIP=tempIP;
-             journal.jprintf((char*)ChangeIP,mqttSettintg.narodMon_server);
+             HP.log_Event("NET", "DNS", "IP-адрес сервера NarodMon обновлён");
             }
           _delay(50);
          }
        break;
   case pMQTT_RES:                                    // Ничего не помогло - сброс сетевого чипа
        Diag.num_resMQTT++;
-       journal.jprintf_time((char*)ResChip);
-       initW5200(false);                                           // Инициализация сети без вывода инфы в консоль
+       if(initW5200(false)) HP.log_Event("NET", "W5500", "Сетевой чип переинициализирован");
        for(i=0;i<W5200_THREAD;i++) SETBIT1(Socket[i].flags,fABORT_SOCK); // Признак инициализации сокета, надо прерывать передачу в сервере
        _delay(50);
        break;
@@ -288,24 +286,22 @@ MqttResult clientMQTT::sendTopic(boolean NM, boolean debug, boolean link_close, 
           case pMQTT_OK:  break;  // Предыдущая отправка была удачна
           case pMQTT_SOCK:  // Попытка реанимировать сокет
                           Diag.num_resMQTT++;
-                          if(closeSockSys(true))  journal.jprintf_time((char*)ResSock);
+                          if(closeSockSys(true))  HP.log_Event("NET", "W5500", "Системный сокет сброшен");
                           break;
           case pMQTT_DNS: // Предыдущая отправка была НЕ удачна
                           Diag.num_resMQTT++;
                           if(closeSockSys(true))   // НЕУДАЧА Пытаемся реанимировать сокет
                           {
-                           journal.jprintf_time((char*)ResDHCP);
                           _delay(50);
                           // Пытаемся еще раз узнать адрес через ДНС, возможно он поменялось, если поменялся то меняем не сохраняем настройки
-                          if (NM) {check_address(get_narodMon_server(),tempIP);if (tempIP!=get_narodMon_serverIP()){ set_narodMon_serverIP(tempIP);journal.jprintf((char*)ChangeIP,get_narodMon_server());}}
-                          else    {check_address(get_mqtt_server(),tempIP);  if (tempIP!=get_mqtt_serverIP())    { set_mqtt_serverIP(tempIP);    journal.jprintf((char*)ChangeIP,get_mqtt_server());}}
+                          if (NM) {check_address(get_narodMon_server(),tempIP);if (tempIP!=get_narodMon_serverIP()){ set_narodMon_serverIP(tempIP);HP.log_Event("NET", "DNS", "IP-адрес сервера обновлён");}}
+                          else    {check_address(get_mqtt_server(),tempIP);  if (tempIP!=get_mqtt_serverIP())    { set_mqtt_serverIP(tempIP);    HP.log_Event("NET", "DNS", "IP-адрес сервера обновлён");}}
                            _delay(50);
                           }
                           break;
           case pMQTT_RES: // Предыдущая отправка - был сброс ДНС адреса теперь НАДО ЧИП СБРОСИТЬ
                          Diag.num_resMQTT++;
-                         journal.jprintf_time((char*)ResChip);
-                         initW5200(false);                                  // Инициализация сети без вывода инфы в консоль
+                         if(initW5200(false)) HP.log_Event("NET", "W5500", "Сетевой чип переинициализирован");
                          for (i=0;i<W5200_THREAD;i++) SETBIT1(Socket[i].flags,fABORT_SOCK);  // Признак инициализации сокета, надо прерывать передачу в сервере
                           _delay(50);
                          break;

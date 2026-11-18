@@ -15,6 +15,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 /*
  * Расписание: отдельная единица трансляции.
  *
@@ -188,7 +189,7 @@ uint8_t Scheduler::web_set_param(char *param, char *val)
 int8_t Scheduler::save(void)
 {
     SettingsLock lock(HP.saving);
-    return lock ? save_locked() : ERR_I2C_BUSY;
+    return lock ? save_locked() : ErrorNumber(ErrorCatalog::Code::kI2C_BUSY);
 }
 
 // Записывает и проверяет расписание при уже взятом замке. Возвращает OK либо код отказа.
@@ -199,7 +200,7 @@ int8_t Scheduler::save_locked(void)
     uint8_t hdr[REC_HDR_SIZE];
     rec_hdr_put(hdr, NTAG_Scheduler, sizeof(sch_data));
     uint16_t crc16 = get_crc16((uint8_t *)&sch_data);
-    int8_t err = ERR_SAVE_EEPROM;
+    int8_t err = ErrorNumber(ErrorCatalog::Code::kSETTINGS_WRITE);
     if(!writeEEPROM_I2C(I2C_SCHEDULER_EEPROM, hdr, sizeof(hdr)) &&
        !writeEEPROM_I2C(I2C_SCHEDULER_EEPROM + REC_HDR_SIZE, (byte*)&sch_data, sizeof(sch_data)) &&
        !writeEEPROM_I2C(I2C_SCHEDULER_EEPROM + REC_HDR_SIZE + sizeof(sch_data), (byte*)&crc16, sizeof(crc16))) {
@@ -208,16 +209,19 @@ int8_t Scheduler::save_locked(void)
         err = read_region(base, len);
         if(err == OK) {
             err = base == I2C_SCHEDULER_EEPROM + REC_HDR_SIZE && len == sizeof(sch_data)
-                  ? check_crc16_eeprom(base, len) : ERR_SETTINGS_VERIFY;
+                  ? check_crc16_eeprom(base, len) : ErrorNumber(ErrorCatalog::Code::kSETTINGS_DATA);
         }
     }
     if(err == OK) {
         journal.jprintf("Save scheduler to I2C OK, write: %d bytes, crc: %04x\n", sizeof(sch_data) + sizeof(crc16), crc16);
     } else {
-        HP.set_Warning(ErrorCatalog::kSETTINGS_WRITE, "schedule", -err,
-                       err == ERR_SAVE_EEPROM ? "Не удалось записать расписание" : "Проверка записи расписания не прошла");
+        HP.set_Warning(ErrorCatalog::Code::kSETTINGS_WRITE, "schedule", -err,
+                       err == ErrorNumber(ErrorCatalog::Code::kSETTINGS_WRITE) ? "Не удалось записать расписание" :
+                       err == ErrorNumber(ErrorCatalog::Code::kSETTINGS_READ) ? "Контрольное чтение расписания не удалось" :
+                       "Проверка записи расписания не прошла");
+        return ErrorNumber(ErrorCatalog::Code::kSETTINGS_WRITE);
     }
-    return err;
+    return OK;
 }
 
 // Привести данные, прочитанные из записи любой длины, к нынешним пределам.
@@ -225,9 +229,13 @@ int8_t Scheduler::save_locked(void)
 // Остальное (обрезка буфера календарей) сделано при распаковке.
 void Scheduler::fix_loaded(Scheduler_Data *d, bool lost)
 {
-	if(lost) journal.jprintf_time("$WARN: calendars %d-%d dropped (limit is %d), their data lost\n", MAX_CALENDARS + 1, MAX_CALENDARS_OLD, MAX_CALENDARS);
+	if(lost) {
+		char detail[80];
+		m_snprintf(detail, sizeof(detail), "Отброшены календари %d–%d", MAX_CALENDARS + 1, MAX_CALENDARS_OLD);
+		HP.log_Event(ErrorCatalog::Code::kSETTINGS_DATA, "SCHED", {}, detail);
+	}
 	if(Scheduler_FixActive(&d->Flags, &d->Active, MAX_CALENDARS, 1 << bScheduler_active)) {
-		journal.jprintf_time("$WARN: active calendar is out of range, scheduler is turned off, calendar 1 selected\n");
+		HP.log_Event(ErrorCatalog::Code::kSETTINGS_DATA, "SCHED", {}, "Неверный номер календаря, расписание отключено");
 	}
 }
 
@@ -289,7 +297,7 @@ int16_t Scheduler::load(uint8_t *data, uint8_t version)
 	}
 	if(fail) {
 		journal.jprintf(" - read error!\n");
-		return ERR_LOAD_EEPROM;
+		return ErrorNumber(ErrorCatalog::Code::kSETTINGS_READ);
 	}
 	fix_loaded(d, lost);
 	ret = sizeof(*d);
@@ -337,7 +345,7 @@ int8_t Scheduler::loadFromBuf(byte *buf, uint16_t avail, uint16_t hint)
 	const uint16_t len = file_data_len(buf, avail, hint);
 	if(!len) {
 		journal.jprintf(" Load scheduler: unknown length or CRC error (%d bytes available, hint %d)\n", avail, hint);
-		return ERR_CRC16_EEPROM;
+		return ErrorNumber(ErrorCatalog::Code::kSETTINGS_DATA);
 	}
 	journal.jprintf(" Load scheduler %d bytes, ", len + 2);
 	bool lost = false;
@@ -362,10 +370,13 @@ int8_t Scheduler::read_region(uint32_t &base, uint16_t &len)
 {
 	uint8_t hdr[REC_HDR_SIZE];
 	base = I2C_SCHEDULER_EEPROM;
-	if(readEEPROM_I2C(base, hdr, sizeof(hdr))) return ERR_LOAD_EEPROM;
+	if(readEEPROM_I2C(base, hdr, sizeof(hdr))) return ErrorNumber(ErrorCatalog::Code::kSETTINGS_READ);
 	if(rec_hdr_tag(hdr) == NTAG_Scheduler) {
 		len = rec_hdr_len(hdr);
-		if(len != SCHEDULER_LEN_NEW && len != SCHEDULER_LEN_OLD) return ERR_BAD_LEN_EEPROM;
+		if(len != SCHEDULER_LEN_NEW && len != SCHEDULER_LEN_OLD) {
+			journal.jprintf(" Invalid scheduler length %u\n", (unsigned)len);
+			return ErrorNumber(ErrorCatalog::Code::kSETTINGS_DATA);
+		}
 		base += REC_HDR_SIZE;
 	} else len = SCHEDULER_LEN_OLD;
 	return OK;
@@ -383,12 +394,14 @@ int8_t Scheduler::check_crc16_eeprom(uint32_t base, uint16_t len)
 	while(i < len) {
 		uint16_t n = len - i;
 		if(n > sizeof(blk)) n = sizeof(blk);
-		if(readEEPROM_I2C(base + i, blk, n)) return ERR_LOAD_EEPROM;
+		if(readEEPROM_I2C(base + i, blk, n)) return ErrorNumber(ErrorCatalog::Code::kSETTINGS_READ);
 		crc = calc_crc16(blk, n, crc);
 		i += n;
 	}
-	if(readEEPROM_I2C(base + i, (byte*)&crc2, sizeof(crc2))) return ERR_LOAD_EEPROM;
-	return crc == crc2 ? OK : ERR_CRC16_EEPROM;
+	if(readEEPROM_I2C(base + i, (byte*)&crc2, sizeof(crc2))) return ErrorNumber(ErrorCatalog::Code::kSETTINGS_READ);
+	if(crc == crc2) return OK;
+	journal.jprintf(" Scheduler CRC mismatch: %04x != %04x\n", crc, crc2);
+	return ErrorNumber(ErrorCatalog::Code::kSETTINGS_DATA);
 }
 
 bool Scheduler::UsesProfile(uint8_t profile)

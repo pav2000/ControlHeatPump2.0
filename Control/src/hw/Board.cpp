@@ -15,6 +15,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 /*
  * Плата и её постоянная память: сколько осталось ОЗУ, температура кристалла,
  * сторож питания, программный сброс и его причина, опознание чипа,
@@ -33,7 +34,7 @@
 #include "Hardware.h"     // объявления этого модуля, eepromI2C, rtcI2C
 #include "../core/HeatPump.h"     // HP - опрос при инициализации карты
 #include "../core/Rtos.h"         // xI2CSemaphore, SemaphoreTake/Give, Watchdog_AliveHere
-#include "../core/ErrorCodes.h"   // Fault_RelayOffLevel - аварийный хук
+#include "../core/ControlPolicy.h"   // Fault_RelayOffLevel - аварийный хук
 #include "../core/Watchdog.h"     // GPBR_REASON, RESET_*_MARK - причина сброса для Boot_Decide
 #include "../log/Statistics.h"   // card - карта памяти, cid_t, SD_SCK_MHZ
 #include <SerialFlash.h>  // микросхема flash на шине SPI
@@ -147,7 +148,7 @@ extern "C" void __assert_func(const char *file, int line, const char *func, cons
 extern "C" void __assert_func(const char *file, int line, const char *func, const char *expr)
 {
 	// Короткими строками: pbuf журнала PRINTF_BUF байт, а путь к файлу длинный.
-	journal.jprintf_time("$ERROR assert failed: %s\n", expr ? expr : "?");
+	journal.jprintf_time("Error assert failed: %s\n", expr ? expr : "?");
 	journal.jprintf(" %s:%d, %s\n", file ? file : "?", line, func ? func : "?");
 	journal.jprintf(" Reset in 2 s\n");
 	delay(2000);                       // дать журналу дописаться в консоль
@@ -216,6 +217,7 @@ char* ResetCause(void)
 			case 5: strcat(_buf, "BUS FAULT");  break;
 			case 6: strcat(_buf, "USAGE FAULT");  break;
 			case 7: strcat(_buf, "TASK #");  break;
+			case RTOS_SCHEDULER_RETURN: strcat(_buf, "SCHEDULER"); break;
 		}
 	}
 	return _buf;
@@ -303,7 +305,7 @@ uint8_t initSD(void)
 	if(success)  // Запоминаем результаты
 		journal.jprintf("OK\n");
 	else {
-		HP.set_Warning(ErrorCatalog::kSD, "card", 1, "Ошибка инициализации SD-карты");
+		HP.set_Warning(ErrorCatalog::Code::kSD, "card", 1, "Ошибка инициализации SD-карты");
 		spiBusDeselectAll();
 		return false;
 	}
@@ -311,7 +313,7 @@ uint8_t initSD(void)
 	// 2. Вывод инфо о карте
 	cid_t cid;
 	if(!card.card()->readCID(&cid)) {
-		HP.set_Warning(ErrorCatalog::kSD, "card", 2, "Ошибка чтения информации о SD-карте (readCID)");
+		HP.set_Warning(ErrorCatalog::Code::kSD, "card", 2, "Ошибка чтения информации о SD-карте (readCID)");
 		spiBusDeselectAll();
 		return 0;
 	}
@@ -327,7 +329,7 @@ uint8_t initSD(void)
 
 	// 3. Проверка наличия индексного файла
 	if(!card.exists(INDEX_FILE)) {
-		HP.set_Warning(ErrorCatalog::kSD, "card", 3, "Файл индекса не найден на SD-карте");
+		HP.set_Warning(ErrorCatalog::Code::kSD, "card", 3, "Файл индекса не найден на SD-карте");
 		spiBusDeselectAll();
 		return 1;
 	} // стартовый файл не найден
@@ -393,7 +395,7 @@ byte writeEEPROM_I2C(unsigned long addr, byte *values, unsigned int nBytes)
 {
 	if(SemaphoreTake(xI2CSemaphore, I2C_TIME_WAIT / portTICK_PERIOD_MS) == pdFALSE) {  // Если шедулер запущен то захватываем семафор
 		journal.printf((char*) cErrorMutex, __FUNCTION__, MutexI2CBusy);
-		return 7;
+		return EEPROM_I2C_LOCK_TIMEOUT;
 	}
 	uint32_t _ret = eepromI2C.write(addr, values, nBytes);
 	SemaphoreGive(xI2CSemaphore);
@@ -404,7 +406,7 @@ byte readEEPROM_I2C(unsigned long addr, byte *values, unsigned int nBytes)
 {
 	if(SemaphoreTake(xI2CSemaphore, I2C_TIME_WAIT / portTICK_PERIOD_MS) == pdFALSE) {  // Если шедулер запущен то захватываем семафор
 		journal.printf((char*) cErrorMutex, __FUNCTION__, MutexI2CBusy);
-		return 7;
+		return EEPROM_I2C_LOCK_TIMEOUT;
 	}
 	uint32_t _ret = eepromI2C.read(addr, values, nBytes);
 	SemaphoreGive(xI2CSemaphore);
@@ -454,36 +456,6 @@ void saveTime_RtcI2C()
 }
 
 
-// Сохраняет структуру настроек: <длина><структура>, считает CRC, возвращает ошибку или OK
-int8_t save_struct(uint32_t &addr_to, uint8_t *addr_from, uint16_t size, uint16_t &crc)
-{
-	if(size < 128) { // Меньше 128 байт, длина 1 байт, первый бит = 0
-		size <<= 1;
-		if(writeEEPROM_I2C(addr_to++, (uint8_t *)&size, 1)) {
-			set_Error(ERR_SAVE_EEPROM, (char*)nameHeatPump);
-			return ERR_SAVE_EEPROM;
-		}
-		crc = _crc16(crc, size);
-	} else { // длина 2 байта, первый бит = 1
-		size = (size << 1) | 1;
-		if(writeEEPROM_I2C(addr_to, (uint8_t *)&size, 2)) {
-			set_Error(ERR_SAVE_EEPROM, (char*)nameHeatPump);
-			return ERR_SAVE_EEPROM;
-		}
-		addr_to += 2;
-		crc = _crc16(crc, size & 0xFF);
-		crc = _crc16(crc, size >> 8);
-	}
-	size >>= 1;
-	if(writeEEPROM_I2C(addr_to, addr_from, size)) {
-		set_Error(ERR_SAVE_EEPROM, (char*)nameHeatPump);
-		return ERR_SAVE_EEPROM;
-	}
-	addr_to += size;
-	while(size--) crc = _crc16(crc, *addr_from++);
-	return OK;
-}
-
 // Запись в каркасе НОВОГО формата: [тег][длина][данные]. Описание каркаса -
 // в Util.h. Контрольная сумма считается по тем же байтам, что уходят в
 // EEPROM, включая заголовок: иначе перестановка записей не изменила бы сумму.
@@ -493,35 +465,23 @@ int8_t save_rec(uint32_t &addr_to, uint16_t tag, const uint8_t *addr_from, uint1
 	uint8_t hdr[REC_HDR_SIZE];
 	rec_hdr_put(hdr, tag, size);
 	if(writeEEPROM_I2C(addr_to, hdr, sizeof(hdr))) {
-		return ERR_SAVE_EEPROM;
+		return ErrorNumber(ErrorCatalog::Code::kSETTINGS_WRITE);
 	}
 	for(uint8_t i = 0; i < sizeof(hdr); i++) crc = _crc16(crc, hdr[i]);
 	addr_to += sizeof(hdr);
 	if(size) {
 		// Данные пишутся из ЖИВОЙ структуры, которую могут менять другие задачи, а CRC обязана совпасть с
-		// записанными байтами: иначе контрольное чтение даст ERR_SETTINGS_VERIFY. Запись с повтором при изменении.
+		// записанными байтами: иначе контрольное чтение обнаружит несовпадение CRC. Запись с повтором при изменении.
 		struct W { static int put(void *a, const uint8_t *d, uint16_t n) { return writeEEPROM_I2C(*(uint32_t *) a, (uint8_t *) d, n); } };
 		uint32_t at = addr_to;
 		int8_t r = Record_WriteStable(W::put, &at, addr_from, size, &crc, SAVE_REC_ATTEMPTS);
 		if(r == 1) {
-			return ERR_SAVE_EEPROM;
+			return ErrorNumber(ErrorCatalog::Code::kSETTINGS_WRITE);
 		} else if(r == 2) {
 			journal.jprintf("Save record %d: data kept changing, gave up\n", (int) tag);
-			return ERR_SETTINGS_VERIFY;
+			return ErrorNumber(ErrorCatalog::Code::kSETTINGS_DATA);
 		}
 		addr_to += size;
 	}
-	return OK;
-}
-
-int8_t save_2bytes(uint32_t &addr_to, uint16_t data, uint16_t &crc)
-{
-	if(writeEEPROM_I2C(addr_to, (uint8_t *)&data, 2)) {
-		set_Error(ERR_SAVE_EEPROM, (char*)nameHeatPump);
-		return ERR_SAVE_EEPROM;
-	}
-	addr_to += 2;
-	crc = _crc16(crc, data & 0xFF);
-	crc = _crc16(crc, data >> 8);
 	return OK;
 }

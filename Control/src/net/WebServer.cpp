@@ -15,6 +15,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 #include <SerialFlash.h>
 
 #include "WebShared.h"    // Socket[], генерируемые файлы
@@ -245,7 +246,7 @@ void web_server(uint8_t thread)
 							if(DBG_ON(DBG_WERR)) {
 								uint8_t ip[4];
 								W5100.readSnDIPR(sock, ip);
-								journal.jprintf_time("$ERROR send AJAX(%d.%d.%d.%d): %s\n", ip[0], ip[1], ip[2], ip[3], (char*) Socket[thread].inBuf);
+								journal.jprintf_time("Error send AJAX(%d.%d.%d.%d): %s\n", ip[0], ip[1], ip[2], ip[3], (char*) Socket[thread].inBuf);
 							}
 						}
 						break;
@@ -255,7 +256,7 @@ void web_server(uint8_t thread)
 						if(api_dispatch(thread) == 0 && DBG_ON(DBG_WERR)) {
 							uint8_t ip[4];
 							W5100.readSnDIPR(sock, ip);
-							journal.jprintf_time("$ERROR send API(%d.%d.%d.%d): %s\n", ip[0], ip[1], ip[2], ip[3], Socket[thread].inPtr);
+							journal.jprintf_time("Error send API(%d.%d.%d.%d): %s\n", ip[0], ip[1], ip[2], ip[3], Socket[thread].inPtr);
 						}
 						if(DBG_ON(DBG_HTTP)) { journal.jprintf("$RETURN: %s\n", Socket[thread].outBuf); }
 						break;
@@ -270,7 +271,7 @@ void web_server(uint8_t thread)
 							if(DBG_ON(DBG_WERR)) {
 								uint8_t ip[4];
 								W5100.readSnDIPR(sock, ip);
-								journal.jprintf_time("$ERROR send POST(%d.%d.%d.%d): %s\n", ip[0], ip[1], ip[2], ip[3], (char*) Socket[thread].inBuf);
+								journal.jprintf_time("Error send POST(%d.%d.%d.%d): %s\n", ip[0], ip[1], ip[2], ip[3], (char*) Socket[thread].inBuf);
 							}
                			}
 						break;
@@ -857,7 +858,7 @@ static int32_t fileProfilesLen(const uint8_t *ptr, const uint8_t *file_end, uint
 		len = ps.bytes + sizeof(uint16_t);               // плюс END (уже в bytes) и контрольная сумма
 		if(ps.bad_len || ps.bad_slot || ps.bad_tag || ps.truncated || !ps.end_seen || len > available) {
 			journal.jprintf("Profiles in file rejected: len %d, slot %d, tag %d, cut %d, end %d (code %d)\n",
-			                ps.bad_len, ps.bad_slot, ps.bad_tag, ps.truncated, ps.end_seen, ps.bad_len ? ERR_BAD_LEN_PROFILE : ERR_LOAD_PROFILE);
+			                ps.bad_len, ps.bad_slot, ps.bad_tag, ps.truncated, ps.end_seen, ps.bad_len ? ErrorNumber(ErrorCatalog::Code::kPROFILE_DATA) : ErrorNumber(ErrorCatalog::Code::kPROFILE_READ));
 			return -1;
 		}
 		// Контрольная сумма области: по всем байтам записей и заголовку END, как при записи в save_region
@@ -990,9 +991,9 @@ xLenErr:
 		if(len <= 0) return pSETTINGS_ERR;
 		ptr += block;
 		if(writeEEPROM_I2C(I2C_PROFILE_EEPROM, ptr, profilesLen)) {
-			HP.Prof.invalidate_cache(ERR_SAVE_PROFILE);
+			HP.Prof.invalidate_cache(ErrorNumber(ErrorCatalog::Code::kPROFILE_WRITE));
 			HP.Prof.update_list(HP.Prof.get_idProfile());
-			HP.set_Warning(ErrorCatalog::kPROFILE_WRITE, "profiles");
+			HP.set_Warning(ErrorCatalog::Code::kPROFILE_WRITE, "profiles");
 			return pSETTINGS_ERR;
 		}
 		const int8_t profiles = HP.Prof.cache_load_all();

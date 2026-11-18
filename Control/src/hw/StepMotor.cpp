@@ -15,6 +15,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 #include "StepMotor.h"
 
 void StepMotor::initStepMotor(int number_of_steps, int motor_pin_1, int motor_pin_2, int motor_pin_3, int motor_pin_4,

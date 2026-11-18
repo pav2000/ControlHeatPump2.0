@@ -15,6 +15,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 #include <Dns.h>
 
 #include "Network.h"      // объявления этого модуля: транспорт, server1, Udp
@@ -112,8 +113,6 @@ boolean resetWiznet(boolean show)
 // flag true - полный вывод на консоль false - сокращённый вывод на консоль
 // Проверят сетевой кабель, возврат true - OK false - проблемы, сеть не работает
 const char* NetworkChipOK={" Network library setting: %s, ID chip: 0x%x\n"};
-const char* NetworkChipBad={" WRONG setting library, library: %s, ID: chip 0x%x\n"};
-const char* NetworkError={"$ERROR: Problem reset and setting %s\n"};
 // Таймаут повтора пакета и число повторов в чип (настройка net.rtr). Регистры общие на все сокеты и пишутся на ходу, без сброса чипа и сокетов.
 void netApplyRtr()
 {
@@ -139,14 +138,15 @@ boolean initW5200(boolean flag)
 	netLayoutMode = (HP.safeNetwork || !HP.get_SockFast()) ? NL_MODE_OLD : NL_MODE_FAST0;
 	W5100.setLayoutMode(netLayoutMode);            // раскладка запоминается, в чип её пишет init() после каждого сброса
 	if(flag) journal.jprintf("Network setup:\n");
+	static bool linkMissing = false; // Инициализация уже сообщила об отсутствии Ethernet-связи.
 	if(!resetWiznet(false))  // 1. Сброс и проверка провода (молча)
 	{
-		if(DBG_ON(DBG_PHY)) {
-			journal.jprintf_time("$WARN: %s no link, check ethernet cable\n", nameWiznet);
-			journal.jprintf_time((char*)NetworkError, nameWiznet);
-		} else journal.jprintf_time("$WARN: %s no link\n", nameWiznet);
+		if(!linkMissing) HP.log_Event("NET", nameWiznet, "нет Ethernet-связи, проверьте кабель");
+		linkMissing = true;
 		return false; // дальше ехать бесполезно
 	} else if(flag && DBG_ON(DBG_PHY)) journal.jprintf(" SUCCESS: %s link OK\n", nameWiznet);
+	if(linkMissing) HP.log_Event("NET", nameWiznet, "Ethernet-связь восстановлена");
+	linkMissing = false;
 	linkStatusWiznet(flag);  // вывести полученные настройки чипа
 
 	if(flag)  // 2. Печать настроек соответствия либы и чипа (правильная настройка либы)
@@ -154,21 +154,21 @@ boolean initW5200(boolean flag)
 #ifdef DEMO
 		journal.jprintf(" DEMO mode!");
 #endif
-#if defined(W5500_ETHERNET_SHIELD) // Определение соответствия библиотеки и чипа
-		if(W5200VERSIONR() == 0x04) {
-			if(DBG_ON(DBG_PHY)) journal.jprintf((char*) NetworkChipOK, nameWiznet, W5200VERSIONR());
-		} else {
-			journal.jprintf((char*) NetworkChipBad, nameWiznet, W5200VERSIONR());
-			journal.jprintf_time((char*)NetworkError, nameWiznet);
-			return false;
-		} // дальше ехать бесполезно
+#if defined(W5500_ETHERNET_SHIELD)
+		const uint8_t expectedVersion = 0x04;
 #elif defined(W5200_ETHERNET_SHIELD)
-		if (W5200VERSIONR()==0x03) journal.jprintf((char*)NetworkChipOK,nameWiznet,W5200VERSIONR());
-		else {journal.jprintf((char*)NetworkChipBad,nameWiznet,W5200VERSIONR());journal.jprintf_time((char*)NetworkError,nameWiznet); return false;} // дальше ехать бесполезно
+		const uint8_t expectedVersion = 0x03;
 #else
-		if (W5200VERSIONR()==0x51) journal.jprintf((char*)NetworkChipOK,nameWiznet,W5200VERSIONR());
-		else {journal.jprintf((char*)NetworkChipBad,nameWiznet,W5200VERSIONR());journal.jprintf_time((char*)NetworkError,nameWiznet); return false;} // дальше ехать бесполезно
+		const uint8_t expectedVersion = 0x51;
 #endif
+		const uint8_t version = W5200VERSIONR();
+		if(version != expectedVersion) {
+			char reason[80];
+			m_snprintf(reason, sizeof(reason), "версия чипа 0x%02X, ожидалась 0x%02X", version, expectedVersion);
+			HP.log_Event("NET", nameWiznet, reason);
+			return false;
+		}
+		if(DBG_ON(DBG_PHY)) journal.jprintf((char*)NetworkChipOK, nameWiznet, version);
 	}
 
 	//  3. Подготовить структура для потоков
@@ -223,51 +223,31 @@ x_TryStaticIP:
 	pingW5200(HP.get_NoPing());  // Установка пинга флага разрешения пинга
 	netApplyRtr();               // таймаут и число повторов (настройка RTR, по умолчанию 400 мс и 4 повтора)
 
-	if(DBG_ON(DBG_PHY)) {
-	if(flag)  // 5. Печать сетевых настроек
-	{
-		if(EthernetOK) {
-			journal.jprintf(" DHCP use: ");
-			if(HP.get_DHCP()) journal.jprintf("YES\n");
-			else journal.jprintf("NO\n");
-			IPAddress dip;
-			dip = Ethernet.localIP();
-			journal.jprintf(" IP: %s\n", IPAddress2String(dip));
-			dip = Ethernet.subnetMask();
-			journal.jprintf(" Subnet: %s\n", IPAddress2String(dip));
-			dip = Ethernet.dnsServerIP();
-			journal.jprintf(" DNS: %s\n", IPAddress2String(dip));
-			dip = Ethernet.gatewayIP();
-			journal.jprintf(" Gateway: %s\n", IPAddress2String(dip));
-		} else journal.jprintf_time((char*)NetworkError, nameWiznet);
-	} else   // Кратко выводим сообщение в журнал
-	{
-		if(EthernetOK) journal.jprintf_time("Reset %s . . . \n", nameWiznet);
-		else journal.jprintf_time((char*)NetworkError, nameWiznet);
+	if(!EthernetOK) {
+		if(flag && !DBG_ON(DBG_PHY)) journal.jprintf("\n"); // Краткий вывод PHY оставил строку открытой.
+		HP.log_Event("NET", nameWiznet, "чип не подтвердил установку IP-адреса");
+		return false;
 	}
-	} else {
-	if(flag)  // 5. Печать сетевых настроек
-	{
-		if(EthernetOK) {
-			IPAddress dip;
-			dip = Ethernet.localIP();
-			journal.jprintf("%s%s/%d ", HP.get_DHCP() ? "DHCP " : "", IPAddress2String(dip), calc_bits_in_mask(Ethernet.subnetMask()));
-			dip = Ethernet.gatewayIP();
-			journal.jprintf("G:%s ", IPAddress2String(dip));
-			dip = Ethernet.dnsServerIP();
-			journal.jprintf("DNS:%s\n", IPAddress2String(dip));
+
+	const bool verbosePhy = DBG_ON(DBG_PHY);
+	if(!flag) journal.jprintf_time(verbosePhy ? "Reset %s . . . \n" : "Reset %s Ok.\n", nameWiznet);
+	else {
+		IPAddress ip = Ethernet.localIP(), subnet = Ethernet.subnetMask();
+		IPAddress dns = Ethernet.dnsServerIP(), gateway = Ethernet.gatewayIP();
+		if(verbosePhy) {
+			journal.jprintf(" DHCP use: %s\n", HP.get_DHCP() ? "YES" : "NO");
+			journal.jprintf(" IP: %s\n", IPAddress2String(ip));
+			journal.jprintf(" Subnet: %s\n", IPAddress2String(subnet));
+			journal.jprintf(" DNS: %s\n", IPAddress2String(dns));
+			journal.jprintf(" Gateway: %s\n", IPAddress2String(gateway));
 		} else {
-			journal.jprintf("\n"); // Краткий вывод PHY выше оставил строку открытой.
-			journal.jprintf_time("$ERROR: setting %s\n", nameWiznet);
+			journal.jprintf("%s%s/%d ", HP.get_DHCP() ? "DHCP " : "", IPAddress2String(ip), calc_bits_in_mask(subnet));
+			journal.jprintf("G:%s ", IPAddress2String(gateway));
+			journal.jprintf("DNS:%s\n", IPAddress2String(dns));
 		}
-	} else   // Кратко выводим сообщение в журнал
-	{
-		if(EthernetOK) journal.jprintf_time("Reset %s Ok.\n", nameWiznet);
-		else journal.jprintf_time("$ERROR: setting %s\n", nameWiznet);
 	}
-	}
-	if(EthernetOK) netChipBaseline();   // снимок регистров для самотеста: после beginWeb и pingW5200, то есть в рабочем состоянии
-	return EthernetOK;
+	netChipBaseline(); // Снимок регистров для самотеста после beginWeb и pingW5200.
+	return true;
 }
 // ---- DNS ----
 // Используется системный сокет!! W5200_SOCK_SYS
@@ -398,7 +378,7 @@ static void netChipRecover(NETCHIP_FAULT f, NETCHIP_ACTION a)
 	Diag.num_resW5200++;
 	netChipReinit(false);
 	if(a == NCA_RECOVER_NOTIFY) {
-		HP.set_Warning(ErrorCatalog::kNET, "W5500", f, nullptr, true);
+		HP.set_Warning(ErrorCatalog::Code::kNET, "W5500", f, nullptr, true);
 	}
 }
 

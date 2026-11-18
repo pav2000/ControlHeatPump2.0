@@ -14,12 +14,14 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 #ifndef __CLIMATE_CONTROL_H__
 #define __CLIMATE_CONTROL_H__
 
 #include <stdint.h>
 #include "ControlTypes.h"   // MODE_COMP, RULE_HP, структуры ПИД
-#include "ErrorCodes.h"     // TYPE_RET_HP и коды ошибок
+#include "ErrorCatalog.h"
+#include "ControlPolicy.h"     // TYPE_RET_HP и коды ошибок
 
 /*
  * РЕШЕНИЕ об управлении компрессором в режимах отопления и охлаждения.
@@ -136,7 +138,7 @@ struct ClimateOut {
 	MODE_COMP      comp;             // что делать компрессору
 	bool           set_ret;          // надо ли записать код точки выхода
 	TYPE_RET_HP    ret;              // сам код
-	int8_t         error;            // код ошибки или OK
+	ErrorCatalog::Code error;            // код ошибки или OK
 	bool           touch_pid_time;   // отметить время итерации ПИД
 	bool           set_target;       // надо ли менять целевую частоту
 	int16_t        target;           // новая целевая частота

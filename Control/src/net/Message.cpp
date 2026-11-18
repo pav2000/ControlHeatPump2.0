@@ -15,6 +15,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 // Класс для уведомлений
 #include "Message.h"
 #include "../core/HeatPump.h"     // HP, счётчики ошибок
@@ -249,8 +250,8 @@ int32_t Message::save(int32_t adr)
 {
 
   if (writeEEPROM_I2C(adr, (byte*)&messageSetting, sizeof(messageSetting))) {
-    set_Error(ERR_SAVE_EEPROM, (char*)nameHeatPump);
-    return ERR_SAVE_EEPROM;
+    set_Error(ErrorCatalog::Code::kSETTINGS_WRITE, (char*)nameHeatPump);
+    return ErrorNumber(ErrorCatalog::Code::kSETTINGS_WRITE);
   }  adr = adr + sizeof(messageSetting);       // записать параметры Уведомлений
   return adr;
 }
@@ -258,8 +259,8 @@ int32_t Message::save(int32_t adr)
 int32_t Message::load(int32_t adr)
 {
   if (readEEPROM_I2C(adr, (byte*)&messageSetting, sizeof(messageSetting))) {
-    set_Error(ERR_LOAD_EEPROM, (char*)nameHeatPump);
-    return ERR_LOAD_EEPROM;
+    set_Error(ErrorCatalog::Code::kSETTINGS_READ, (char*)nameHeatPump);
+    return ErrorNumber(ErrorCatalog::Code::kSETTINGS_READ);
   }  adr = adr + sizeof(messageSetting);       // прочитать параметры Уведомлений
   return adr;
 }
@@ -476,10 +477,9 @@ boolean Message::smtpCmdSecret(const char *cmd, uint32_t timeout)
 	return smtpReadReply(timeout);
 }
 
-// Установить уведомление (сформировать для отправки но НЕ ОТПРАВЛЯТЬ)
-// Проверяется необходимость отправки уведомления в зависимости от установленных флагов
-// p1 - температура для pMESSAGE_TEMP, код ошибки для pMESSAGE_ERROR (по нему узнаётся повтор)
-// true - сообщение принято (или запрещено), false - сообщение отвергнуто т.к оно уже посылалось (дубль) или внутренняя ошибка
+// Ставит уведомление типа ms с текстом c в очередь. p1 — температура или код ошибки согласно типу.
+// subject — ключ причины для подавления повторов, UINT32_MAX вычисляет ключ из сообщения.
+// Возвращает true для принятого или отключённого сообщения, false при дубле или заполнении очереди.
 boolean Message::setMessage(MESSAGE ms, char *c, int p1, uint32_t subject) // может запускаться из любого потока!!
 {
   // Проверка на необходимость посылки сообщения: ни почта, ни SMS не разрешены - слать некуда
@@ -582,7 +582,7 @@ void Message::noteDelivery(uint8_t ch, NOTIFY_TRY result)
 {
 	if(!NOTIFY_WARN_ENABLED || result == NTRY_RETRY) return;
 	if(deliveryFailures.Update(ch, result == NTRY_OK))
-		HP.set_Warning(ErrorCatalog::kNOTIFY, ch == NCH_MAIL ? "MAIL" : "SMS", ch, nullptr, true);
+		HP.set_Warning(ErrorCatalog::Code::kNOTIFY, ch == NCH_MAIL ? "MAIL" : "SMS", ch, nullptr, true);
 }
 
 // Послать уведомление согласно выбранных настроек сформированное setMessage
@@ -1108,7 +1108,11 @@ void get_mailState(char *buf, uint16_t buf_size)
 	strcpy(buf,"Статус: "); HP.get_StateModworkStr(buf);
 	HP.message.smtpWriteBody(buf);
 
-	strcpy(buf,"Последняя ошибка: ");  _itoa(HP.get_errcode(),buf); strcat(buf," - "); strcat(buf,HP.get_lastErr());
+	{
+		ErrorEvent event;
+		HP.get_errorEvent(event);
+		m_snprintf(buf, buf_size, "Последняя ошибка: %s", event.code ? event.text : "-");
+	}
 	HP.message.smtpWriteBody(buf);
 
 	strcpy(buf,"Режим работы: ");strcat(buf,HP.TestToStr());

@@ -1,12 +1,20 @@
 /*
- * Copyright (c) 2016-2026 by Pavel Panfilov <firstlast2007@gmail.com> skype pav2000pav
- * "Народный контроллер" для тепловых насосов.
+ * Copyright (c) 2016-2026 by Pavel Panfilov <firstlast2007@gmail.com>  telegram @pav20000
+ * "Народный контроллер 2.0" для тепловых насосов.
+ * Данное программное обеспечение предназначено для управления
+ * различными типами тепловых насосов для отопления и ГВС.
  *
  * This file is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public
  * License as published by the Free Software Foundation; either
  * version 3.0 of the License, or (at your option) any later version.
+ *
+ * This file is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
+ * GNU General Public License for more details.
  */
+
 // ---------------------------------------------------------------------------
 // Встроенная (аварийная) веб-морда: лежит во flash прошивки и отдаётся, когда
 // морду не удалось взять ни с SD карты, ни с SPI флеша, а также по короткому
@@ -69,7 +77,7 @@ const char index_noSD[] =
 "/div>\n</section>\n\n</div>\n<script>\nvar urlupdate=5000;\n/*API-CORE*/\n// ---------------------------------------------------------------------------------------------\n// Клиент нового API контроллера (/a"
 "pi/...). Протокол - tools/api/spec.md.\n// Блок самодостаточен: tools/mk_min_web.py берёт его между маркерами API-CORE и вставляет в\n// аварийную страницу (вариант C). Зависит только от urlcontrol, url"
 "update, NeedLogin/LPString\n// (есть ниже в scripts.js, в аварийной странице их нет - там и авторизации нет) и необязательных\n// shLinkState(ok), shLogin(). Значения в страницу вставлять через textCont"
-"ent / value.\n// ---------------------------------------------------------------------------------------------\nvar API_PROTO = 2;                   // версия протокола, с которой работает эта морда\nvar"
+"ent / value.\n// ---------------------------------------------------------------------------------------------\nvar API_PROTO = 3;                   // версия протокола, с которой работает эта морда\nvar"
 " api = {\n\ttimeout: 3500,                     // не короче серверного ожидания мьютекса (3000 мс), иначе повторы на занятый контроллер\n\tver: null,                         // ответ /api/ver после api.in"
 "it\n\tmeta: {},                          // группа -> описание полей\n\tpollers: [], pollTimer: null, pollBusy: 0, pollAgain: 0,\n\tmetaWait: {}, verWait: null          // запросы meta и ver в пути: очереди"
 " ожидающих\n};\n\n// Текст числа так, как он пришёл от контроллера: api.raw['heat.temp1'] = '20.5', api.raw['fc.max'] = '110.00'. Прежнее значение (if.) для\n// вычисляемых ключей прошивка сверяет по ТЕКС"

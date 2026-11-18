@@ -15,6 +15,8 @@
  * GNU General Public License for more details.
  */
 
+// Подтверждает нарушения уставок давления и вычисляет допуск пуска по последнему отсчёту PCON.
+
 #ifndef PRESSURE_PROTECTION_H
 #define PRESSURE_PROTECTION_H
 

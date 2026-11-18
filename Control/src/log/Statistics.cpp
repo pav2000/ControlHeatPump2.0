@@ -15,6 +15,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 /*
  * Статистика и история: отдельная единица трансляции.
  *
@@ -70,7 +71,7 @@ char filename[sizeof(stats_file_start)-1 + 4 + sizeof(stats_file_ext)];
 // what: 0 - Stats, 1 - History, Return: OK or Error
 int8_t Statistics::CreateOpenFile(uint8_t what)
 {
-	if(!HP.get_fSD()) return ERR_SD_INIT;
+	if(!HP.get_fSD()) return ErrorNumber(ErrorCatalog::Code::kSD);
 	uint8_t newfile = 0;
 	if(what == ID_HISTORY) {
 		if(HistoryBlockCreating) goto xContinue;
@@ -92,7 +93,7 @@ int8_t Statistics::CreateOpenFile(uint8_t what)
 		uint16_t days = month == 1 ? 366 : (12 - month + 1) * 31;
 		if(!StatsFile.createContiguous(filename, what ? HistoryFileSize((uint16_t) HISTORY_MAX_RECORD_LEN, days) : STATS_MAX_FILE_SIZE(days))) {
 			Error("create", what);
-			return ERR_SD_WRITE;
+			return ErrorNumber(ErrorCatalog::Code::kSD);
 		} else {
 			StatsFile.timestamp(T_CREATE | T_ACCESS | T_WRITE, rtcSAM3X8.get_years(), rtcSAM3X8.get_months(), rtcSAM3X8.get_days(), rtcSAM3X8.get_hours(), rtcSAM3X8.get_minutes(), rtcSAM3X8.get_seconds());
 		}
@@ -115,7 +116,7 @@ xContinue:		if(HistoryBlockCreating) b = HistoryBlockCreating; else b = HistoryC
 			if(temp_buf == NULL) {
 				Error("memory low", what);
 				StatsFile.remove();
-				return ERR_OUT_OF_MEMORY;
+				return ErrorNumber(ErrorCatalog::Code::kMEMORY);
 			}
 			memset(temp_buf, 0, SD_BLOCK);
 			for(; b <= (what ? HistoryBlockEnd : BlockEnd);) {
@@ -147,7 +148,7 @@ xContinue:		if(HistoryBlockCreating) b = HistoryBlockCreating; else b = HistoryC
 	}
 xError:
 	StatsFile.close();
-	return ERR_SD_WRITE;
+	return ErrorNumber(ErrorCatalog::Code::kSD);
 }
 
 boolean Statistics::FindEndPosition(uint8_t what)
@@ -220,7 +221,7 @@ void Statistics::Error(const char *text, uint8_t what)
 	m_snprintf(detail, sizeof(detail), "%s: %s (%d,%d)", device, text, status, (int)card.cardErrorData());
 	uint16_t cause = 0xFFFF;
 	for(const char *p = text; *p; ++p) cause = _crc16(cause, static_cast<uint8_t>(*p));
-	HP.set_Warning(ErrorCatalog::kSD, device, cause, detail);
+	HP.set_Warning(ErrorCatalog::Code::kSD, device, cause, detail);
 }
 
 // Карта файлов по годам: от текущего года вниз, пока файл существует
@@ -991,7 +992,7 @@ int8_t Statistics::SaveStats(uint8_t newday)
 	char *rbuf = (char*) malloc(STATS_MAX_RECORD_LEN);
 	if(rbuf == NULL) {
 		Error("memory low", ID_STATS);
-		return ERR_OUT_OF_MEMORY;
+		return ErrorNumber(ErrorCatalog::Code::kMEMORY);
 	}
 	int8_t retval = OK;
 	StatsFileString(rbuf);
@@ -1001,7 +1002,7 @@ int8_t Statistics::SaveStats(uint8_t newday)
 	if(newday < 2 || lensav != len) { // save when there is no space in buffer
 #endif
 		if(newday != 1 && SemaphoreTake(xWebThreadSemaphore, newday == 0 ? W5200_TIME_WAIT : 0) == pdFALSE) {
-			retval = ERR_CONFIG;
+			retval = ErrorNumber(ErrorCatalog::Code::kCONFIG);
 			free(rbuf);
 			return retval;
 		}
@@ -1017,27 +1018,27 @@ int8_t Statistics::SaveStats(uint8_t newday)
 		if(!card.card()->writeBlock(CurrentBlock, stats_buffer)) {
 			Error("save", ID_STATS);
 			// to do - reinit card but in other task
-			retval = ERR_SD_WRITE;
+			retval = ErrorNumber(ErrorCatalog::Code::kSD);
 		} else if(lensav != len){ // next block
 			if(CurrentBlock >= BlockEnd) {
 				Error("File Overflow", ID_STATS);
-				retval = ERR_SD_WRITE;
+				retval = ErrorNumber(ErrorCatalog::Code::kSD);
 			} else {
 				memset(stats_buffer, 0, SD_BLOCK);
 				memcpy(stats_buffer, rbuf + lensav, len - lensav);
 				if(!card.card()->writeBlock(CurrentBlock + 1, (uint8_t*)stats_buffer)) {
 					Error("save 2", ID_STATS);
-					retval = ERR_SD_WRITE;
+					retval = ErrorNumber(ErrorCatalog::Code::kSD);
 				} else if(newday == 2) { // new day
 					if(CurrentBlock >= BlockEnd) {
 						Error("File Overflow", ID_STATS);
-						retval = ERR_CONFIG;
+						retval = ErrorNumber(ErrorCatalog::Code::kCONFIG);
 					} else CurrentBlock++;
 					CurrentPos = len - lensav - 1;
 				} else { // reread current block
 					if(!card.card()->readBlock(CurrentBlock, (uint8_t*)stats_buffer)) {
 						Error("read", ID_STATS);
-						retval = ERR_SD_READ;
+						retval = ErrorNumber(ErrorCatalog::Code::kSD);
 					}
 				}
 			}
@@ -1057,12 +1058,12 @@ int8_t Statistics::SaveHistory(uint8_t from_web)
 	return OK;
 #endif
 	if(!GETBIT(HP.Option.flags, fHistory) || !HP.get_fSD() || HistoryCurrentBlock == 0) return OK;
-	if(!from_web && SemaphoreTake(xWebThreadSemaphore, W5200_TIME_WAIT) == pdFALSE) return ERR_CONFIG;
+	if(!from_web && SemaphoreTake(xWebThreadSemaphore, W5200_TIME_WAIT) == pdFALSE) return ErrorNumber(ErrorCatalog::Code::kCONFIG);
 	int8_t retval = OK;
 	spiBusDeselectAll();
 	if(!card.card()->writeBlock(HistoryCurrentBlock, history_buffer)) {
 		Error("save", ID_HISTORY);
-		retval = ERR_SD_WRITE;
+		retval = ErrorNumber(ErrorCatalog::Code::kSD);
 	}
 	if(!from_web) SemaphoreGive(xWebThreadSemaphore);
 	return retval;

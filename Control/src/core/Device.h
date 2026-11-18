@@ -29,6 +29,7 @@
 
 #include "../../Constant.h"
 #include <rtc_clock.h>
+#include "ErrorCatalog.h"
 
 // Флаги датчиков (единые для всех датчиков!!!!!)
 #define fPresent      0               // флаг наличие датчика
@@ -41,7 +42,8 @@
 #define fIpLost	      7				  // флаг: связь с привязанным удалённым датчиком потеряна, об этом уже написано в журнал (не сохраняется)
 
 extern RTC_clock rtcSAM3X8;
-extern void set_Error(int8_t err, char *nam);
+// Регистрирует аварию code от устройства device и запускает аварийный останов.
+void set_Error(ErrorCatalog::Code code, const char *device);
 
 /*
  * Общая часть датчиков и исполнительных устройств.

@@ -15,6 +15,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 // ---------------------------------------------------------------------------
 // Описание базовых классов для работы Теплового Насоса
 // ---------------------------------------------------------------------------
@@ -284,14 +285,18 @@ class HeatPump
     void checkPressureProtection(bool lowFresh, bool highFresh);
     void process_error(void);
 
-    inline int8_t get_errcode(){return error == OK ? OK : activeErrorCode;} // Получить код последней ошибки
+    inline int8_t get_errcode(){return error;} // Получить код последней ошибки
     inline void   drop_error_at_boot(){error=OK;} // Освободить поле ошибки для более важной. ТОЛЬКО до старта планировщика: иначе гонка с Error_Claim
+    // Копирует в event текущую аварию вместе с текстом. Значение не возвращает.
     void get_errorEvent(ErrorEvent &event) const;
+    // Возвращает согласованный снимок кода, источника и детали активной аварии.
     ErrorEventInfo get_errorInfo() const;
+    // Возвращает снимок предупреждения. Если text задан, копирует текст в буфер размером size.
     WarningRecord get_lastWarning(char *text = nullptr, size_t size = 0) const;
+    // Регистрирует предупреждение code для device. cause задаёт ключ повтора, detail заменяет текст.
+    // newEpisode открывает новую серию, consoleOnly исключает отправку уведомления, errorDetail хранит исходный статус. Возврата нет.
     void set_Warning(ErrorCatalog::Code code, const char *device, uint16_t cause = 0,
-                     const char *detail = nullptr, bool newEpisode = false, bool consoleOnly = false);
-    char    *get_lastErr(){return note_error;} // Получить описание последней ошибки, которая вызвала останов ТН, при удачном запуске обнуляется
+                     const char *detail = nullptr, bool newEpisode = false, bool consoleOnly = false, ErrorDetail errorDetail = {});
     void     scan_OneWire(char *result_str); // Сканирование шины OneWire на предмет датчиков
     inline TEST_MODE get_testMode(){return testMode;} // Получить текущий режим работы
     void     set_testMode(TEST_MODE t);    // Установить значение текущий режим работы
@@ -319,10 +324,20 @@ class HeatPump
     uint8_t is_pause();					// Возвращает 1, если ТН в паузе
 	inline boolean is_compressor_on() { return dRelay[RCOMP].get_Relay() || dFC.isfOnOff(); }    // Проверка работает ли компрессор
     void stopForError();
-    void raise_Error(int8_t legacy, ErrorCatalog::Code code, const char *device,
-                          ErrorDetail detail = {}, const char *meaning = nullptr, bool stopIssued = false);
+    // Отдаёт команду останова и публикует code с источником device и деталями.
+    void raise_Error(ErrorCatalog::Code code, const char *device,
+                     ErrorDetail detail = {}, const char *meaning = nullptr);
+    // Публикует первую аварию code после уже отданной команды останова.
+    void record_Error(ErrorCatalog::Code code, const char *device,
+                      ErrorDetail detail = {}, const char *meaning = nullptr);
+    // Пишет только в журнал событие с группой source, устройством device и сообщением text. Возврата нет.
+    void log_Event(const char *source, const char *device, const char *text);
+    // Пишет только в журнал событие code для device. detail уточняет причину, meaning заменяет текст каталога. Возврата нет.
+    void log_Event(ErrorCatalog::Code code, const char *device, ErrorDetail detail = {},
+                   const char *meaning = nullptr);
+    // Регистрирует отказ result от device. transport задаёт код для транспортного сбоя. Возврата нет.
     void raise_ModbusError(ModbusResult result, const char *device,
-                           ErrorCatalog::Code transport = ErrorCatalog::kMODBUS_EXCHANGE);
+                           ErrorCatalog::Code transport = ErrorCatalog::Code::kMODBUS_EXCHANGE);
 	bool    compressor_emergency_off();                                                           // аварийный останов компрессора (set_Error): true - останов отдан
 	SAFETY_WHY safety_check(SAFETY_OUT out, bool on, const char *name, const char *src);              // межблокировки выходов (Safety.h), отказ - в журнал
 
@@ -335,12 +350,12 @@ class HeatPump
     // int32_t save(void) - записи в старом формате больше нет, см. HeatPumpSettings.cpp
     int32_t load(uint8_t *buffer, uint16_t capacity, uint8_t from_RAM); // Считать настройки из i2c или RAM, на выходе код ошибки (меньше нуля)
     // ---- НОВЫЙ формат, версия 150. Каркас записи описан в Util.h ----
-    int32_t save_all(bool saveCounters = false);                          // записать ВСЕ настройки новым форматом; занято - ERR_I2C_BUSY
+    int32_t save_all(bool saveCounters = false);                          // записать ВСЕ настройки новым форматом; занято — I2C_BUSY
     volatile uint8_t saving;                         // занята операция с областями настроек
     int32_t save_new(void);                          // записать настройки новым форматом
     int32_t load_new(uint8_t *buffer, uint16_t capacity, uint8_t from_RAM); // прочитать новый формат
-    int32_t load_fail(int8_t code, uint8_t from_RAM);       // ошибка загрузки настроек: в журнал ошибок (старт) или кодом возврата (файл)
-    void    load_warn(int8_t code, uint8_t from_RAM);       // замечание о загрузке без отказа
+    int32_t load_fail(ErrorCatalog::Code code, uint8_t from_RAM, uint16_t cause = 0);       // ошибка загрузки настроек: в журнал ошибок (старт) или кодом возврата (файл)
+    void    load_warn(SettingsDataCause cause, uint8_t from_RAM);       // замечание о загрузке без отказа
     int8_t  load_parts(void);                               // расписание, кеш профилей и текущий профиль, итог для читателей
     // Версия, по которой принимаются решения о СТАРЫХ форматах профилей и
     // расписания. Как только настройки сохранены новым форматом, Option.ver
@@ -352,7 +367,7 @@ class HeatPump
     int32_t load_all(uint8_t *buffer, uint16_t capacity);
     int8_t loadFromBuf(int32_t adr,byte *buf);// Считать настройки из буфера на входе адрес с какого, на выходе код ошибки (меньше нуля)
     int8_t save_motoHour();             // запись счетчиков теплового насоса в ЕЕПРОМ
-    int8_t load_motoHour();             // чтение счетчиков теплового насоса в ЕЕПРОМ
+    MotoHourLoad load_motoHour();             // чтение счетчиков теплового насоса в ЕЕПРОМ
     
   // ---- К Л А С С Ы ----
   // Датчики
@@ -627,11 +642,8 @@ class HeatPump
 
     // Ошибки и описания
     void copy_errorInfo(ErrorEventInfo &info, char *text) const;
-    void record_Error(int8_t legacy, const char *device, ErrorCatalog::ErrCode code,
-                      ErrorDetail detail, const char *meaning);
-    ErrorCatalog::ErrCode activeErrorCode{}; // Код каталога для активной аварии или 0
     ErrorDetail activeErrorDetail{};        // Исходные данные той же аварии
-    volatile int8_t error;                // Внутренний статус аварии для управления и повторного пуска
+    volatile int8_t error;                // Код каталога активной аварии для управления и выдачи
     char   source_error[16];              // источник ошибки
     WarningRecord lastWarning{};          // Снимок последнего предупреждения
     char lastWarningText[160]{};           // Текст того же снимка предупреждения
@@ -668,7 +680,6 @@ class HeatPump
     boolean onBoiler;                     // Если true то идет нагрев бойлера ТН (не ТЭНом)
     boolean onSalmonella;                 // Если true то идет Обеззараживание
     
-    friend void set_Error(int8_t err, char *nam );// Установка критической ошибки для класса ТН
   };
 
 

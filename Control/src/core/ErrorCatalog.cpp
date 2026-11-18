@@ -15,6 +15,8 @@
  * GNU General Public License for more details.
  */
 
+// Хранит каталог ошибок и реализует поиск записей по коду и индексу.
+
 #include "ErrorCatalog.h"
 #include <stddef.h>
 
@@ -57,28 +59,6 @@ const Entry *Find(ErrCode code)
 const Entry *At(uint8_t index)
 {
 	return index < count ? &catalog[index] : nullptr;
-}
-
-// Переход от прежних статусов к кодам событий по карте переноса. Ноль обозначает пропуск.
-static constexpr ErrCode legacyEvents[] = {
-	0, -1, -2, -6, -7, -3, -3, -9, -10, -10,
-	-39, -5, 0, -55, -11, -43, -44, -45, -45, -45,
-	-45, -46, -43, -50, -50, -15, -16, 0, -42, -42,
-	0, -41, -40, -13, -39, -53, 0, -53, -11, -23,
-	-34, -31, -31, -31, -31, -32, -32, -32, -32, -31,
-	-31, 0, -31, -31, -31, -31, -35, -24, -25, -18,
-	-54, -47, -48, -49, -49, -5, -5, -5, -12, 0,
-	-52, -52, -52, 0, -8, -36, -38, -33, -26, -8,
-	-14, -39, -17, -27, -4, -51, -4, -4, -21, -28,
-	-53, -30, -22, -56,
-};
-
-// Возвращает номер события для прежнего статуса или 0, если соответствия нет.
-ErrCode FromLegacy(ErrCode legacy)
-{
-	const int index = -static_cast<int>(legacy);
-	if(index < 0 || static_cast<size_t>(index) >= sizeof(legacyEvents)) return 0;
-	return legacyEvents[index];
 }
 
 // Возвращает число строк справочника.

@@ -15,6 +15,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 /*
  * Графики работы ТН в оперативной памяти: список, очистка, накопление точек,
  * отдача в web-морду. Отдельная единица трансляции.

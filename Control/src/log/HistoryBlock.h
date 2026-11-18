@@ -1,3 +1,20 @@
+/*
+ * Copyright (c) 2016-2026 by Pavel Panfilov <firstlast2007@gmail.com>  telegram @pav20000
+ * "Народный контроллер 2.0" для тепловых насосов.
+ * Данное программное обеспечение предназначено для управления
+ * различными типами тепловых насосов для отопления и ГВС.
+ *
+ * This file is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public
+ * License as published by the Free Software Foundation; either
+ * version 3.0 of the License, or (at your option) any later version.
+ *
+ * This file is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
+ * GNU General Public License for more details.
+ */
+
 // Блок истории в ОЗУ (history_buffer): чистые операции без замков и железа, проверяются на ПК (tests/test_historyblock.cpp).
 // Запись (задача сервиса) и чтение выгрузки (веб) идут из разных задач, поэтому вызывающий оборачивает каждый вызов
 // запретом прерываний (irqSave/irqRestore, Rtos.h): блок 512 байт копируется за единицы микросекунд (Н-5).

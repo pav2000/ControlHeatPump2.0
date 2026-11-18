@@ -119,6 +119,7 @@ struct NotifyRecent {
 
 static inline void NotifyRecent_Init(NotifyRecent *r) { r->n = 0; }
 
+// Возвращает общий ключ типа уведомления type и младших 24 бит причины subject.
 static inline uint32_t Notify_Key(uint8_t type, uint32_t subject) { return (uint32_t) type << 24 | (subject & 0xFFFFFFu); }
 
 // Принималось ли такое уведомление за последние window секунд

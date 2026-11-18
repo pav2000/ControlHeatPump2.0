@@ -68,17 +68,22 @@ function draw() {
 			'<td class="m" style="color:var(--mute)" id="x-' + r.id + '">' + (r.hex || '–') + '</td><td>' + (w ? '<button class="btn2 bad" style="padding:5px 10px" onclick="writeRow(' + r.id + ')">Записать…</button> ' : '') + '<span id="e-' + r.id + '">' + errHtml(r) + '</span></td></tr>';
 	}).join('') || '<tr><td colspan="6" style="color:var(--mute)">Добавьте строку кнопкой слева</td></tr>');
 }
-function errHtml(r) { return r.err === '' ? '' : r.err == 'OK' ? '<b class="okc">OK</b>' : '<b class="errc">' + r.err + '</b>'; }
+// Возвращает HTML состояния ошибки из строки r, экранируя сообщение.
+function errHtml(r) { return r.err === '' ? '' : r.err == 'OK' ? '<b class="okc">OK</b>' : '<b class="errc">' + esc(r.err) + '</b>'; }
 function row(id) { return rows.filter(function(r) { return r.id == id; })[0]; }
 function setAddr(id, v) {
 	var r = row(id), a = v.trim() === '' ? '0' : v.trim(), n = mbNum(a, 'h');
 	if(isNaN(n) || n < 0 || n > 65535) { stToast('Адрес регистра — целое 0…65535, десятичное или 0x….', true); draw(); return; }
 	r.addr = a; r.reg = n; r.val = ''; r.hex = ''; r.err = ''; draw();
 }
-// ответ действия: {v: число} - значение, {err: код} - ошибка Modbus («-2 нет ответа»)
+// Заполняет строку r из результата res или ошибки API e.
 function apply(r, res, e) {
 	var err = e ? 'E' + e : res && res.err !== undefined ? 'E' + res.err : '';
-	if(err) { r.err = err; r.val = ''; r.hex = ''; }
+	if(err) {
+		if(!e && /^(EXC|RX|LOCAL)$/.test(res.kind) && Number.isInteger(res.raw) && res.raw >= 0 && res.raw <= 255)
+			err += ' ' + res.kind + ' 0x' + ('0' + res.raw.toString(16).toUpperCase()).slice(-2);
+		r.err = err; r.val = ''; r.hex = '';
+	}
 	else { r.val = String(res.v); r.hex = hexOf(r.type, res.v); r.err = 'OK'; }
 }
 function readRow(id) {

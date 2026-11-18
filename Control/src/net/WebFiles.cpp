@@ -15,6 +15,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 #include "WebShared.h"    // Socket[], генерируемые файлы
 #include "../core/HeatPump.h"     // HP - всё содержимое выгрузок
 #include "Network.h"      // sendPrintfRTOS, sendConstRTOS
@@ -85,7 +86,9 @@ void get_txtState(uint8_t thread, boolean header)
 {   uint8_t i,j; 
     int16_t x; 
      if (header) get_Header(thread,(char*)"state.txt");   // Если нужен заголовок
-     sendPrintfRTOS(thread, "\n  1. Тепловой насос\r\nСостояниеТН: %s\r\nПоследняя ошибка: %d - %s\r\n", HP.StateToStr(),HP.get_errcode(),HP.get_lastErr());
+     ErrorEvent event;
+     HP.get_errorEvent(event);
+     sendPrintfRTOS(thread, "\n  1. Тепловой насос\r\nСостояниеТН: %s\r\nПоследняя ошибка: %s\r\n", HP.StateToStr(), event.code ? event.text : "-");
      
      // Состояние ТН
      strcpy(Socket[thread].outBuf,"Режим работы:");strcat(Socket[thread].outBuf,HP.TestToStr()); 
@@ -226,7 +229,9 @@ void get_txtSettings(uint8_t thread)
      int16_t x; 
      
      get_Header(thread,(char*)"settings.txt");
-     sendPrintfRTOS(thread, "Состояние ТН: %s\r\nПоследняя ошибка: %d - %s\r\n", HP.StateToStr(),HP.get_errcode(),HP.get_lastErr());
+     ErrorEvent event;
+     HP.get_errorEvent(event);
+     sendPrintfRTOS(thread, "Состояние ТН: %s\r\nПоследняя ошибка: %s\r\n", HP.StateToStr(), event.code ? event.text : "-");
      strcpy(Socket[thread].outBuf,"\n  1. Общие настройки\r\n");
      strcat(Socket[thread].outBuf,"Режим работы :");
      switch ((MODE_HP)HP.get_modeHouse() )   // режим работы отопления
@@ -788,36 +793,36 @@ bool get_binEEPROM(uint8_t thread)
 static int32_t read_binSettings(uint8_t *buffer, uint16_t capacity)
 {
 	SettingsLock lock(HP.saving);
-	if(!lock) return ERR_I2C_BUSY;
+	if(!lock) return ErrorNumber(ErrorCatalog::Code::kI2C_BUSY);
 	uint16_t size;
-	if(readEEPROM_I2C(I2C_SETTING_EEPROM, (byte*)&size, sizeof(size))) return ERR_LOAD_EEPROM;
+	if(readEEPROM_I2C(I2C_SETTING_EEPROM, (byte*)&size, sizeof(size))) return ErrorNumber(ErrorCatalog::Code::kSETTINGS_READ);
 	if(size + sizeof(size) < NEW_OFS_VER + 1 + sizeof(uint16_t) ||
 	   !settings_len_ok(size, I2C_PROFILE_EEPROM - I2C_SETTING_EEPROM) ||
-	   !settings_len_ok(size, capacity)) return ERR_BAD_LEN_EEPROM;
+	   !settings_len_ok(size, capacity)) return ErrorNumber(ErrorCatalog::Code::kSETTINGS_DATA);
 	const uint16_t settingsSize = size + sizeof(size);
 	memcpy(buffer, &size, sizeof(size));
-	if(readEEPROM_I2C(I2C_SETTING_EEPROM + sizeof(size), buffer + sizeof(size), size)) return ERR_LOAD_EEPROM;
+	if(readEEPROM_I2C(I2C_SETTING_EEPROM + sizeof(size), buffer + sizeof(size), size)) return ErrorNumber(ErrorCatalog::Code::kSETTINGS_READ);
 #ifdef LOAD_VERIFICATION
 	const uint16_t settingsCRC = calc_crc16(buffer + sizeof(size), size - sizeof(uint16_t));
-	if(settingsCRC != rec_hdr_tag(buffer + settingsSize - sizeof(uint16_t))) return ERR_CRC16_EEPROM;
+	if(settingsCRC != rec_hdr_tag(buffer + settingsSize - sizeof(uint16_t))) return ErrorNumber(ErrorCatalog::Code::kSETTINGS_DATA);
 #endif
 	const uint8_t version = buffer[NEW_OFS_VER];
 	const int32_t profilesSize = HP.Prof.region_len(version);
-	if(profilesSize <= 0) return profilesSize < 0 ? profilesSize : ERR_BAD_LEN_PROFILE;
+	if(profilesSize <= 0) return profilesSize < 0 ? profilesSize : ErrorNumber(ErrorCatalog::Code::kPROFILE_DATA);
 	const uint32_t scheduleOffset = settingsSize + profilesSize;
 	const uint16_t scheduleCapacity = HP.Schdlr.get_data_size() + sizeof(uint16_t);
-	if(scheduleOffset + scheduleCapacity > capacity) return ERR_BAD_LEN_EEPROM;
+	if(scheduleOffset + scheduleCapacity > capacity) return ErrorNumber(ErrorCatalog::Code::kSETTINGS_DATA);
 
 	uint8_t *profiles = buffer + settingsSize;
-	if(readEEPROM_I2C(I2C_PROFILE_EEPROM, profiles, profilesSize)) return ERR_LOAD_PROFILE;
+	if(readEEPROM_I2C(I2C_PROFILE_EEPROM, profiles, profilesSize)) return ErrorNumber(ErrorCatalog::Code::kPROFILE_READ);
 	const uint16_t tag = rec_hdr_tag(profiles);
 	if(tag == NTAG_Profile || tag == NTAG_END) {
 		const uint16_t content = profilesSize - sizeof(uint16_t);
-		if(calc_crc16(profiles, content) != rec_hdr_tag(profiles + content)) return ERR_CRC16_PROFILE;
+		if(calc_crc16(profiles, content) != rec_hdr_tag(profiles + content)) return ErrorNumber(ErrorCatalog::Code::kPROFILE_DATA);
 	}
 	const int16_t scheduleSize = HP.Schdlr.load(buffer + scheduleOffset, version);
 	if(scheduleSize < 0) return scheduleSize;
-	if(scheduleSize != scheduleCapacity) return ERR_BAD_LEN_EEPROM;
+	if(scheduleSize != scheduleCapacity) return ErrorNumber(ErrorCatalog::Code::kSETTINGS_DATA);
 	return scheduleOffset + scheduleSize;
 }
 
@@ -838,7 +843,7 @@ bool get_binSettings(uint8_t thread)
 		journal.jprintf(" Settings export failed (%d)\n", (int)dataSize);
 		static const char busy[] = "HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
 		static const char failed[] = "HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
-		sendConstRTOS(thread, dataSize == ERR_I2C_BUSY ? busy : failed);
+		sendConstRTOS(thread, dataSize == ErrorNumber(ErrorCatalog::Code::kI2C_BUSY) ? busy : failed);
 		return false;
 	}
 	const uint16_t total = headerSize + dataSize;

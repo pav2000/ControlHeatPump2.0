@@ -176,10 +176,10 @@ uint16_t igmpsend(SOCKET s, const uint8_t *buf, uint16_t len)
 }
 
 struct DatagramHeader {
-  uint8_t bytes[8];
-  uint16_t ptr;
-  uint16_t size;
-  uint8_t length;
+  uint8_t bytes[8]; // Заголовок пакета в формате RX-буфера W5500.
+  uint16_t ptr;     // Позиция заголовка по указателю чтения RX.
+  uint16_t size;    // Длина полезной нагрузки в байтах.
+  uint8_t length;   // Длина заголовка для выбранного режима сокета.
 };
 
 // pav2000 Читает заголовок датаграммы сокета s в header согласно режиму mode.

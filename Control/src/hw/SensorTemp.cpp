@@ -15,6 +15,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 /*
  * Датчики температуры: отдельная единица трансляции.
  *
@@ -78,8 +79,10 @@ void sensorTemp::WatchIP()
 	uint8_t e = Sensor_IpEdge(&lost, linked, linked && devIP->get_got(), linked && devIP->get_update() <= UPDATE_IP);
 	if(e == SIE_NONE) return;
 	if(lost) SETBIT1(flags, fIpLost); else SETBIT0(flags, fIpLost);
-	if(e == SIE_LOST) journal.jprintf_time("$WARN: IP sensor of %s: no data for %d s, using %s %.2d\n", name, (int) UPDATE_IP, GETBIT(flags, fAddress) ? "wire" : "last IP value", get_Temp());
-	else journal.jprintf_time("IP sensor of %s: restored\n", name);
+	if(e == SIE_LOST) HP.log_Event(ErrorCatalog::Code::kTEMP_READ, name, {},
+	                              GETBIT(flags, fAddress) ? "Нет IP-данных, используется проводной датчик" :
+	                                                       "Нет IP-данных, используется последнее значение");
+	else HP.log_Event("TEMP", name, "Данные IP-датчика восстановлены");
 #endif
 }
 
@@ -99,40 +102,41 @@ int8_t sensorTemp::Read(bool *freshLocal)
 #else   // чтение датчика
 		if(!(GETBIT(flags,fAddress))) { // Адрес не установлен
 			if(cfg.number == TCOMP) { // эти датчики должны быть привязаны
-				set_Error(err = ERR_ADDRESS, name);
+				err = ErrorNumber(ErrorCatalog::Code::kSENSOR_MISSING);
+				set_Error(ErrorCatalog::Code::kSENSOR_MISSING, name);
 				return err;
 			} else if(cfg.number == TIN) return OK; // Этот может получать значения от других датчиков
 			else {
 				lastTemp = cfg.testTemp; // Если датчик не привязан, то присвоить значение теста
 				if(!GETBIT(flags, fWarnNoAddr)) {   // один раз на датчик: прежде подмена шла молча
 					SETBIT1(flags, fWarnNoAddr);
-					journal.jprintf_time("$WARN: sensor %s has no address, test value %.2d is used\n", name, lastTemp);
+					HP.log_Event(ErrorCatalog::Code::kSENSOR_MISSING, name, {}, "Нет адреса, используется тестовое значение");
 				}
 			}
 		} else {
 			{
 				int16_t ttemp;
-				err = busOneWire->Read(cfg.address, ttemp);
-				if(err != OK) {
+				const auto result = busOneWire->Read(cfg.address, ttemp);
+				const auto status = result.status;
+				const bool partial = status == OneWireStatus::Partial;
+				const bool crc = status == OneWireStatus::Crc;
+				if(status != OneWireStatus::Ok) {
 					sumErrorRead++;
-					if(!(err == ERR_ONEWIRE_CRC && get_setup_flag(fTEMP_ignory_CRC))) {
+					const auto code = crc || partial || status == OneWireStatus::Transfer ||
+					                  status == OneWireStatus::NoPresence ? ErrorCatalog::Code::kTEMP_READ : ErrorCatalog::Code::kTEMP_BUS;
+					err = ErrorNumber(code);
+					if(!((crc || partial) && get_setup_flag(fTEMP_ignory_CRC))) {
 						if(!get_setup_flag(fTEMP_dont_log_errors)) {
 							journal.jprintf_time("%s: Error ", name);
-							if(err == ERR_ONEWIRE_CRC || (err == ERR_ONEWIRE_RW && busOneWire->get_rawErr() == OW_RAW_BADDATA)) { // Ошибка CRC или плохие данные, но успели прочитать температуру
-								journal.jprintf("%s (%d). t=%.2d, prev=%.2d\n", err == ERR_ONEWIRE_CRC ? "CRC" : "bad data", err == ERR_ONEWIRE_CRC ? err : 0, ttemp, lastTemp);
-							} else if(err == ERR_ONEWIRE_RW) journal.jprintf("read (%d)\n", busOneWire->get_rawErr());   // код драйвера обмена
-							else journal.jprintf("%s (%d)\n", err == ERR_ONEWIRE ? "RESET" : "read", err);
+							if(crc || partial || result.raw == OW_RAW_BADDATA) { // Температурные байты получены.
+								journal.jprintf("%s (%d). t=%.2d, prev=%.2d\n", crc ? "CRC" : partial ? "partial read" : "bad data", result.raw, ttemp, lastTemp);
+							} else if(status == OneWireStatus::Transfer) journal.jprintf("read (%d)\n", result.raw);   // код драйвера обмена
+							else journal.jprintf("%s (%d)\n", status == OneWireStatus::NoPresence ? "RESET" : "read", (int)status);
 						}
 						if(++numErrorRead == 0) numErrorRead--;
 						if(numErrorRead > NUM_READ_TEMP_ERR && !get_setup_flag(fTEMP_ignory_errors)) { // Слишком много ошибок чтения подряд - ошибка!
-							int8_t code = Error_TempReadCode(err);
-							if(code == err) set_Error(code, name);
-							else {
-								char unknown[ERROR_TEXT_BUFFER_SIZE];
-								HP.raise_Error(code, ErrorCatalog::kTEMP_READ, name,
-								               {ErrorDetailKind::Local, static_cast<uint16_t>(-err), 0},
-								               Error_Text(err, &unknown));
-							}
+							const char *meaning = status == OneWireStatus::Crc ? "Неверная CRC датчика" : nullptr;
+							HP.raise_Error(code, name, {ErrorDetailKind::Local, static_cast<uint16_t>(status), 0}, meaning);
 						}
 						return err;
 					}
@@ -150,7 +154,7 @@ int8_t sensorTemp::Read(bool *freshLocal)
 				   if(nGap == 0 || !get_setup_flag(fTEMP_dont_log_errors))
 					   journal.jprintf_time("GAP %s t=%.2d, %s\n", name, ttemp, nGap == 0 ? "accept" : "skip");
 				}
-				accepted = err == OK && nGap == 0 && lastTemp != STARTTEMP;
+				accepted = status == OneWireStatus::Ok && nGap == 0 && lastTemp != STARTTEMP;
 			}
 		}
 #endif
@@ -170,7 +174,7 @@ int8_t sensorTemp::Read(bool *freshLocal)
   #endif
 
 	// Проверка на ошибки именно здесь обрабатывются ошибки и передаются на верх
-	if(Temp<minTemp) { set_Error(err = ERR_MINTEMP, name); return err; }
+	if(Temp<minTemp) { err = ErrorNumber(ErrorCatalog::Code::kTEMP_MIN); set_Error(ErrorCatalog::Code::kTEMP_MIN, name); return err; }
 	const int16_t limit = maxTemp;
 	if(cfg.number == TBOILER) {
 #ifdef DEMO
@@ -179,7 +183,7 @@ int8_t sensorTemp::Read(bool *freshLocal)
 		HP.observeBoilerTemperature(Temp, limit, accepted);
 #endif
 	}
-	if(Temp>limit) { set_Error(err = ERR_MAXTEMP, name); return err; }
+	if(Temp>limit) { err = ErrorNumber(ErrorCatalog::Code::kTEMP_MAX); set_Error(ErrorCatalog::Code::kTEMP_MAX, name); return err; }
 #ifdef DEMO
 	accepted = testMode != NORMAL;
 #endif

@@ -15,6 +15,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 /*
  * Управление тепловым насосом: приём и выполнение команд (пуск, останов,
  * сброс, смена режима), пауза, а также строковое представление состояния
@@ -79,7 +80,7 @@ bool HeatPump::waitEEVService()
 		if(interrupt) return false;
 		if(!active) return true;
 		if((TickType_t)(xTaskGetTickCount() - started) > timeoutTicks) {
-			set_Error(ERR_CONFIG, (char*) "EEV motion timeout");
+			set_Error(ErrorCatalog::Code::kCONFIG, (char*) "EEV motion timeout");
 			return false;
 		}
 		Watchdog_SleepHere(100);
@@ -155,7 +156,7 @@ int8_t HeatPump::runCommand()
 		case pRESET:                          // 4 Сброс контроллера
 		    PauseStart = 0;
 			StopWait(_stop);        // Выключить ТН
-			journal.jprintf_time("$SOFTWARE RESET . . .\n\n");
+			log_Event("SYS", "RESET", "Штатная перезагрузка по команде");
 			save_motoHour();
 			Stats.SaveStats(0);
 			Stats.SaveHistory(0);

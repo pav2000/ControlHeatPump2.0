@@ -163,6 +163,7 @@ const char *Boot_ResetTag(const BootInfo &b)
 		case 5: return "BUS_FAULT";
 		case 6: return "USAGE_FAULT";
 		case 7: return "CRASH_DATA";
+		case RTOS_SCHEDULER_RETURN: return "RTOS_SCHEDULER";
 		default: return "KERNEL_FAULT";
 		}
 	case BOOT_STUCK: return "TASK_STUCK";

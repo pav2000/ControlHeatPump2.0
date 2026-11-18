@@ -15,6 +15,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 // ---------------------------------------------------------------------------
 // Описание базовых классов для работы c "железом"
 // (датчики и исполнительные устройства) зависит от контроллера
@@ -501,6 +502,11 @@ class devSDM
       uint8_t  *get_save_addr(void) { return (uint8_t *)&settingSDM; } // Адрес структуры сохранения
       uint16_t  get_save_size(void) { return sizeof(settingSDM); } // Размер структуры сохранения
   private:
+      // По result и wrongSpeed отмечает новый отказ SDM120 или восстановление. Значение не возвращает.
+      void updateLinkEvent(ModbusResult result, bool wrongSpeed = false);
+      // Возвращает показание регистра address, 0 при отказе или demoValue в DEMO.
+      float readDisplayRegister(uint16_t address, float demoValue = 0);
+      bool linkWarningActive = false;                   // Уже выдано предупреждение текущего эпизода потери связи.
       int8_t  err;                                     // ошибка счётчика (работа)
       uint16_t numErr;                                 // число ошибок чтение по Modbus
       byte flags;                                      // флаги  0 - наличие счетчика,
@@ -541,22 +547,25 @@ class devModbus
     bool   link_lost(bool running);                                                        // Связь с инвертором потеряна (критерий в Error_LinkLost)
 private:
     // Функция Modbus. Задаёт, какой метод ModbusMaster вызвать в transact().
-    enum MB_FUNC { MB_READ_INPUT, MB_READ_HOLDING, MB_READ_COILS,
-                   MB_WRITE_COIL, MB_WRITE_SINGLE, MB_WRITE_MULTI, MB_LINK_TEST };
-    // Единственное место, где берётся и отдаётся замок шины Modbus.
-    // who   - имя вызвавшего метода, идёт в журнал при занятой шине;
-    // num   - для чтения число регистров, для записи само записываемое значение;
-    // rx    - куда скопировать num слов ответа (копирование идёт ещё под замком,
-    //         иначе соседняя задача успеет перетереть буфер ответа);
-    // tx    - num слов для передачи, заполняются до запроса, тоже под замком.
-    // Результат и исходный байт возвращаются вместе с ответом.
+    enum MB_FUNC {
+        MB_READ_INPUT,   // Чтение входных регистров.
+        MB_READ_HOLDING, // Чтение регистров хранения.
+        MB_READ_COILS,   // Чтение дискретных выходов.
+        MB_WRITE_COIL,   // Запись одного дискретного выхода.
+        MB_WRITE_SINGLE, // Запись одного регистра.
+        MB_WRITE_MULTI,  // Запись нескольких регистров.
+        MB_LINK_TEST     // Проверка контрольного ответа Omron.
+    };
+    // Выполняет func для ведомого id с адреса cmd под замком шины. who — имя для диагностики.
+    // num — количество элементов, одиночное записываемое значение либо контрольное слово. rx и tx — буферы ответа и запроса.
+    // Возвращает тип результата и исходный байт причины.
     ModbusResult transact(const char *who, uint8_t id, MB_FUNC func, uint16_t cmd,
                     uint16_t num, uint16_t *rx = NULL, const uint16_t *tx = NULL);
     // Переменные
     int8_t flags;                           // Флаги
     InverterLink link;                      // Транспортные сбои и время последнего ответа инвертора
     ModbusMaster RS485;                     // Класс Modbus 485
-    static ModbusResult translateErr(ModbusMaster::Result result, bool inverter);    // Перевод ошибки протокола Modbus в ошибки ТН
+    static ModbusResult translateErr(ModbusMaster::Result frame);    // Классификация кадра и его исходный байт.
   }; // End class
 
 
@@ -596,9 +605,7 @@ int  freeHeapReserve();
 
 
 // Запись в EEPROM с подсчётом CRC на лету. Определены в Board.cpp.
-int8_t save_struct(uint32_t &addr_to, uint8_t *addr_from, uint16_t size, uint16_t &crc);
 int8_t save_rec(uint32_t &addr_to, uint16_t tag, const uint8_t *addr_from, uint16_t size, uint16_t &crc); // запись нового каркаса, см. Util.h
-int8_t save_2bytes(uint32_t &addr_to, uint16_t data, uint16_t &crc);
 
 // Часы DS3232 по I2C под замком шины. Определены в Board.cpp.
 // Не inline: из отдельной единицы трансляции inline-функцию не позвать - компоновщику
@@ -616,6 +623,9 @@ char *ResetCause(void);
 // Чтение и запись I2C-памяти под замком шины. Определены в Board.cpp.
 // Не inline: компоновщик не нашёл бы тела. Журналу они нужны первым же вызовом.
 byte writeEEPROM_I2C(unsigned long addr, byte *values, unsigned int nBytes);
+// Локальный статус чтения или записи EEPROM при истечении ожидания замка I²C.
+// Локальный статус EEPROM при истечении ожидания блокировки I²C.
+constexpr byte EEPROM_I2C_LOCK_TIMEOUT = 7;
 byte readEEPROM_I2C(unsigned long addr, byte *values, unsigned int nBytes);
 
 // Modbus - управление инвертором. Определён в Control.ino, конструктора нет.

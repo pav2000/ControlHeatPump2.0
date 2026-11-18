@@ -15,6 +15,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 /*
  * Форматирование дат и интервалов: перевод unix-времени в строку.
  * Обоснование и интерфейс - в DateTime.h.

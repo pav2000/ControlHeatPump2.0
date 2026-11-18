@@ -15,6 +15,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 /*
  * Шина Modbus: транспорт devModbus и единственный прибор, который живёт
  * только на ней, - счётчик электроэнергии devSDM. Отдельная единица
@@ -40,6 +41,7 @@
 int8_t devSDM::initSDM()
 {
 	err = OK;                                        // Ошибок нет
+	linkWarningActive = false;
 	numErr = 0;                                      // счетчик 0
 	Voltage = 0.0f;                                   // Напряжение
 	AcPower = 0.0f;                                   // активная мощность
@@ -55,13 +57,17 @@ int8_t devSDM::initSDM()
 	name = (char*) nameSDM;
 	note = (char*) noteSDM_NONE;
 
-#ifdef USE_ELECTROMETER_SDM
+#if defined(USE_ELECTROMETER_SDM) && defined(DEMO)
+	SETBIT1(flags, fSDM);
+	note = (char*)noteSDM;
+	uplinkSDM();
+#elif defined(USE_ELECTROMETER_SDM)
 	if(!Modbus.get_present())                  // modbus отсутствует
 	{
-		journal.jprintf("%s: modbus not found, block.\n", name);
+		updateLinkEvent({ModbusKind::Unavailable, 0});
 		SETBIT0(flags, fSDM);                           // счетчик не представлен
 		SETBIT0(flags, fSDMLink);
-		err = ERR_NO_MODBUS;
+		err = ErrorNumber(ErrorCatalog::Code::kMODBUS_UNAVAILABLE);
 	} else {
 		SETBIT1(flags, fSDM);                           // счетчик представлен
 		note = (char*) noteSDM;
@@ -75,70 +81,105 @@ int8_t devSDM::initSDM()
 	return err;
 }
 
-// Проверить связь со счетчиком предполагается что Modbus уже неинициализирован читаем из регистра скорость
-// Выводит сообщения в журнал и устанавливает флаг связи
+// Обновляет предупреждение о связи по result и признаку неверной скорости wrongSpeed.
+// Регистрирует начало отказа или восстановление один раз, значения не возвращает.
+void devSDM::updateLinkEvent(ModbusResult result, bool wrongSpeed)
+{
+	const bool failed = wrongSpeed || !result.Succeeded();
+	const uint32_t irq = irqSave();
+	const bool changed = linkWarningActive != failed;
+	linkWarningActive = failed;
+	irqRestore(irq);
+	if(!changed) return;
+
+	if(!failed) {
+		HP.log_Event("MODBUS", name, "связь со счётчиком восстановлена");
+		return;
+	}
+	const auto code = wrongSpeed ? ErrorCatalog::Code::kCONFIG : ModbusAlarm(result.kind);
+	const char *text = wrongSpeed ? "скорость счётчика не соответствует настройке" : nullptr;
+	HP.set_Warning(code, name, (static_cast<uint16_t>(result.kind) << 8) | result.raw,
+	               text, true, false, ModbusDetail(result));
+}
+
+// Читает регистр скорости счётчика и обновляет состояние связи.
+// Возвращает true, если счётчик ответил и скорость соответствует настройке.
 boolean devSDM::uplinkSDM()
 {
-	int8_t i, errModbus=0;
-	for(i = 0; i < SDM_NUM_READ; i++)   // делаем SDM_NUM_READ попыток чтения
-	{
-		float band;
-		if(((errModbus=Modbus.readHoldingRegistersFloat(SDM_MODBUS_ADR, SDM_BAUD_RATE, &band)) == OK) && (band == SDM_SPEED)) {
-			SETBIT1(flags, fSDMLink);
-			journal.jprintf("%s, found, link OK, band rate:%.0f modbus address:%d\n", name, band, SDM_MODBUS_ADR);
-			return true;
-		} else {
-#ifdef SDM_BLOCK                     // если стоит флаг блокировки связи
-			SETBIT0(flags, fSDMLink);
-#else
-			SETBIT1(flags, fSDMLink);
+#ifdef DEMO
+	if(!GETBIT(flags, fSDM)) return false;
+	SETBIT1(flags, fSDMLink);
+	Voltage = 230.0f; // Номинальное напряжение сети на стенде.
+	err = OK;
+	return true;
 #endif
-			journal.jprintf("Error %d, %s, no connect.\n", errModbus, name);
+	ModbusResult exchange{};
+	bool wrongSpeed = false;
+	for(int8_t i = 0; i < SDM_NUM_READ; ++i) {
+		float speed;
+		exchange = Modbus.readHoldingRegistersFloat(SDM_MODBUS_ADR, SDM_BAUD_RATE, &speed);
+		wrongSpeed = exchange.Succeeded() && speed != SDM_SPEED;
+		if(exchange.Succeeded() && !wrongSpeed) {
+			SETBIT1(flags, fSDMLink);
+			err = OK;
+			updateLinkEvent(exchange);
+			return true;
 		}
+		if(DBG_ON(DBG_SDM))
+			journal.jprintf_time("%s: проверка скорости, тип %u, ответ 0x%02X, несовпадение %u, попытка %u/%u\n",
+			                     name, (unsigned)exchange.kind, (unsigned)exchange.raw, (unsigned)wrongSpeed,
+			                     i + 1, SDM_NUM_READ);
 		_delay(SDM_DELAY_REPEAD);
-		Watchdog_AliveHere();                                                            // Сбросить вачдог
+		Watchdog_AliveHere();
 	}
-#ifdef SDM_BLOCK                     // если стоит флаг блокировки связи
+#ifdef SDM_BLOCK
 	SETBIT0(flags, fSDMLink);
 #else
 	SETBIT1(flags, fSDMLink);
 #endif
+	err = wrongSpeed ? ErrorNumber(ErrorCatalog::Code::kCONFIG) : exchange.Number();
+	updateLinkEvent(exchange, wrongSpeed);
 	return false;
 }
 
-// перепрограммировать счетчик на требуемые параметры связи SDM_SPEED SDM_MODBUS_ADR c DEFAULT_SDM_SPEED DEFAULT_SDM_MODBUS_ADR
-// При программировании параметры сразу начинают рабоать
-boolean  devSDM::progConnect()
+// Программирует адрес и скорость счётчика. Возвращает true, если настройки уже верны
+// или запись прошла. После записи счётчик может потребовать перезапуска.
+boolean devSDM::progConnect()
 {
-  float band; 
-  journal.jprintf("%s: Setting band rate and modbus address.\n",name); 
-  // 1. Проверка
-  if ((Modbus.readHoldingRegistersFloat(SDM_MODBUS_ADR,SDM_BAUD_RATE,&band)==OK)&&(band==SDM_SPEED)) {SETBIT1(flags,fSDMLink); journal.jprintf(" Setting %s are correct, programming is not required\n",name);  return true;} 
-  
-  // 2. Установка скорости по умолчанию
-  
-  MODBUS_PORT_NUM.begin(DEFAULT_SDM_SPEED,MODBUS_PORT_CONFIG);            // SERIAL_8N1 - настройки порта для счетчика из коробки
-  err=OK;
-  
-  // 3. На DEFAULT_SDM_SPEED скорости установить правильный адрес SDM_MODBUS_ADR
-  if( (err=Modbus.writeHoldingRegistersFloat(DEFAULT_SDM_MODBUS_ADR,SDM_ADR_MODBUS,SDM_MODBUS_ADR))==OK)  journal.jprintf("%s: Set address  %d.\n",name,SDM_MODBUS_ADR);  // установить требуемый адрес
-  else  journal.jprintf("%s: Setting address error, code %d.\n",name,err); 
-  
-  // 4. На правильный адрес SDM_MODBUS_ADR установит желаемую скорость SDM_SPEED
-  if( (err=Modbus.writeHoldingRegistersFloat(SDM_MODBUS_ADR, SDM_BAUD_RATE,SDM_SPEED))==OK)  journal.jprintf("%s: Set band rate (0=2400bps 1=4800bps 2=9600bps 5=1200bps) %d.\n",name,SDM_SPEED);  // установить требуемую скорость
-  else  journal.jprintf("%s: Setting band rate error, code %d.\n",name,err);
-  
-  // 5. Порт обратно в требуемые настройки
-  MODBUS_PORT_NUM.begin(MODBUS_PORT_SPEED,MODBUS_PORT_CONFIG);                 // SERIAL_8N1 - настройки по умолчанию
+#ifdef DEMO
+	return false; // Программирование физического счётчика на стенде недоступно.
+#endif
+	float speed;
+	if(Modbus.readHoldingRegistersFloat(SDM_MODBUS_ADR, SDM_BAUD_RATE, &speed).Succeeded() && speed == SDM_SPEED) {
+		SETBIT1(flags, fSDMLink);
+		err = OK;
+		updateLinkEvent({});
+		return true;
+	}
 
-  // 6. Вывод результатов
-  if (err==OK) { journal.jprintf("%s: Programming is Ok\n",name); uplinkSDM(); return true;}  // Надо сбросить счетчик
-  else { journal.jprintf("%s: Programming is wrong, no link\n",name); return false; }
-}                           
+	MODBUS_PORT_NUM.begin(DEFAULT_SDM_SPEED, MODBUS_PORT_CONFIG);
+	const auto address = Modbus.writeHoldingRegistersFloat(DEFAULT_SDM_MODBUS_ADR, SDM_ADR_MODBUS, SDM_MODBUS_ADR);
+	if(!address.Succeeded() && DBG_ON(DBG_SDM))
+		journal.jprintf_time("%s: установка адреса, тип %u, ответ 0x%02X\n",
+		                     name, (unsigned)address.kind, (unsigned)address.raw);
+	const auto baud = Modbus.writeHoldingRegistersFloat(SDM_MODBUS_ADR, SDM_BAUD_RATE, SDM_SPEED);
+	MODBUS_PORT_NUM.begin(MODBUS_PORT_SPEED, MODBUS_PORT_CONFIG);
+
+	err = baud.Number();
+	if(!baud.Succeeded()) {
+		HP.log_Event(ModbusAlarm(baud.kind), name, ModbusDetail(baud), "не удалось установить скорость счётчика");
+		return false;
+	}
+	uplinkSDM();
+	return true;
+}
 
 // Прочитать инфо с счетчика, group: 0 - основная (расчет мощности), 2 - через SDM_READ_PERIOD
 int8_t devSDM::get_readState(uint8_t group)
 {
+#ifdef DEMO
+	return err; // Показания DEMO установлены при инициализации.
+#endif
 	float tmp;
 	if(!GETBIT(flags,fSDM) || !GETBIT(flags,fSDMLink)
 #ifdef USE_UPS
@@ -156,15 +197,15 @@ int8_t devSDM::get_readState(uint8_t group)
 		// Читаем значения счетчика
 		if(group == 0) {
 			exchange = Modbus.readInputRegistersFloat(SDM_MODBUS_ADR, SDM_AC_POWER, &tmp);
-			if(exchange == OK) AcPower = tmp; else goto xErr;
+			if(exchange.Succeeded()) AcPower = tmp; else goto xErr;
 		}
 		if(group == 2) {
 #if defined(SDM_MAX_VOLTAGE) || defined(SDM_MIN_VOLTAGE) || (SDM_READ_PERIOD > 0)
 			exchange = Modbus.readInputRegistersFloat(SDM_MODBUS_ADR, SDM_VOLTAGE, &tmp);   // Напряжение
-			if(exchange == OK) { Voltage=tmp; group = 1; } else goto xErr;
+			if(exchange.Succeeded()) { Voltage=tmp; group = 1; } else goto xErr;
 #endif
 		}
-		if(exchange == OK) break;
+		if(exchange.Succeeded()) break;
 xErr:
 #ifdef SPOWER
 		HP.sInput[SPOWER].Read(true);
@@ -172,47 +213,52 @@ xErr:
 #endif
 		numErr++;                  // число ошибок чтение по Modbus
 		if(DBG_ON(DBG_SDM)) {
-			journal.jprintf_time("%s: Read #%d error %d, repeat...\n", name, group, exchange.status);      // Выводим сообщение о повторном чтении
+			journal.jprintf_time("%s: чтение группы %u, тип %u, ответ 0x%02X, попытка %u/%u\n",
+			                     name, group, (unsigned)exchange.kind, (unsigned)exchange.raw, i + 1, SDM_NUM_READ);
 		}
 		_delay(SDM_DELAY_REPEAD);  // Чтение не удачно, делаем паузу
 	}
-	if(exchange == OK)
+	if(exchange.Succeeded())
 	{
+		if(group == 0 || group == 1) updateLinkEvent(exchange);
 #ifdef SDM_MAX_VOLTAGE
-		if((settingSDM.maxVoltage>1)&&(settingSDM.maxVoltage< Voltage)) {err=ERR_MAX_VOLTAGE;set_Error(err,name);return err; }       // Контроль входного напряжения
+		if((settingSDM.maxVoltage>1)&&(settingSDM.maxVoltage< Voltage)) {err=ErrorNumber(ErrorCatalog::Code::kPOWER_VOLTAGE_HIGH);set_Error(ErrorCatalog::Code::kPOWER_VOLTAGE_HIGH,name);return err; }       // Контроль входного напряжения
 #endif
-		if ((settingSDM.maxPower>1)&&(settingSDM.maxPower< AcPower))     {err=ERR_MAX_POWER;set_Error(err,name);return err; }         // Контроль мощности потребления
+		if ((settingSDM.maxPower>1)&&(settingSDM.maxPower< AcPower))     {err=ErrorNumber(ErrorCatalog::Code::kPOWER_HIGH);set_Error(ErrorCatalog::Code::kPOWER_HIGH,name);return err; }         // Контроль мощности потребления
 #ifdef SDM_MIN_VOLTAGE
 		if(group == 1) {
 			const bool low = settingSDM.minVoltage > 1 && Voltage < settingSDM.minVoltage;
-			if(low && !lowVoltage) HP.set_Warning(ErrorCatalog::kVOLTAGE_LOW, name, 0, nullptr, true);
+			if(low && !lowVoltage) HP.set_Warning(ErrorCatalog::Code::kVOLTAGE_LOW, name, 0, nullptr, true);
 			lowVoltage = low;
 		}
 #endif
-		return err = exchange.status;                       // все прочиталось, выходим
+		return err = exchange.Number();                       // все прочиталось, выходим
 	}
 #ifdef SDM_BLOCK                     // если стоит флаг блокировки связи
 	SETBIT0(flags,fSDMLink);             // связь со счетчиком потеряна
 #endif
-	const ErrorDetail detail = ModbusDetail(exchange);
-	const char *kind = detail.kind == ErrorDetailKind::Exception ? "EXC" :
-	                   detail.kind == ErrorDetailKind::Transport ? "RX" : "LOCAL";
-	const auto code = ModbusAlarm(exchange.kind);
-	const auto *entry = ErrorCatalog::Find(code);
-	char text[128];
-	const char *description = nullptr;
-	if(detail.kind != ErrorDetailKind::None && entry) {
-		m_snprintf(text, sizeof(text), "%s 0x%02X: %s", kind, (unsigned)detail.value, entry->description);
-		description = text;
-	}
-	HP.set_Warning(code, name, (static_cast<uint16_t>(exchange.kind) << 8) | exchange.raw, description);
-	return err = exchange.status;
+	updateLinkEvent(exchange);
+	return err = exchange.Number();
+}
+
+// Читает регистр address для веб-интерфейса. Возвращает показание, 0 при ошибке
+// или заданное значение demoValue в профиле DEMO.
+float devSDM::readDisplayRegister(uint16_t address, float demoValue)
+{
+#ifdef DEMO
+	(void)address;
+	return demoValue;
+#else
+	(void)demoValue;
+	float value = 0;
+	Modbus.readInputRegistersFloat(SDM_MODBUS_ADR, address, &value);
+	return value;
+#endif
 }
 
 // Получить параметр счетчика в виде строки
 char* devSDM::get_paramSDM(char *var, char *ret)           
 {
-	float tmp = 0;                                   // не static: функцию зовут четыре веб-потока, общий tmp перемешивал им ответы
 
 	if(strcmp(var,sdm_NAME)==0){         return strcat(ret,(char*)name);                                         }else      // Имя счетчика
 	if(strcmp(var,sdm_NOTE)==0){         return strcat(ret,(char*)note);                                         }else      // Описание счетчика
@@ -222,14 +268,12 @@ char* devSDM::get_paramSDM(char *var, char *ret)
 #if defined(SDM_MAX_VOLTAGE) || defined(SDM_MIN_VOLTAGE) || (SDM_READ_PERIOD > 0)
 		_ftoa(ret, Voltage, 2);
 #else
-		Modbus.readInputRegistersFloat(SDM_MODBUS_ADR, SDM_VOLTAGE, &tmp);
-		_ftoa(ret, tmp, 2);
+		_ftoa(ret, readDisplayRegister(SDM_VOLTAGE, Voltage), 2);
 #endif
 		return ret;
 	}else
 	if(strcmp(var,sdm_CURRENT)==0){ // Ток
-		Modbus.readInputRegistersFloat(SDM_MODBUS_ADR, SDM_CURRENT, &tmp);
-		_ftoa(ret, tmp, 3);
+		_ftoa(ret, readDisplayRegister(SDM_CURRENT), 3);
 		return ret;
 	}else
 	if(strcmp(var,sdm_ACPOWER)==0){// Активная мощность
@@ -237,8 +281,7 @@ char* devSDM::get_paramSDM(char *var, char *ret)
 		return ret;
 	}else
 	if(strcmp(var,sdm_ACENERGY)==0){ // Суммарная активная энергия
-		Modbus.readInputRegistersFloat(SDM_MODBUS_ADR, SDM_AC_ENERGY, &tmp);
-		_ftoa(ret, tmp, 3);
+		_ftoa(ret, readDisplayRegister(SDM_AC_ENERGY), 3);
 		return ret;
 	}else
 	if(strcmp(var,sdm_MAX_VOLTAGE)==0){
@@ -259,14 +302,11 @@ char* devSDM::get_paramSDM(char *var, char *ret)
 	else {
 		if(GETBIT(flags,fSDMLink)) {
 		   if(strcmp(var,sdm_POW_FACTOR)==0){
-			   Modbus.readInputRegistersFloat(SDM_MODBUS_ADR, SDM_POW_FACTOR, &tmp);
-			   _ftoa(ret, tmp, 2);
+			   _ftoa(ret, readDisplayRegister(SDM_POW_FACTOR), 2);
 		   } else if(strcmp(var,sdm_PHASE)==0){
-			   Modbus.readInputRegistersFloat(SDM_MODBUS_ADR, SDM_PHASE, &tmp);
-			   _ftoa(ret, tmp, 2);
+			   _ftoa(ret, readDisplayRegister(SDM_PHASE), 2);
 		   } else if(strcmp(var,sdm_FREQ)==0){
-			   Modbus.readInputRegistersFloat(SDM_MODBUS_ADR, SDM_FREQUENCY, &tmp);
-			   _ftoa(ret, tmp, 2);
+			   _ftoa(ret, readDisplayRegister(SDM_FREQUENCY, 50), 2);
 		   }
 	   }
 	   return ret;
@@ -338,28 +378,26 @@ int8_t devModbus::initModbus()
 	RS485.idle(idle);
 	return OK;
 #else
-	return ERR_NO_MODBUS;
+	return ErrorNumber(ErrorCatalog::Code::kMODBUS_UNAVAILABLE);
 #endif
 }
 
 // ---- Обмен по шине Modbus ----
-// Ниже одиннадцать методов чтения и записи отличались только вызовом ModbusMaster
-// и разбором ответа, а обвязку - захват замка, выбор адреса, освобождение замка -
-// каждый повторял своей копией. Обвязка собрана здесь в одном месте, методы
-// оставляют себе только то, чем действительно различаются.
-// Выполняет func для адреса id и регистра cmd, читает в rx или пишет из tx.
-// Возвращает локальный знаковый статус вместе с типом и байтом ответа.
+
+// Выполняет func для ведомого id с адреса cmd, используя буферы rx и tx. who — имя для диагностики.
+// num — размер обмена, одиночное записываемое значение либо контрольное слово, в зависимости от func.
+// Возвращает тип результата и исходный байт причины.
 ModbusResult devModbus::transact(const char *who, uint8_t id, MB_FUNC func, uint16_t cmd,
                            uint16_t num, uint16_t *rx, const uint16_t *tx)
 {
 	// Замок создаётся в setup() после HP.initHeatPump, а initFC/initSDM ходят по шине раньше. До старта планировщика
 	// SemaphoreTake замок не трогает (задач нет), поэтому пустой замок там допустим; после старта пустой замок - assert ядра.
 	if(!get_present() || Modbus_LockRefused(xModbusSemaphore != NULL, xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED))
-		return {ERR_NO_MODBUS, ModbusKind::Unavailable, 0};
+		return {ModbusKind::Unavailable, 0};
 	if(SemaphoreTake(xModbusSemaphore, (MODBUS_TIME_WAIT / portTICK_PERIOD_MS)) == pdFALSE) // Захват мютекса потока или ОЖИДАНИЕ MODBUS_TIME_WAIT
 	{
 		journal.jprintf((char*) cErrorMutex, who, MutexModbusBusy);
-		return {ERR_485_BUSY, ModbusKind::Busy, 0};
+		return {ModbusKind::Busy, 0};
 	}
 	RS485.set_slave(id);
 	if(tx) for(uint16_t i = 0; i < num; i++) RS485.setTransmitBuffer(i, tx[i]);
@@ -374,13 +412,13 @@ ModbusResult devModbus::transact(const char *who, uint8_t id, MB_FUNC func, uint
 	case MB_LINK_TEST:    frame = RS485.LinkTestOmronMX2Only(num);        break;
 	default:              frame = {ModbusMaster::ResultKind::Local, 0xFF}; break;
 	}
-	ModbusResult result = translateErr(frame, id == FC_MODBUS_ADR);
+	ModbusResult result = translateErr(frame);
 	if(result.kind == ModbusKind::Success && rx) {
 		const uint16_t words = func == MB_LINK_TEST ? 1 : num;
 		for(uint16_t i = 0; i < words; i++) rx[i] = RS485.getResponseBuffer(i);
 	}
 	if(func == MB_LINK_TEST && result.kind == ModbusKind::Success && *rx != num)
-		result = {ERR_485_INIT, ModbusKind::EchoMismatch, 0};
+		result = {ModbusKind::EchoMismatch, 0};
 	if(id == FC_MODBUS_ADR) {
 		const uint32_t irq = irqSave();
 		link.Observe(result.kind, GetTickCount());
@@ -390,6 +428,7 @@ ModbusResult devModbus::transact(const char *who, uint8_t id, MB_FUNC func, uint
 	return result;
 }
 
+// Возвращает признак потери связи по счётчику сбоев и паузе ответа. running выбирает тайм-аут.
 bool devModbus::link_lost(bool running)
 {
 	const uint32_t irq = irqSave();
@@ -409,16 +448,17 @@ ModbusResult devModbus::readInputRegistersFloat(uint8_t id, uint16_t cmd, float 
 {
 	uint16_t b[2];
 	const auto result = transact(__FUNCTION__, id, MB_READ_INPUT, cmd, 2, b);
-	if(result == OK) *ret = fromInt16ToFloat(b[0], b[1]);
+	if(result.Succeeded()) *ret = fromInt16ToFloat(b[0], b[1]);
 	else *ret = 0;
 	return result;
 }
 
+// Читает регистр cmd устройства id. При успехе пишет в ret, при отказе сохраняет ret. Возвращает исход обмена.
 ModbusResult devModbus::readInputRegisters16(uint8_t id, uint16_t cmd, uint16_t *ret)
 {
 	uint16_t b;
 	const auto result = transact(__FUNCTION__, id, MB_READ_INPUT, cmd, 1, &b);
-	if(result == OK) *ret = b;
+	if(result.Succeeded()) *ret = b;
 	return result;
 }
 
@@ -427,7 +467,7 @@ ModbusResult devModbus::readInputRegisters32(uint8_t id, uint16_t cmd, uint32_t 
 {
 	uint16_t b[2];
 	const auto result = transact(__FUNCTION__, id, MB_READ_INPUT, cmd, 2, b);
-	if(result == OK) *ret = ((uint32_t)b[1] << 16) | b[0];
+	if(result.Succeeded()) *ret = ((uint32_t)b[1] << 16) | b[0];
 	return result;
 }
 
@@ -436,7 +476,7 @@ ModbusResult devModbus::readHoldingRegisters16(uint8_t id, uint16_t cmd, uint16_
 {
 	uint16_t b;
 	const auto result = transact(__FUNCTION__, id, MB_READ_HOLDING, cmd, 1, &b);
-	if(result == OK) *ret = b;
+	if(result.Succeeded()) *ret = b;
 	else *ret = 0;
 	return result;
 }
@@ -447,7 +487,7 @@ ModbusResult devModbus::readHoldingRegisters32(uint8_t id, uint16_t cmd, uint32_
 {
 	uint16_t b[2];
 	const auto result = transact(__FUNCTION__, id, MB_READ_HOLDING, cmd, 2, b);
-	if(result == OK) *ret = ((uint32_t)b[0] << 16) | b[1];
+	if(result.Succeeded()) *ret = ((uint32_t)b[0] << 16) | b[1];
 	else *ret = 0;
 	return result;
 }
@@ -457,7 +497,7 @@ ModbusResult devModbus::readHoldingRegistersFloat(uint8_t id, uint16_t cmd, floa
 {
 	uint16_t b[2];
 	const auto result = transact(__FUNCTION__, id, MB_READ_HOLDING, cmd, 2, b);
-	if(result == OK) *ret = fromInt16ToFloat(b[0], b[1]);
+	if(result.Succeeded()) *ret = fromInt16ToFloat(b[0], b[1]);
 	else *ret = 0;
 	return result;
 }
@@ -473,7 +513,7 @@ ModbusResult  devModbus::readCoil(uint8_t id,uint16_t cmd, boolean *ret)
 {
 	uint16_t b;
 	const auto result = transact(__FUNCTION__, id, MB_READ_COILS, cmd, 1, &b);
-	if(result == OK) *ret = b != 0;
+	if(result.Succeeded()) *ret = b != 0;
 	return result;
 }
 
@@ -509,7 +549,7 @@ ModbusResult   devModbus::writeHoldingRegistersFloat(uint8_t id, uint16_t cmd, f
 	return transact(__FUNCTION__, id, MB_WRITE_MULTI, cmd, 2, NULL, tx);
 }
 
-// Тестирование связи возвращает код ошибки
+// Проверяет ответ Omron на контрольный запрос. Возвращает исход обмена.
 #ifndef FC_VACON
 ModbusResult devModbus::LinkTestOmronMX2()
 {
@@ -518,45 +558,15 @@ ModbusResult devModbus::LinkTestOmronMX2()
 }
 #endif
 
-// Возвращает статус контроллера, тип и байт кадра. inverter включает таблицу исключений привода.
-ModbusResult devModbus::translateErr(ModbusMaster::Result frame, bool inverter)
+// Возвращает классификацию и исходный байт frame из ModbusMaster.
+ModbusResult devModbus::translateErr(ModbusMaster::Result frame)
 {
 	using Frame = ModbusMaster::ResultKind;
-	int8_t legacy = ERR_MODBUS_UNKNOW;
 	switch(frame.kind) {
-	case Frame::Success: return {OK, ModbusKind::Success, 0};
-	case Frame::Transport:
-		switch(frame.code) {
-		case 0xE0: legacy = ERR_MODBUS_0xe0; break;
-		case 0xE1: legacy = ERR_MODBUS_0xe1; break;
-		case 0xE2: legacy = ERR_MODBUS_0xe2; break;
-		case 0xE3: legacy = ERR_MODBUS_0xe3; break;
-		}
-		return {legacy, ModbusKind::Transport, frame.code};
-	case Frame::Exception:
-		if(inverter) {
-#ifdef FC_VACON
-			switch(frame.code) {
-			case 5: legacy = ERR_MODBUS_VACON_0x05; break;
-			case 6: legacy = ERR_MODBUS_VACON_0x06; break;
-			case 7: legacy = ERR_MODBUS_VACON_0x07; break;
-			case 8: legacy = ERR_MODBUS_VACON_0x08; break;
-			}
-#else
-			switch(frame.code) {
-			case 1: legacy = ERR_MODBUS_MX2_0x01; break;
-			case 2: legacy = ERR_MODBUS_MX2_0x02; break;
-			case 3: legacy = ERR_MODBUS_MX2_0x03; break;
-			case 0x21: legacy = ERR_MODBUS_MX2_0x21; break;
-			case 0x22: legacy = ERR_MODBUS_MX2_0x22; break;
-			case 0x23: legacy = ERR_MODBUS_MX2_0x23; break;
-			}
-#endif
-		}
-		if(legacy == ERR_MODBUS_UNKNOW && frame.code >= 1 && frame.code <= 4)
-			legacy = ERR_MODBUS_0x01 - (frame.code - 1);
-		return {legacy, ModbusKind::Exception, frame.code};
-	default: return {legacy, ModbusKind::Local, frame.code};
+	case Frame::Success: return {};
+	case Frame::Transport: return {ModbusKind::Transport, frame.code};
+	case Frame::Exception: return {ModbusKind::Exception, frame.code};
+	default: return {ModbusKind::Local, frame.code};
 	}
 }
 

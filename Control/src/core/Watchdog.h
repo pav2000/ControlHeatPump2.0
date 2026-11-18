@@ -128,6 +128,9 @@ enum {
 // Тип сброса из RSTC_SR.RSTTYP (SAM3X)
 enum : uint8_t { RST_GENERAL = 0, RST_BACKUP, RST_WATCHDOG, RST_SOFTWARE, RST_USER };
 
+// Код GPBR_RTOS для возврата из vTaskStartScheduler().
+constexpr uint8_t RTOS_SCHEDULER_RETURN = 8;
+
 // Причины с BOOT_KERNEL и дальше - аварийные: они считаются подряд и после BOOT_MAX_RESETS отменяют автопуск.
 enum BOOT_CAUSE : uint8_t {
 	BOOT_POWER,        // подача питания (регистры не читаются - в них мусор)

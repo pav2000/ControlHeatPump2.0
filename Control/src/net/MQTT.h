@@ -15,6 +15,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 #ifndef MQTT_h
 #define MQTT_h
 // Заголовок самодостаточен.
@@ -50,9 +51,6 @@ STRCONST(BlockService,  "Too many sending errors, sending %s is off . . .\n");
 STRCONST(SlowService,  "Too many sending errors, sending %s switched to %d min interval . . .\n");
 STRCONST(BackService,  "Sending %s recovered, interval back to normal\n");
 STRCONST(ChangeIP,  "\n Change IP address %s\n");
-STRCONST(ResSock,  "$WARN: Reset W5200_SOCK_SYS sock\n");
-STRCONST(ResDHCP,  "$WARN: Update server IP\n");
-STRCONST(ResChip,  "$WARN: Reset W5XXX chip\n");
 
 // Настройки относящиеся к MQTT
 struct type_mqtt                             // настройки MQTT клиента

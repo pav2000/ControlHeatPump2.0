@@ -110,7 +110,7 @@ int32_t HeatPump::load_all(uint8_t *buffer, uint16_t capacity)
 	uint8_t probe[NEW_OFS_VER + 1];
 	if(readEEPROM_I2C(I2C_SETTING_EEPROM, probe, sizeof(probe))) {
 		journal.jprintf(" Settings: read error\n");
-		return load_fail(ERR_LOAD_EEPROM, 0);
+		return load_fail(ErrorCatalog::Code::kSETTINGS_READ, 0);
 	}
 	const bool newFormat = probe[NEW_OFS_VER] >= SETTINGS_VER_NEW;
 	const int32_t size = newFormat ? load_new(buffer, capacity, 0) : load(buffer, capacity, 0);

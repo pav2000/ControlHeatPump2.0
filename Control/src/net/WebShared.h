@@ -1,6 +1,5 @@
 /*
  * Copyright (c) 2016-2026 by Pavel Panfilov <firstlast2007@gmail.com>  telegram @pav20000
- * &                       by Vadim Kulakov vad7@yahoo.com, vad711
  * "Народный контроллер 2.0" для тепловых насосов.
  * Данное программное обеспечение предназначено для управления
  * различными типами тепловых насосов для отопления и ГВС.
@@ -15,6 +14,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 // Общее для файлов веб-слоя: WebServer.cpp (транспорт, отдача файлов, POST)
 // и WebApiGet.cpp (разбор ajax-запросов): объявления, видимые обеим единицам трансляции.
 #ifndef WebShared_h

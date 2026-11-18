@@ -98,13 +98,25 @@ int8_t devVaconFC::initFC()
 	_data.dtTempBoiler = DEF_FC_DT_TEMP_BOILER;        // Привышение температуры от уставок (подача) при которой срабатыват защита ГВС в сотых градуса
 	flags = 0x00;                                	   // флаги  0 - наличие FC
 	_data.setup_flags = 0;
+#ifdef DEMO
+	if(DEVICEFC) {
+		SETBIT1(flags, fFC);
+		note = (char*)noteFC_OK;
+		minFreqVacon = _data.minFreqUser;
+		maxFreqVacon = _data.maxFreqUser;
+		set_nominal_power();
+		set_target(_data.startFreq, false, _data.minFreqUser, _data.maxFreqUser);
+		get_readState();
+	}
+	return err;
+#endif
 #ifndef FC_ANALOG_CONTROL
 	if(!Modbus.get_present()) // modbus отсутствует
 	{
 		SETBIT0(flags, fFC); // Инвертор не работает
 		journal.jprintf("%s, modbus not found, block.\n", name);
-		err = ERR_NO_MODBUS;
-		if(DEVICEFC) HP.raise_Error(err, ErrorCatalog::kMODBUS_UNAVAILABLE, "VACON");
+		err = ErrorNumber(ErrorCatalog::Code::kMODBUS_UNAVAILABLE);
+		if(DEVICEFC) HP.raise_Error(ErrorCatalog::Code::kMODBUS_UNAVAILABLE, "VACON");
 		return err;
 	} else if(DEVICEFC == true) SETBIT1(flags, fFC); // наличие инвертора в текушей конфигурации
 #else
@@ -133,15 +145,15 @@ int8_t devVaconFC::initFC()
 	// Опорная макс. частота Vacon (рег. 102, 0.01 Гц): нужна для пересчёта Гц->% и валидации
 	ModbusResult exchange{};
 	minFreqVacon = read_0x03_16(FC_FREQ_MIN, &exchange);
-	if(exchange == OK) maxFreqVacon = read_0x03_16(FC_FREQ_MAX, &exchange);
-	if(exchange != OK) {
-		err = exchange.status;
-		HP.raise_ModbusError(exchange, "VACON", ErrorCatalog::kFC_INIT);
+	if(exchange.Succeeded()) maxFreqVacon = read_0x03_16(FC_FREQ_MAX, &exchange);
+	if(!exchange.Succeeded()) {
+		err = exchange.Number();
+		HP.raise_ModbusError(exchange, "VACON", ErrorCatalog::Code::kFC_INIT);
 		return err;
 	}
 	if(minFreqVacon < 0 || maxFreqVacon <= minFreqVacon || maxFreqVacon > 20000) {
-		err = ERR_MODBUS_STATE;
-		HP.raise_Error(err, ErrorCatalog::kFC_STATE, "VACON");
+		err = ErrorNumber(ErrorCatalog::Code::kFC_STATE);
+		HP.raise_Error(ErrorCatalog::Code::kFC_STATE, "VACON");
 		return err;
 	}
 	journal.jprintf(" Max freq Vacon: %d (0.01 Hz)\n", (int)maxFreqVacon);
@@ -154,8 +166,8 @@ int8_t devVaconFC::initFC()
 		if(err != OK) return err;
 	}
 	if(state & FC_S_RUN) {
-		err = ERR_MODBUS_STATE;
-		HP.raise_Error(err, ErrorCatalog::kCOMP_NO_STOP, "VACON");
+		err = ErrorNumber(ErrorCatalog::Code::kCOMP_NO_STOP);
+		HP.raise_Error(ErrorCatalog::Code::kCOMP_NO_STOP, "VACON");
 	}
 	if(err == OK) {
 		// 10.Установить стартовую частоту
@@ -187,6 +199,11 @@ bool devVaconFC::check_fault_map()
 // Вычисление номинальной мощности двигателя компрессора = U*sqrt(3)*I*cos, W
 void devVaconFC::set_nominal_power(void)
 {
+#ifdef DEMO
+	nominalCurrent = FC_MAX_CURRENT;
+	nominal_power = FC_MAX_POWER;
+	return;
+#endif
 	uint16_t nvolt = (uint16_t)read_0x03_16(FC_MOTOR_NVOLT);
 	uint16_t na    = (uint16_t)read_0x03_16(FC_MOTOR_NA);
 	uint16_t ncos  = (uint16_t)read_0x03_16(FC_MOTOR_NCOS);
@@ -212,8 +229,8 @@ int16_t devVaconFC::CheckLinkStatus(void)
 		for (uint8_t i = 0; i < FC_NUM_READ; i++) // Чтение состояния инвертора, при ошибке генерация общей ошибки ТН и останов
 		{
 			const auto result = Modbus.readHoldingRegisters16(FC_MODBUS_ADR, FC_STATUS - 1, (uint16_t *)&state);
-			err = result.status; // Послать запрос, Нумерация регистров с НУЛЯ!!!!
-			if(check_blockFC(result) || result == OK) break; // проверить необходимость блокировки
+			err = result.Number(); // Послать запрос, Нумерация регистров с НУЛЯ!!!!
+			if(check_blockFC(result) || result.Succeeded()) break; // проверить необходимость блокировки
 			_delay(FC_DELAY_REPEAT);
 		}
 		if(err != OK) state = ERR_LINK_FC;
@@ -232,6 +249,12 @@ int16_t devVaconFC::CheckLinkStatus(void)
 // Вызывается из задачи чтения датчиков период FC_TIME_READ
 int8_t devVaconFC::get_readState()
 {
+#ifdef DEMO
+    const bool running = GETBIT(flags, fOnOff);
+    state = get_present() ? (FC_S_RDY | (running ? FC_S_RUN : 0)) : ERR_LINK_FC;
+    FC_curr_freq = running ? FC_target : 0;
+    return err = OK;
+#endif
 	if(testMode != NORMAL && testMode != HARD_TEST) {
 		err = OK;
 		state = FC_S_RDY;
@@ -249,7 +272,7 @@ int8_t devVaconFC::get_readState()
 		// Чтение состояния инвертора, при ошибке генерация общей ошибки ТН и останов
 		ModbusResult exchange{};
 		state = read_0x03_16(FC_STATUS, &exchange);
-		err = exchange.status; // прочитать состояние
+		err = exchange.Number(); // прочитать состояние
 		if(err) // Ошибка
 		{
 			state = ERR_LINK_FC; // признак потери связи с инвертором
@@ -258,9 +281,12 @@ int8_t devVaconFC::get_readState()
 			HP.sInput[SPOWER].Read(true);
 			if(HP.sInput[SPOWER].is_alarm()) return err;
 #endif
-			if(exchange.kind == ModbusKind::Transport && !Modbus.link_lost(GETBIT(flags, fOnOff))) return err;
+			if(exchange.kind == ModbusKind::Transport) {
+				if(!Modbus.link_lost(GETBIT(flags, fOnOff))) return err;
+				err = ErrorNumber(ErrorCatalog::Code::kFC_NO_LINK);
+			}
 			SETBIT1(flags, fErrFC);
-			HP.raise_ModbusError(exchange, "VACON", ErrorCatalog::kFC_NO_LINK);
+			HP.raise_ModbusError(exchange, "VACON", ErrorCatalog::Code::kFC_NO_LINK);
 			return err; // Возврат
 		}
 		if(GETBIT(flags, fOnOff)) {
@@ -268,34 +294,34 @@ int8_t devVaconFC::get_readState()
 			if(state & FC_S_FLT) {
 				HP.stopForError();
 				const uint16_t fault = HP.get_errcode() == OK ? readActiveFault() : 0;
-				err = ERR_FC_FAULT;
-				if(fault) HP.raise_Error(err, ErrorCatalog::kINVERTER_FAULT, "VACON",
+				err = fault ? ErrorNumber(ErrorCatalog::Code::kINVERTER_FAULT) : ErrorNumber(ErrorCatalog::Code::kFC_TRIP);
+				if(fault) HP.record_Error(ErrorCatalog::Code::kINVERTER_FAULT, "VACON",
 				                             {ErrorDetailKind::Fault, fault, 0},
-				                             fault <= UINT8_MAX ? get_fault_str(fault) : nullptr, true);
-				else HP.raise_Error(err, ErrorCatalog::kFC_TRIP, "VACON", {}, nullptr, true);
+				                             fault <= UINT8_MAX ? get_fault_str(fault) : nullptr);
+				else HP.record_Error(ErrorCatalog::Code::kFC_TRIP, "VACON", {});
 				return err;
 			}
 			if(get_startTime() && Uptime_s() - get_startTime() > FC_ACCEL_TIME / 100 &&
 			   ((state & (FC_S_RDY | FC_S_RUN | FC_S_DIR)) != (FC_S_RDY | FC_S_RUN))) {
-				err = ERR_MODBUS_STATE;
 				const auto code = (state & (FC_S_RDY | FC_S_RUN)) == FC_S_RDY ?
-				                  ErrorCatalog::kCOMP_NO_START : ErrorCatalog::kFC_STATE;
-				HP.raise_Error(err, code, "VACON", {ErrorDetailKind::State, static_cast<uint16_t>(state), 0});
+				                  ErrorCatalog::Code::kCOMP_NO_START : ErrorCatalog::Code::kFC_STATE;
+				err = ErrorNumber(code);
+				HP.raise_Error(code, "VACON", {ErrorDetailKind::State, static_cast<uint16_t>(state), 0});
 				return err;
 			}
 		} else if((state & FC_S_RUN) && Uptime_s() - HP.get_stopCompressor() > FC_DEACCEL_TIME / 100) {
 			const uint32_t now = Uptime_s();
 			if(!unexpectedStopTick) {
 				err = write_0x06_16(FC_CONTROL, FC_C_STOP, &exchange);
-				if(exchange != OK) {
+				if(!exchange.Succeeded()) {
 					HP.raise_ModbusError(exchange, "VACON");
 					return err;
 				}
 				last_ctrl = FC_C_STOP;
 				unexpectedStopTick = now;
 			} else if(now - unexpectedStopTick > FC_DEACCEL_TIME / 100) {
-				err = ERR_MODBUS_STATE;
-				HP.raise_Error(err, ErrorCatalog::kCOMP_NO_STOP, "VACON");
+				err = ErrorNumber(ErrorCatalog::Code::kCOMP_NO_STOP);
+				HP.raise_Error(ErrorCatalog::Code::kCOMP_NO_STOP, "VACON");
 				return err;
 			}
 		} else if(!(state & FC_S_RUN)) unexpectedStopTick = 0;
@@ -320,7 +346,7 @@ int8_t devVaconFC::get_readState()
 					lim = 1000L * FC_VALID_MARGIN_POWER / 100;
 					if(p < -lim || p > lim) {
 						journal.jprintf_time("Vacon: bad power %d, ignore\n", p);
-						if(++invalidPowerCnt >= 2) { err = ERR_MODBUS_STATE; HP.raise_Error(err, ErrorCatalog::kFC_STATE, "VACON"); return err; }
+						if(++invalidPowerCnt >= 2) { err = ErrorNumber(ErrorCatalog::Code::kFC_STATE); HP.raise_Error(ErrorCatalog::Code::kFC_STATE, "VACON"); return err; }
 						p = power;
 					} else invalidPowerCnt = 0;
 					// Двухкратное подтверждение: одиночное превышение частоту не снижает
@@ -335,7 +361,7 @@ int8_t devVaconFC::get_readState()
 					lim = (int32_t)nominalCurrent * FC_VALID_MARGIN_CURRENT / 100;
 					if(lim > 0 && c > lim) {
 						journal.jprintf_time("Vacon: bad current %d, ignore\n", c);
-						if(++invalidCurrentCnt >= 2) { err = ERR_MODBUS_STATE; HP.raise_Error(err, ErrorCatalog::kFC_STATE, "VACON"); return err; }
+						if(++invalidCurrentCnt >= 2) { err = ErrorNumber(ErrorCatalog::Code::kFC_STATE); HP.raise_Error(ErrorCatalog::Code::kFC_STATE, "VACON"); return err; }
 						c = current;
 					} else invalidCurrentCnt = 0;
 					// Двухкратное подтверждение для тока
@@ -403,7 +429,6 @@ int8_t devVaconFC::set_target(int16_t x, boolean show, int16_t _min, int16_t _ma
         return err;
     } // установка частоты OK  - вывод сообщения если надо
     else {
-    	err = ERR_FC_ERROR;
         journal.jprintf("%s: Wrong frequency %.2f\n", name, (float)x / 100);
         return WARNING_VALUE;
     }
@@ -471,18 +496,16 @@ int8_t devVaconFC::set_target(int16_t x, boolean show, int16_t _min, int16_t _ma
 bool devVaconFC::check_blockFC(ModbusResult result)
 {
 #ifndef FC_ANALOG_CONTROL // Не аналоговое управление
-    if(result != OK) {
+    if(!result.Succeeded()) {
         bool started = xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED;
         bool block;
         if(started && result.kind == ModbusKind::Transport) {     // шина молчит: блок только когда связь потеряна по критерию
             block = Modbus.link_lost(GETBIT(flags, fOnOff));
-            if(!block) journal.jprintf(" %s: no answer (%d), wait. . .\n", name, result.status);
         } else block = !started || ++number_err >= FC_NUM_READ; // если не запущена free rtos то блокируем с первого раза
         if(block) {
             SETBIT1(flags, fErrFC); // Установить флаг
             note = (char*)noteFC_NO;
-            if(result.kind == ModbusKind::Transport) journal.jprintf(" %s: link lost, last error %d\n", name, result.status);
-            HP.raise_ModbusError(result, "VACON", started ? ErrorCatalog::kFC_NO_LINK : ErrorCatalog::kFC_INIT); // Подъем ошибки на верх и останов ТН
+            HP.raise_ModbusError(result, "VACON", started ? ErrorCatalog::Code::kFC_NO_LINK : ErrorCatalog::Code::kFC_INIT); // Подъем ошибки на верх и останов ТН
             return true;
 		}
     } else {
@@ -519,8 +542,8 @@ int8_t devVaconFC::start_FC()
     	goto xStarted;
     }
 	if(!get_present() || GETBIT(flags, fErrFC)) {
-        err = ERR_MODBUS_BLOCK;
-        HP.raise_Error(err, ErrorCatalog::kFC_BLOCK, "VACON");
+        err = ErrorNumber(ErrorCatalog::Code::kFC_BLOCK);
+        HP.raise_Error(ErrorCatalog::Code::kFC_BLOCK, "VACON");
         return err;
     } // выходим если нет инвертора или он заблокирован по ошибке
     err = OK;
@@ -548,7 +571,7 @@ int8_t devVaconFC::start_FC()
 				if(allowed != fault) continue;
 				for(uint8_t retry = 0; retry < 2; ++retry) {
 					if(!reset_errorFC(&exchange)) {
-						if(exchange != OK) break;
+						if(!exchange.Succeeded()) break;
 					} else {
 						cleared = true;
 						break;
@@ -558,12 +581,12 @@ int8_t devVaconFC::start_FC()
 			}
 		}
 		if(!cleared) {
-			err = ERR_FC_FAULT;
+			err = fault ? ErrorNumber(ErrorCatalog::Code::kINVERTER_FAULT) : ErrorNumber(ErrorCatalog::Code::kFC_TRIP);
 			SETBIT1(flags, fErrFC);
-			if(fault) HP.raise_Error(err, ErrorCatalog::kINVERTER_FAULT, "VACON",
+			if(fault) HP.raise_Error(ErrorCatalog::Code::kINVERTER_FAULT, "VACON",
 			                             {ErrorDetailKind::Fault, fault, 0},
 			                             fault <= UINT8_MAX ? get_fault_str(fault) : nullptr);
-			else HP.raise_Error(err, ErrorCatalog::kFC_TRIP, "VACON");
+			else HP.raise_Error(ErrorCatalog::Code::kFC_TRIP, "VACON");
 			return err;
 		}
 	}
@@ -602,9 +625,9 @@ xStarted:
 #ifdef FC_USE_RCOMP // Использовать отдельный провод для команды ход/стоп
         HP.dRelay[RCOMP].set_ON(); // ПЛОХО через глобальную переменную
 #else
-        err = ERR_FC_CONF_ANALOG;
+        err = ErrorNumber(ErrorCatalog::Code::kFC_CONFIG);
         SETBIT1(flags, fErrFC);
-        HP.raise_Error(err, ErrorCatalog::kFC_CONFIG, "VACON");
+        HP.raise_Error(ErrorCatalog::Code::kFC_CONFIG, "VACON");
 #endif
 #ifdef FC_ANALOG_OFF_SET_0
         dac = (int32_t)FC_target * (_data.level100 - _data.level0) / (100*100) + _data.level0;
@@ -685,9 +708,9 @@ int8_t devVaconFC::stop_FC()
   #ifdef FC_USE_RCOMP // Использовать отдельный провод для команды ход/стоп
         HP.dRelay[RCOMP].set_OFF();
   #else // подать команду ход/стоп через Modbus
-        err = ERR_FC_CONF_ANALOG;
+        err = ErrorNumber(ErrorCatalog::Code::kFC_CONFIG);
         SETBIT1(flags, fErrFC);
-        HP.raise_Error(err, ErrorCatalog::kFC_CONFIG, "VACON");
+        HP.raise_Error(ErrorCatalog::Code::kFC_CONFIG, "VACON");
   #endif
   #ifdef FC_ANALOG_OFF_SET_0
         analogWrite(pin, FC_target = dac = 0);
@@ -844,6 +867,10 @@ void devVaconFC::get_infoFC_status(char *buffer, uint16_t st)
 // Получить информацию о инверторе
 void devVaconFC::get_infoFC(char* buf)
 {
+#ifdef DEMO
+    strcat(buf, "|DEMO, эмуляция инвертора|;");
+    return;
+#endif
 	buf += m_strlen(buf);
 	if(testMode == NORMAL || testMode == HARD_TEST) {
 #ifndef FC_ANALOG_CONTROL // НЕ АНАЛОГОВОЕ УПРАВЛЕНИЕ
@@ -898,28 +925,34 @@ void devVaconFC::get_infoFC(char* buf)
 // Сброс сбоя инвертора
 boolean devVaconFC::reset_errorFC(ModbusResult *exchange)
 {
+#ifdef DEMO
+    if(exchange) *exchange = {};
+    SETBIT0(flags, fErrFC);
+    get_readState();
+    return true;
+#endif
 #ifndef FC_ANALOG_CONTROL
 	ModbusResult result{};
 	if(state & FC_S_FLT) {
 		write_0x06_16(FC_CONTROL, 0, &result);
-		if(result == OK) {
+		if(result.Succeeded()) {
 			last_ctrl = 0;
 			_delay(100);
 			write_0x06_16(FC_CONTROL, FC_C_RST, &result);
-			if(result == OK) last_ctrl = FC_C_RST;
+			if(result.Succeeded()) last_ctrl = FC_C_RST;
 			_delay(100);
 		}
 	}
-	if(result == OK) state = read_0x03_16(FC_STATUS, &result);
+	if(result.Succeeded()) state = read_0x03_16(FC_STATUS, &result);
 	if(exchange) *exchange = result;
-	if(result != OK) {
-		err = result.status;
+	if(!result.Succeeded()) {
+		err = result.Number();
 		if(!exchange) HP.raise_ModbusError(result, "VACON");
 		return false;
 	}
 	if(state & FC_S_FLT) {
-		err = ERR_RESET_FC;
-		if(!exchange) HP.raise_Error(err, ErrorCatalog::kFC_RESET, "VACON");
+		err = ErrorNumber(ErrorCatalog::Code::kFC_RESET);
+		if(!exchange) HP.raise_Error(ErrorCatalog::Code::kFC_RESET, "VACON");
 		return false;
 	}
 #else
@@ -929,8 +962,12 @@ boolean devVaconFC::reset_errorFC(ModbusResult *exchange)
 	return true;
 }
 
+// Проверяет связь и сбрасывает активный отказ Vacon. Возвращает true при подтверждённом сбросе.
 boolean devVaconFC::reset_FC()
 {
+#ifdef DEMO
+    return reset_errorFC();
+#endif
 	number_err = 0;
 #ifndef FC_ANALOG_CONTROL
 	CheckLinkStatus();
@@ -942,15 +979,20 @@ boolean devVaconFC::reset_FC()
 // Посылает команду останова Vacon и возвращает её статус без вложенной регистрации.
 int8_t devVaconFC::emergency_stop()
 {
+#ifdef DEMO
+    SETBIT0(flags, fOnOff);
+    startCompressor = 0;
+    return get_readState();
+#endif
 #ifdef FC_ANALOG_CONTROL
 	return OK;
 #else
 	ModbusResult result{};
 	for(uint8_t i = 0; i < FC_NUM_READ; ++i) {
 		result = Modbus.writeHoldingRegisters16(FC_MODBUS_ADR, FC_CONTROL - 1, FC_C_STOP);
-		if(result == OK) break;
+		if(result.Succeeded()) break;
 	}
-	return result.status;
+	return result.Number();
 #endif
 }
 
@@ -961,9 +1003,9 @@ uint16_t devVaconFC::readActiveFault()
 	uint16_t fault = 0;
 #if VACON_MODEL == 20
 	uint16_t mapping;
-	if(Modbus.readHoldingRegisters16(FC_MODBUS_ADR, FC_FAULT_MAP - 1, &mapping) != OK || mapping != 8) return 0;
+	if(!Modbus.readHoldingRegisters16(FC_MODBUS_ADR, FC_FAULT_MAP - 1, &mapping).Succeeded() || mapping != 8) return 0;
 #endif
-	return Modbus.readHoldingRegisters16(FC_MODBUS_ADR, FC_ERROR - 1, &fault) == OK ? fault : 0;
+	return Modbus.readHoldingRegisters16(FC_MODBUS_ADR, FC_ERROR - 1, &fault).Succeeded() ? fault : 0;
 }
 #endif
 
@@ -972,6 +1014,10 @@ uint16_t devVaconFC::readActiveFault()
 // трансляции, и встроенное тело туда не видно - компоновщику нечего вызывать.
 int16_t devVaconFC::read_stateFC()
 {
+#ifdef DEMO
+    get_readState();
+    return state;
+#endif
 #ifndef FC_ANALOG_CONTROL // НЕ АНАЛОГОВОЕ УПРАВЛЕНИЕ
     return state = read_0x03_16(FC_STATUS);
 #else
@@ -982,6 +1028,9 @@ int16_t devVaconFC::read_stateFC()
 // Температура радиатора
 int16_t devVaconFC::read_tempFC()
 {
+#ifdef DEMO
+    return 0;
+#endif
 #ifndef FC_ANALOG_CONTROL // НЕ АНАЛОГОВОЕ УПРАВЛЕНИЕ
     return read_0x03_16(FC_TEMP);
 #else
@@ -994,14 +1043,14 @@ int16_t devVaconFC::read_tempFC()
 // Реализовано FC_NUM_READ попыток чтения/записи в инвертор
 int16_t devVaconFC::read_0x03_16(uint16_t cmd, ModbusResult *exchange)
 {
-    ModbusResult mb{ERR_MODBUS_BLOCK, ModbusKind::Unavailable, 0};
+    ModbusResult mb{ModbusKind::Unavailable, 0};
     if(exchange) *exchange = mb;
     uint8_t i;
     int16_t result = 0;
     if(!get_present()) return 0; // выходим если нет инвертора
     for (i = 0; i < FC_NUM_READ; i++) // делаем FC_NUM_READ попыток чтения Чтение состояния инвертора, при ошибке генерация общей ошибки ТН и останов
     {
-        err = (mb = Modbus.readHoldingRegisters16(FC_MODBUS_ADR, cmd - 1, (uint16_t *)&result)).status; // Послать запрос, Нумерация регистров с НУЛЯ!!!!
+        err = (mb = Modbus.readHoldingRegisters16(FC_MODBUS_ADR, cmd - 1, (uint16_t *)&result)).Number(); // Послать запрос, Нумерация регистров с НУЛЯ!!!!
         if(err == OK) break; // Прочитали удачно
 #ifdef SPOWER
         HP.sInput[SPOWER].Read(true);
@@ -1019,8 +1068,9 @@ int16_t devVaconFC::read_0x03_16(uint16_t cmd, ModbusResult *exchange)
         	break;
         }
         numErr++; // число ошибок чтение по Modbus
-        journal.jprintf("Modbus reg #%d - ", cmd);
-        journal.jprintf_time(cErrorRS485, name, __FUNCTION__, err); // Выводим сообщение о повторном чтении
+        if(DBG_ON(DBG_FCW))
+            journal.jprintf_time("%s: %s, регистр %u, тип %u, ответ 0x%02X, попытка %u/%u\n",
+                                 name, __FUNCTION__, cmd, (unsigned)mb.kind, (unsigned)mb.raw, i + 1, FC_NUM_READ);
         if(!exchange && check_blockFC(mb)) break; // проверить необходимость блокировки
         _delay(FC_DELAY_REPEAT);
     }
@@ -1032,14 +1082,14 @@ int16_t devVaconFC::read_0x03_16(uint16_t cmd, ModbusResult *exchange)
 // Реализовано FC_NUM_READ попыток чтения/записи в инвертор
 uint32_t devVaconFC::read_0x03_32(uint16_t cmd, ModbusResult *exchange)
 {
-    ModbusResult mb{ERR_MODBUS_BLOCK, ModbusKind::Unavailable, 0};
+    ModbusResult mb{ModbusKind::Unavailable, 0};
     if(exchange) *exchange = mb;
     uint8_t i;
     uint32_t result = 0;
     if(!get_present() || state == ERR_LINK_FC) return 0; // выходим если нет инвертора или он заблокирован по ошибке
     for (i = 0; i < FC_NUM_READ; i++) // делаем FC_NUM_READ попыток чтения Чтение состояния инвертора, при ошибке генерация общей ошибки ТН и останов
     {
-        err = (mb = Modbus.readHoldingRegisters32(FC_MODBUS_ADR, cmd - 1, (uint32_t *)&result)).status; // Послать запрос, Нумерация регистров с НУЛЯ!!!!
+        err = (mb = Modbus.readHoldingRegisters32(FC_MODBUS_ADR, cmd - 1, (uint32_t *)&result)).Number(); // Послать запрос, Нумерация регистров с НУЛЯ!!!!
         if(err == OK) break; // Прочитали удачно
 #ifdef SPOWER
         HP.sInput[SPOWER].Read(true);
@@ -1057,7 +1107,9 @@ uint32_t devVaconFC::read_0x03_32(uint16_t cmd, ModbusResult *exchange)
         	break;
         }
         numErr++; // число ошибок чтение по Modbus
-        journal.jprintf_time(cErrorRS485, name, __FUNCTION__, err); // Выводим сообщение о повторном чтении
+        if(DBG_ON(DBG_FCW))
+            journal.jprintf_time("%s: %s, регистр %u, тип %u, ответ 0x%02X, попытка %u/%u\n",
+                                 name, __FUNCTION__, cmd, (unsigned)mb.kind, (unsigned)mb.raw, i + 1, FC_NUM_READ);
         if(!exchange && check_blockFC(mb)) break; // проверить необходимость блокировки
         _delay(FC_DELAY_REPEAT);
     }
@@ -1069,16 +1121,18 @@ uint32_t devVaconFC::read_0x03_32(uint16_t cmd, ModbusResult *exchange)
 // Реализовано FC_NUM_READ попыток чтения/записи в инвертор
 int8_t devVaconFC::write_0x06_16(uint16_t cmd, uint16_t data, ModbusResult *exchange)
 {
-    ModbusResult mb{ERR_MODBUS_BLOCK, ModbusKind::Unavailable, 0};
+    ModbusResult mb{ModbusKind::Unavailable, 0};
     if(exchange) *exchange = mb;
     uint8_t i;
-    if(!get_present() || state == ERR_LINK_FC) return exchange ? mb.status : err; // выходим если нет инвертора или он заблокирован по ошибке
+    if(!get_present() || state == ERR_LINK_FC) return exchange ? mb.Number() : err; // выходим если нет инвертора или он заблокирован по ошибке
     for (i = 0; i < FC_NUM_READ; i++) // делаем FC_NUM_READ попыток записи
     {
-        err = (mb = Modbus.writeHoldingRegisters16(FC_MODBUS_ADR, cmd - 1, data)).status; // послать запрос, Нумерация регистров с НУЛЯ!!!!
+        err = (mb = Modbus.writeHoldingRegisters16(FC_MODBUS_ADR, cmd - 1, data)).Number(); // послать запрос, Нумерация регистров с НУЛЯ!!!!
         if(err == OK) break; // Записали удачно
         numErr++; // число ошибок чтение по Modbus
-        journal.jprintf_time(cErrorRS485, name, __FUNCTION__, err); // Выводим сообщение о повторном чтении
+        if(DBG_ON(DBG_FCW))
+            journal.jprintf_time("%s: %s, регистр %u, тип %u, ответ 0x%02X, попытка %u/%u\n",
+                                 name, __FUNCTION__, cmd, (unsigned)mb.kind, (unsigned)mb.raw, i + 1, FC_NUM_READ);
         if(!exchange && check_blockFC(mb)) break; // проверить необходимость блокировки
         _delay(FC_DELAY_REPEAT);
     }

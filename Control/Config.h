@@ -42,6 +42,9 @@ constexpr int SUPERHEAT_HYSTERESIS_CK = 50;                // Пробный о�
 constexpr bool BOILER_TEMP_INTERLOCK_ENABLED = true; // Отключать ТЭН по действующему максимуму TBOILER.
 constexpr int BOILER_TEMP_RECOVER_MARGIN_CC = 50;    // Отступ восстановления от максимума, 0,50 °C.
 
+// Межблокировки: подавление повторов предупреждения об одном правиле в режиме наблюдения.
+constexpr unsigned SAFETY_INTERLOCK_WINDOW_S = 60;   // Окно одного $WARN -19 по правилу и причине, с.
+
 constexpr bool MQTT_WARN_ENABLED = true;    // Предупреждать по действующему MQTT_NUM_ERR_OFF.
 constexpr bool NOTIFY_WARN_ENABLED = true;  // Предупреждать при первом окончательном отказе по каналу.
 // Число повторов доставки задаёт действующий MAIL_RETRY_MAX.
@@ -105,13 +108,13 @@ static_assert(HEAP_LOW_BYTES < HEAP_RECOVER_BYTES, "Invalid free memory threshol
 //#define TEST_NETCHIP_FAULT        // Через 3 мин после старта на два замера подряд подменяет прочитанный IP чипа нулями: проверка
                                     // самотеста W5500 (журнал расхождения и сброс чипа). ТОЛЬКО ДЛЯ СТЕНДА.
 //#define TEST_KERNEL_FAULT         // Через 2 мин после старта - авария ядра (configASSERT):
-                                    // проверка выключения реле, журнала «$ERROR -69» и
+                                    // проверка выключения реле, журнала «$WARN -69» и
                                     // отмены автопуска после трёх сбросов подряд. ТОЛЬКО ДЛЯ СТЕНДА.
 
 // ---- Алгоритм работы ----
 //#define DEFROST                   // Разморозка испарителя (нужен воздушный испаритель,
                                     // работает в паре с датчиком SFROZEN)
-//#define NOT_RESTART_ON_CRITICAL_ERRORS  // Не перезапускать ТН после ошибок из CRITICAL_ERRORS
+//#define NOT_RESTART_ON_CRITICAL_ERRORS  // Не перезапускать ТН после аварии COMP_START_BLOCKED
 #define ONLY_HEAT                   // ТН работает ТОЛЬКО на отопление: режим "Охлаждение" недоступен
                                     // (веб, кнопка, Nextion, расписание, загруженные профили),
                                     // из веб-морды пропадает всё, что относится к охлаждению.
@@ -195,7 +198,7 @@ extern uint8_t SPI_RATE;	// объявлен также в Libraries/Ethernet/ut
 #ifdef CONFIG_DEFINE_OBJECTS
 uint8_t SPI_RATE 	 = 2;	                                              // делитель для SPI шины, (2=42MHz, 3=28MHz, 4=21MHz) единый для ВСЕХ устройств
 #endif
-#define SD_CLOCK     30	                                                  // частота SPI для SD карты в МГц (работало 28)
+#define SD_CLOCK     50                                                   // запрошенный предел SPI для SD, МГц (Arduino Due: до 42 МГц)
      #define ONEWIRE_DS2482                                               // Использование мастера i2c Onewire DS2482 (адрес AD0 = 0)
     #define NO_SD_CONTROL                                                 // Использование выхода для контроля вставленной SD карты
     #define SPI_FLASH                                                     // Наличие чипа флеш памяти на шине SPI
@@ -855,7 +858,7 @@ const Analog_setup AnalogSetup[ANUMBER] = {
   #define FC_BASE_FREQ        (120*100)        // Основная частота инвертора (см компрессор) в 0.01 Гц
   #define FC_ACCEL_TIME       (60*100)         // Время разгона (см компрессор) в 0.01 сек
   #define FC_DEACCEL_TIME     (10*100)         // Время торможения (см компрессор) в 0.01 сек; 10 с - значение инвертора по умолчанию (F003)
-  // Контроль остановки инвертора по RCOMP (ERR_FC_RCOMP): после команды стоп инвертор тормозит
+  // Контроль остановки инвертора по RCOMP (FC_RCOMP): после команды стоп инвертор тормозит
   // FC_DEACCEL_TIME, и всё это время в состоянии "вращение". Ждём торможение с запасом
   // FC_STOP_WAIT_S = FC_DEACCEL_TIME + 30 с (при F003 = 10 с это 40 с); если ещё вращается,
   // шлём по Modbus целевую частоту 0 и ждём ещё FC_STOP_FALLBACK_S = 15 с. Не остановился -

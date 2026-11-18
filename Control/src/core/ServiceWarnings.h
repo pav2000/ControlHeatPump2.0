@@ -15,6 +15,8 @@
  * GNU General Public License for more details.
  */
 
+// Хранит правила подтверждения сервисных предупреждений и восстановления после отказов.
+
 #ifndef SERVICE_WARNINGS_H
 #define SERVICE_WARNINGS_H
 

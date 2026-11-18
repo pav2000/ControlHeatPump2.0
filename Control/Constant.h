@@ -15,6 +15,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 // ---------------------------------------------------------------------------
 // Константы проекта которые описывают специфику КОНФИГУРАЦИИ ТН
 // ---------------------------------------------------------------------------
@@ -26,7 +27,7 @@
 #include "src/util/DateTime.h"
 #include "src/hw/StepMotorPhase.h"
 #include "src/hw/GpioDirect.h"
-#include "src/core/ErrorCodes.h"
+#include "src/core/ControlPolicy.h"
 #include "src/core/Watchdog.h"     // карта GPBR, причины сброса
 #include "src/core/ControlTypes.h"   // MODE_COMP, RULE_HP, структуры ПИД
 
@@ -150,7 +151,7 @@ const uint16_t  defaultPort=80;
 // к перезагрузке по молчанию задачи - грубо, но заметно. С отметкой это стало
 // бы молчаливым вечным ожиданием с компрессором в режиме оттайки.
 #define DEFROST_WAIT_MAX      1800
-// Сколько оттаек подряд могут не закончиться за DEFROST_WAIT_MAX до останова ТН (ERR_DEFROST)
+// Сколько оттаек подряд могут не закончиться за DEFROST_WAIT_MAX до останова ТН (DEFROST)
 #define DEFROST_FAILS_MAX     2
 
 // Отложенная запись журнала. На рабочем контроллере журнал пишется в обычную
@@ -195,7 +196,7 @@ const uint16_t  defaultPort=80;
 #define FC_TIME_READ      (8*1000)       // Время опроса инвертора в мск
 #define FC_NUM_READ        3             // Число попыток чтения инвертора (подряд) по Modbus до его останова ТН по ошибке
 #define FC_DELAY_REPEAT    40            // мсек Время между ПОВТОРНЫМИ попытками чтения
-// Потеря связи с инвертором (ERR_FC_NO_LINK): сбоев подряд ИЛИ молчание шины дольше времени
+// Потеря связи с инвертором (FC_NO_LINK): сбоев подряд ИЛИ молчание шины дольше времени
 #define FC_LINK_FAILS      6             // Транспортных сбоев Modbus подряд (чтения и записи вместе)
 #define FC_LINK_TIME_RUN   (20*1000)     // Мсек без ответа инвертора, когда он в работе
 #define FC_LINK_TIME_IDLE  (60*1000)     // Мсек без ответа инвертора, когда он остановлен
@@ -587,7 +588,6 @@ STRCONST(cOk, "Ok");
 STRCONST(cError, "error");
 STRCONST(cInvalid, "invalid");
 STRCONST(cStrEnd, "\n");
-STRCONST(cErrorRS485, "%s: Read error %s, code=%d repeat . . .\n"); // имя, функция, код
 STRCONST(cErrorMutex, "Function %s: %s, mutex is busy\n");   // функция, мютекс
 STRCONST(http_get_str1,  "GET ");
 STRCONST(http_get_str2,  " HTTP/1.0\r\nHost: ");
@@ -960,12 +960,6 @@ static const char * const noteRemarkEEV[] = {	"Перегрев равен: те
 // Последняя точка отладки перед сбросом в GPBR. Карта GPBR - Watchdog.h.
 #define STORE_DEBUG_INFO(s) GPBR->SYS_GPBR[GPBR_DBG] = s
 #define WEB_STORE_DEBUG_INFO(s) GPBR->SYS_GPBR[GPBR_WEBDBG] = s
-
-// Коды ошибок, перечисление точек возврата TYPE_RET_HP и тексты к ним
-// лежат в ErrorCodes.h: их нужно видеть и модулям, которые Constant.h
-// включить не могут. Тексты спрятаны в ErrorCodes.cpp, доступ - через
-// Error_Text/Ret_Text с проверкой границ.
-
 
 // ---- ПЕРЕЧИСЛЯЕМЫЕ ТИПЫ ----
 //  Перечисляемый тип - источник загрузки для веб морды

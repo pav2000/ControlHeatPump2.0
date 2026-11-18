@@ -15,10 +15,18 @@
  * GNU General Public License for more details.
  */
 
+// Определяет детали событий и перевод исходных статусов инверторов и Modbus в каталог.
+
 #ifndef Control_DriveError_h
 #define Control_DriveError_h
 
 #include "ErrorCatalog.h"
+
+enum class EventLevel : uint8_t {
+	Error,   // Авария, зарегистрированная защитным путём.
+	Warning, // Предупреждение из каталога, в том числе только в журнале.
+	Event    // Запись только в журнал, с кодом каталога или без него.
+};
 
 enum class ErrorDetailKind : uint8_t {
 	None, // Дополнительных данных нет
@@ -52,8 +60,16 @@ inline const char *ErrorDetailToken(ErrorDetailKind kind)
 	case ErrorDetailKind::Fault: return "FAULT";
 	case ErrorDetailKind::Exception: return "EXC";
 	case ErrorDetailKind::Transport: return "RX";
+	case ErrorDetailKind::Local: return "LOCAL";
+	case ErrorDetailKind::State: return "STATE";
 	default: return nullptr;
 	}
+}
+
+// Возвращает значение детали, сохраняя знак состояния привода.
+inline int32_t ErrorDetailValue(ErrorDetail detail)
+{
+	return detail.kind == ErrorDetailKind::State ? static_cast<int16_t>(detail.value) : detail.value;
 }
 
 // Убирает неполный символ UTF-8 с конца строки после форматирования в ограниченный буфер.
@@ -80,12 +96,15 @@ enum class ModbusKind : uint8_t {
 };
 
 struct ModbusResult {
-	int8_t status; // Знаковый результат операции для действующих вызывающих
 	ModbusKind kind; // Классификация результата
 	uint8_t raw; // Исходный байт статуса или исключения
 
-	// Возвращает прежний знаковый статус для вызывающего кода, проверяющего результат операции.
-	operator int8_t() const { return status; }
+	// Возвращает true при успешном обмене.
+	bool Succeeded() const { return kind == ModbusKind::Success; }
+	// Возвращает код каталога для границ, на которых нужен числовой результат операции.
+	ErrorCatalog::Code Code() const;
+	// Возвращает числовой код операции для целочисленного результата или API.
+	ErrorCatalog::ErrCode Number() const { return ErrorNumber(Code()); }
 };
 
 struct InverterLink {
@@ -111,16 +130,22 @@ struct InverterLink {
 };
 
 // Возвращает код события по типу Modbus. Для транспорта можно задать код по контексту.
-inline ErrorCatalog::Code ModbusAlarm(ModbusKind kind, ErrorCatalog::Code transport = ErrorCatalog::kMODBUS_EXCHANGE)
+inline ErrorCatalog::Code ModbusAlarm(ModbusKind kind, ErrorCatalog::Code transport = ErrorCatalog::Code::kMODBUS_EXCHANGE)
 {
 	switch(kind) {
-	case ModbusKind::Exception: return ErrorCatalog::kMODBUS_EXCEPTION;
+	case ModbusKind::Exception: return ErrorCatalog::Code::kMODBUS_EXCEPTION;
 	case ModbusKind::Transport: return transport;
-	case ModbusKind::Busy: return ErrorCatalog::kMODBUS_BUSY;
-	case ModbusKind::Unavailable: return ErrorCatalog::kMODBUS_UNAVAILABLE;
-	case ModbusKind::EchoMismatch: return ErrorCatalog::kFC_INIT;
-	default: return ErrorCatalog::kMODBUS_UNKNOWN;
+	case ModbusKind::Busy: return ErrorCatalog::Code::kMODBUS_BUSY;
+	case ModbusKind::Unavailable: return ErrorCatalog::Code::kMODBUS_UNAVAILABLE;
+	case ModbusKind::EchoMismatch: return ErrorCatalog::Code::kFC_INIT;
+	default: return ErrorCatalog::Code::kMODBUS_UNKNOWN;
 	}
+}
+
+// Возвращает код операции Modbus из каталога или ноль при успехе.
+inline ErrorCatalog::Code ModbusResult::Code() const
+{
+	return Succeeded() ? ErrorCatalog::Code::kOK : ModbusAlarm(kind);
 }
 
 // Возвращает исходный байт результата с типом или пустые детали для локального статуса без байта.

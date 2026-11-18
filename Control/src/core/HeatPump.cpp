@@ -15,6 +15,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 /*
  * Ядро теплового насоса: инициализация, состояния и ошибки, пуск и останов,
  * компрессор, разморозка, насосы и бойлер, расчёт целевых температур и ПИД,
@@ -37,6 +38,7 @@
 #include "OverheatCalc.h"    // OHN_*: какие датчики нужны правилу перегрева
 
 // Имя активной модели для событий, зарегистрированных общим кодом ТН.
+// Имя активного драйвера в записях каталога.
 #ifdef FC_VACON
 static constexpr const char *driveDevice = "VACON";
 #else
@@ -60,16 +62,14 @@ boolean  Charts_when_comp_on = false;
 #define COMPRESSOR_ON   { if(dFC.get_present()) dFC.start_FC(); else dRelay[RCOMP].set_ON(); startCompressor = Uptime_s(); }  // Включить компрессор в зависимости от наличия инвертора
 #define COMPRESSOR_OFF  { if(dFC.get_present()) dFC.stop_FC(); else dRelay[RCOMP].set_OFF(); stopCompressor = Uptime_s(); } // Выключить компрессор в зависимости от наличия инвертора
 
-// Аварийный останов компрессора из set_Error: без журнала и ожиданий, способ выбирается так же, как в COMPRESSOR_OFF.
-// Реле RCOMP снимается всегда: это провод ХОД инвертора или пускатель компрессора без инвертора, а при управлении
-// инвертором по Modbus оно не используется (реле нет - set_AllOFF ничего не делает). Без провода ХОД инвертор
-// останавливается ещё и командой по шине (Н-24: прежде пускатель на RCOMP в такой сборке не снимался).
-// Снимаются все источники, и ручной тоже: прежде включённый вручную через API компрессор аварию переживал (6.2).
-// true - останов отдан.
+// Снимает все запросы с RCOMP, включая ручной. При управлении приводом по шине отправляет команду аварийного останова.
+// Возвращает true, если останов отдан. Причину аварии регистрирует вызывающий код.
 bool HeatPump::compressor_emergency_off()
 {
 	dRelay[RCOMP].set_AllOFF();
-#ifndef FC_USE_RCOMP
+#if defined(DEMO) && defined(FC_USE_RCOMP)
+	if(dFC.get_present()) return dFC.stop_FC() == OK;
+#elif !defined(FC_USE_RCOMP)
 	if(dFC.get_present()) return dFC.emergency_stop() == OK;
 #endif
 	return true;
@@ -80,7 +80,7 @@ bool HeatPump::compressor_emergency_off()
 void HeatPump::copy_errorInfo(ErrorEventInfo &info, char *text) const
 {
 	const uint32_t irq = irqSave();
-	info.code = error == OK ? OK : activeErrorCode;
+	info.code = error;
 	info.detail = info.code ? activeErrorDetail : ErrorDetail{};
 	if(info.code) {
 		memcpy(info.source, source_error, sizeof(info.source));
@@ -106,6 +106,36 @@ ErrorEventInfo HeatPump::get_errorInfo() const
 	return info;
 }
 
+// Форматирует событие entry от device с типизированной деталью и текстом meaning.
+// При пустом entry пишет служебное событие с группой source. note и size задают буфер без времени.
+static void formatEvent(char *note, size_t size, EventLevel level, const ErrorCatalog::Entry *entry, const char *source,
+                        const char *device, ErrorDetail detail, const char *meaning)
+{
+	const char *marker = level == EventLevel::Error ? "$ERROR" : level == EventLevel::Warning ? "$WARN" : "$EVENT";
+	if(!entry) {
+		m_snprintf(note, size, "%s %s %s  — %s", marker, source, device, meaning);
+		ErrorTrimUtf8(note);
+		return;
+	}
+	char extra[32]{};
+	switch(detail.kind) {
+	case ErrorDetailKind::Fault:
+		if(strcmp(device, "OMRON") == 0)
+			m_snprintf(extra, sizeof(extra), " FAULT E%02d.%d", (int)detail.value, (int)detail.state);
+		else m_snprintf(extra, sizeof(extra), " FAULT %d", (int)detail.value);
+		break;
+	case ErrorDetailKind::Exception: m_snprintf(extra, sizeof(extra), " EXC 0x%02X", (unsigned)detail.value); break;
+	case ErrorDetailKind::Transport: m_snprintf(extra, sizeof(extra), " RX 0x%02X", (unsigned)detail.value); break;
+	case ErrorDetailKind::Local: m_snprintf(extra, sizeof(extra), " LOCAL 0x%02X", (unsigned)detail.value); break;
+	case ErrorDetailKind::State: m_snprintf(extra, sizeof(extra), " STATE %d", (int)(int16_t)detail.value); break;
+	default: break;
+	}
+	m_snprintf(note, size, "%s %d %s %s%s  — %s", marker,
+	           (int)entry->code, entry->source, device, extra, meaning ? meaning : entry->description);
+
+	ErrorTrimUtf8(note);
+}
+
 // Возвращает согласованный снимок предупреждения и при наличии буфера копирует в него текст.
 WarningRecord HeatPump::get_lastWarning(char *text, size_t size) const
 {
@@ -123,22 +153,20 @@ WarningRecord HeatPump::get_lastWarning(char *text, size_t size) const
 // Регистрирует предупреждение по коду, устройству и причине.
 // detail заменяет описание, newEpisode разрешает повтор, consoleOnly оставляет вывод в консоли.
 void HeatPump::set_Warning(ErrorCatalog::Code code, const char *device, uint16_t cause,
-                           const char *detail, bool newEpisode, bool consoleOnly)
+                           const char *detail, bool newEpisode, bool consoleOnly, ErrorDetail errorDetail)
 {
 	const auto *entry = ErrorCatalog::Find(code);
 	if(!entry) return;
 
-	WarningRecord event{code, cause, rtcSAM3X8.unixtime(), {}};
+	WarningRecord event{ErrorNumber(code), cause, rtcSAM3X8.unixtime(), {}, errorDetail};
 	strncpy(event.device, device, sizeof(event.device) - 1);
 	char line[sizeof(lastWarningText)]{};
-	m_snprintf(line, sizeof(line), "$WARN %d %s %s  — %s",
-	           (int)code, entry->source, event.device, detail ? detail : entry->description);
-	ErrorTrimUtf8(line);
+	formatEvent(line, sizeof(line), EventLevel::Warning, entry, nullptr, event.device, event.detail, detail);
 	const uint32_t subject = event.Subject();
-	const bool safety = code == ErrorCatalog::kSAFETY_INTERLOCK;
+	const bool safety = code == ErrorCatalog::Code::kSAFETY_INTERLOCK;
 	const uint32_t now = safety ? Uptime_s() : 0;
 	const uint32_t irq = irqSave();
-	const bool publish = safety ? !Notify_Seen(&safetyWarnings, subject, now, 60) :
+	const bool publish = safety ? !Notify_Seen(&safetyWarnings, subject, now, SAFETY_INTERLOCK_WINDOW_S) :
 	                             (newEpisode || !lastWarning.SameCause(event));
 	if(publish) {
 		if(safety) Notify_Remember(&safetyWarnings, subject, now);
@@ -159,8 +187,8 @@ void HeatPump::set_Warning(ErrorCatalog::Code code, const char *device, uint16_t
 		return;
 	}
 	journal.jprintf_time("%s\n", line);
-	if(code != ErrorCatalog::kNOTIFY)
-		message.setMessage(code == ErrorCatalog::kSD ? pMESSAGE_SD : pMESSAGE_WARNING, line, code, subject);
+	if(code != ErrorCatalog::Code::kNOTIFY)
+		message.setMessage(code == ErrorCatalog::Code::kSD ? pMESSAGE_SD : pMESSAGE_WARNING, line, ErrorNumber(code), subject);
 }
 
 // Межблокировки выходов (Safety.h). Этап наблюдения: отказ только пишется в журнал, переключение выполняет вызывающий.
@@ -181,7 +209,7 @@ SAFETY_WHY HeatPump::safety_check(SAFETY_OUT out, bool on, const char *name, con
 		const uint16_t cause = (static_cast<uint16_t>(w) << 3) | (origin << 1) | on;
 		char detail[96];
 		m_snprintf(detail, sizeof(detail), "%s %s: %s (наблюдение)", src, on ? "ON" : "OFF", Safety_WhyText(w));
-		set_Warning(ErrorCatalog::kSAFETY_INTERLOCK, name, cause, detail);
+		set_Warning(ErrorCatalog::Code::kSAFETY_INTERLOCK, name, cause, detail);
 	}
 	return w;
 }
@@ -192,24 +220,37 @@ void HeatPump::stopForError()
 	if(is_compressor_on() && compressor_emergency_off()) set_stopCompressor();
 }
 
-// Останавливает компрессор при аварийном code и регистрирует первую аварию от device.
-// При code == OK ничего не делает.
-void set_Error(int8_t code, char *device)
+// Пишет предупреждение code только в журнал с источником device, деталями и пояснением meaning.
+void HeatPump::log_Event(ErrorCatalog::Code code, const char *device, ErrorDetail detail, const char *meaning)
 {
-	if(code == OK) return;
-	HP.stopForError();
-	const char *text = Error_IsKnown(code) && code != ERR_MINTEMP && code != ERR_MAXTEMP ? Error_Text(code) : nullptr;
-	HP.record_Error(code, device, ErrorCatalog::FromLegacy(code), {}, text);
+	const auto *entry = ErrorCatalog::Find(code);
+	if(!entry) return;
+	char line[sizeof(note_error)];
+	formatEvent(line, sizeof(line), EventLevel::Warning, entry, nullptr, device, detail, meaning);
+	journal.jprintf_time("%s\n", line);
 }
 
-// Регистрирует аварию с кодом каталога и исходными деталями.
-// legacy сохраняет внутренний статус, device обозначает источник, meaning заменяет текст каталога.
-// stopIssued означает, что команда останова уже отдана.
-void HeatPump::raise_Error(int8_t legacy, ErrorCatalog::Code code, const char *device,
-                                ErrorDetail detail, const char *meaning, bool stopIssued)
+// Пишет служебное событие source от устройства device с пояснением text.
+void HeatPump::log_Event(const char *source, const char *device, const char *text)
 {
-	if(!stopIssued) stopForError();
-	record_Error(legacy, device, code, detail, meaning);
+	char line[sizeof(note_error)];
+	formatEvent(line, sizeof(line), EventLevel::Event, nullptr, source, device, {}, text);
+	journal.jprintf_time("%s\n", line);
+}
+
+// Передаёт код каталога и устройство в общий аварийный путь ТН.
+void set_Error(ErrorCatalog::Code code, const char *device)
+{
+	HP.raise_Error(code, device);
+}
+
+// Отдаёт команду останова и публикует аварию code от device с переданными деталями.
+void HeatPump::raise_Error(ErrorCatalog::Code code, const char *device,
+                           ErrorDetail detail, const char *meaning)
+{
+	if(code == ErrorCatalog::Code::kOK) return;
+	stopForError();
+	record_Error(code, device, detail, meaning);
 }
 
 // Регистрирует окончательный сбой обмена. transport задаёт код для контекста транспортного отказа.
@@ -217,48 +258,32 @@ void HeatPump::raise_ModbusError(ModbusResult result, const char *device, ErrorC
 {
 	if(result.kind == ModbusKind::Success) return;
 	const auto code = ModbusAlarm(result.kind, transport);
-	const int8_t legacy = code == ErrorCatalog::kFC_NO_LINK ? ERR_FC_NO_LINK : result.status;
-	raise_Error(legacy, code, device, ModbusDetail(result));
+	raise_Error(code, device, ModbusDetail(result));
 }
 
 // Записывает первую аварию, её описание и детали, затем публикует журнал и уведомление.
-// legacy остаётся кодом управления ТН, code выбирает строку нового каталога.
-// device указывает источник, detail задаёт исходный код, meaning заменяет текст каталога.
-void HeatPump::record_Error(int8_t legacy, const char *device, ErrorCatalog::ErrCode code,
+// code задаёт событие, device и detail уточняют источник и первичную причину.
+// meaning заменяет текст каталога.
+void HeatPump::record_Error(ErrorCatalog::Code code, const char *device,
                            ErrorDetail detail, const char *meaning)
 {
-	if(error != OK) return;
+	if(code == ErrorCatalog::Code::kOK || error != OK) return;
 
 	char source[sizeof(source_error)]{};
 	char note[sizeof(note_error)]{};
 	const auto *entry = ErrorCatalog::Find(code);
-	if(entry) {
-		strncpy(source, device, sizeof(source) - 1);
-		char extra[32]{};
-		switch(detail.kind) {
-		case ErrorDetailKind::Fault:
-			if(strcmp(device, "OMRON") == 0)
-				m_snprintf(extra, sizeof(extra), " FAULT E%02d.%d", (int)detail.value, (int)detail.state);
-			else m_snprintf(extra, sizeof(extra), " FAULT %d", (int)detail.value);
-			break;
-		case ErrorDetailKind::Exception: m_snprintf(extra, sizeof(extra), " EXC 0x%02X", (unsigned)detail.value); break;
-		case ErrorDetailKind::Transport: m_snprintf(extra, sizeof(extra), " RX 0x%02X", (unsigned)detail.value); break;
-		case ErrorDetailKind::Local: m_snprintf(extra, sizeof(extra), " LOCAL 0x%02X", (unsigned)detail.value); break;
-		case ErrorDetailKind::State: m_snprintf(extra, sizeof(extra), " STATE %d", (int)(int16_t)detail.value); break;
-		default: break;
-		}
-		m_snprintf(note, sizeof(note), "$ERROR %d %s %s%s  — %s",
-		           (int)code, entry->source, source, extra, meaning ? meaning : entry->description);
-	} else {
-		strncpy(source, device, sizeof(source) - 1);
-		m_snprintf(note, sizeof(note), "$ERROR %d SYS %s  — Неизвестный код %d", (int)legacy, source, (int)legacy);
+	if(!entry) {
+		journal.jprintf_time("Invalid alarm code %d\n", (int)code);
+		code = ErrorCatalog::Code::kCONFIG;
+		entry = ErrorCatalog::Find(code);
+		meaning = nullptr;
+		detail = {};
 	}
-
-	ErrorTrimUtf8(note);
+	strncpy(source, device, sizeof(source) - 1);
+	formatEvent(note, sizeof(note), EventLevel::Error, entry, nullptr, source, detail, meaning);
 	const uint32_t irq = irqSave();
-	const bool first = Error_Claim(&error, legacy);
+	const bool first = Error_Claim(&error, ErrorNumber(code));
 	if(first) {
-		activeErrorCode = entry ? code : legacy;
 		activeErrorDetail = detail;
 		memcpy(source_error, source, sizeof(source_error));
 		memcpy(note_error, note, sizeof(note_error));
@@ -268,12 +293,10 @@ void HeatPump::record_Error(int8_t legacy, const char *device, ErrorCatalog::Err
 
 	journal.jprintf_time("%s\n", note);
 	if(xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) save_DumpJournal(true);
-	if(entry) {
-		WarningRecord key{code, detail.value, 0, {}};
-		strncpy(key.device, source, sizeof(key.device) - 1);
-		const uint32_t subject = key.Subject() ^ ((uint32_t)detail.kind << 16) ^ detail.state;
-		message.setMessage(pMESSAGE_ERROR, note, code, subject);
-	} else message.setMessage(pMESSAGE_ERROR, note, legacy);
+	WarningRecord key{ErrorNumber(code), detail.value, 0, {}, detail};
+	strncpy(key.device, source, sizeof(key.device) - 1);
+	const uint32_t subject = key.Subject() ^ ((uint32_t)detail.kind << 16) ^ detail.state;
+	message.setMessage(pMESSAGE_ERROR, note, ErrorNumber(code), subject);
 	process_error();
 }
 
@@ -342,7 +365,7 @@ void HeatPump::initHeatPump()
 
 	// Графики в памяти
 	for(i = 0; i < sizeof(Charts) / sizeof(Charts[0]); i++)
-		if(!Charts[i].init(CHART_POINT)) set_Error(ERR_OUT_OF_MEMORY, (char*)"Charts");
+		if(!Charts[i].init(CHART_POINT)) set_Error(ErrorCatalog::Code::kMEMORY, (char*)"Charts");
 	clearChart();
 
 	resetSettingHP();                                          // все переменные
@@ -353,7 +376,6 @@ void HeatPump::eraseError()
 	const uint32_t irq = irqSave();
 	strcpy(note_error, "OK");
 	source_error[0] = '\0';
-	activeErrorCode = OK;
 	activeErrorDetail = {};
 	error = OK;
 	irqRestore(irq);
@@ -805,20 +827,18 @@ int8_t HeatPump::ResetFC()
 // 2. Собственно сброс
 #ifdef RRESET                                                               // Если есть вход от инвертора об ошибке
 	dRelay[RRESET].set_ON(); _delay(100); dRelay[RRESET].set_OFF();         // Подать импульс сброса
-	journal.jprintf(" Reset %s by RRESET: ",dFC.get_name());
+	journal.jprintf_time(" Reset %s by RRESET\n",dFC.get_name());
 #else
-	if(!dFC.reset_FC()) return dFC.get_err() == OK ? ERR_RESET_FC : dFC.get_err();
-    journal.jprintf(" Reset %s by Modbus: ",dFC.get_name());
+	if(!dFC.reset_FC()) return dFC.get_err() == OK ? ErrorNumber(ErrorCatalog::Code::kFC_RESET) : dFC.get_err();
+
 #endif
 // 3. Проверка результатов сброса
-#ifdef SERRFC                                                               // Если есть вход от инвертора об ошибке
+#ifdef SERRFC
     _delay(100);
-	sInput[SERRFC].Read();
-	if (sInput[SERRFC].get_lastErr()==OK) {journal.jprintf("%s\r\n",cOk);return OK;}// Инвертор сброшен
-	else {journal.jprintf("%s\n",cError); return ERR_RESET_FC;}                   // Сброс не прошел
+    sInput[SERRFC].Read();
+    if(sInput[SERRFC].get_lastErr() != OK) return ErrorNumber(ErrorCatalog::Code::kFC_RESET);
 #else
-   if(dFC.get_blockFC()) {journal.jprintf("%s\n",cError); return ERR_RESET_FC;}   // Инвертор блокирован
-   else                  {journal.jprintf("%s\n",cOk);return OK;}                 // Инвертор сброшен
+    if(dFC.get_blockFC()) return ErrorNumber(ErrorCatalog::Code::kFC_RESET);
 #endif
 	return OK;
 }
@@ -951,7 +971,7 @@ xGoWait:
 	if(!CheckAvailableWork())   // Нет работы для ТН - ничего не включено
 	{
 		setState(pOFF_HP);  // Еще ничего не сделали по этому сразу ставим состоение выключено
-		set_Error(ERR_NO_WORK, (char*) __FUNCTION__);
+		set_Error(ErrorCatalog::Code::kCONFIG_NO_WORK, (char*) __FUNCTION__);
 		return;
 	}
     if(get_State() != pSTARTING_HP) return;            // Могли нажать кнопку стоп, выход из процесса запуска
@@ -959,7 +979,7 @@ xGoWait:
 	if((!sADC[PEVA].get_present()) && (dEEV.get_ruleEEV() == TEVAOUT_PEVA))  //  Отсутвует датчик давления, и выбран алгоритм ЭРВ который его использует",
 	{
 		setState(pOFF_HP);    // Еще ничего не сделали по этому сразу ставим состоение выключено
-		set_Error(ERR_PEVA_EEV, (char*) __FUNCTION__);        // остановить по ошибке;
+		set_Error(ErrorCatalog::Code::kEEV_CONFIG, (char*) __FUNCTION__);        // остановить по ошибке;
 		return;
 	}
 #endif
@@ -968,7 +988,7 @@ xGoWait:
 		if(bad != NULL) {
 			setState(pOFF_HP);
 			journal.jprintf(" Sensor %s: not in config or no address!\n", bad->get_name());
-			set_Error(ERR_SENSOR, bad->get_name());       // источник ошибки - имя датчика
+			set_Error(ErrorCatalog::Code::kSENSOR_MISSING, bad->get_name());       // источник ошибки - имя датчика
 			return;
 		}
 	}
@@ -979,19 +999,19 @@ xGoWait:
 		if(!dRelay[PUMP_OUT].get_present())  // отсутсвует насос на конденсаторе, пользователь НЕ может изменить в процессе работы проверка при старте
 		{
 			setState(pOFF_HP);    // Еще ничего не сделали по этому сразу ставим состоение выключено
-			set_Error(ERR_PUMP_CON, (char*) __FUNCTION__);        // остановить по ошибке;
+			set_Error(ErrorCatalog::Code::kCONFIG_PUMP, (char*) __FUNCTION__);        // остановить по ошибке;
 			return;
 		}
 		if(!dRelay[PUMP_IN].get_present())   // отсутсвует насос на испарителе, пользователь может изменить в процессе работы
 		{
 			setState(pOFF_HP);    // Еще ничего не сделали по этому сразу ставим состоение выключено
-			set_Error(ERR_PUMP_EVA, (char*) __FUNCTION__);        // остановить по ошибке;
+			set_Error(ErrorCatalog::Code::kCONFIG_PUMP, (char*) __FUNCTION__);        // остановить по ошибке;
 			return;
 		}
 		if((!dRelay[RCOMP].get_present()) && (!dFC.get_present()))   // отсутсвует компрессор, пользователь может изменить в процессе работы
 		{
 			setState(pOFF_HP);    // Еще ничего не сделали по этому сразу ставим состоение выключено
-			set_Error(ERR_NO_COMPRESS, (char*) __FUNCTION__);        // остановить по ошибке;
+			set_Error(ErrorCatalog::Code::kCONFIG_COMPRESSOR, (char*) __FUNCTION__);        // остановить по ошибке;
 			return;
 		}
 	} //  if (start)  // Команда старт
@@ -1002,7 +1022,7 @@ xGoWait:
 	{
 #ifdef EEV_DEF
 		if(get_State() != pSTARTING_HP) return;            // Могли нажать кнопку стоп, выход из процесса запуска
-		else { int8_t r = dEEV.Start(); if(r != OK) { setState(pOFF_HP); set_Error(r, (char*) "EEV"); return; } }
+		else { int8_t r = dEEV.Start(); if(r != OK) { setState(pOFF_HP); set_Error(ErrorCatalog::Code::kCONFIG, "EEV"); return; } }
 		if(!waitEEVService()) return; // поиск нуля должен закончиться до стартовой позиции
 #endif
 
@@ -1045,9 +1065,9 @@ xGoWait:
 #ifndef DEMO   // проверка блокировки инвертора
 		if((dFC.get_present()) && (dFC.get_blockFC()))          // есть инвертор но он блокирован
 		{
-			if(dFC.get_err() != ERR_485_BUSY) {
+			if(dFC.get_err() != ErrorNumber(ErrorCatalog::Code::kMODBUS_BUSY)) {
 				journal.jprintf("%s: is blocked, ignore start\n", dFC.get_name());
-				raise_Error(ERR_MODBUS_BLOCK, ErrorCatalog::kFC_BLOCK, driveDevice);
+				raise_Error(ErrorCatalog::Code::kFC_BLOCK, driveDevice);
 				return;
 			}
 		}
@@ -1055,8 +1075,9 @@ xGoWait:
 	}
 	if(get_errcode() != OK)                                 // ОШИБКА перед стартом
 	{
-		journal.jprintf(" Error %d before start compressor!\n", get_errcode());
-		set_Error(ERR_COMP_ERR, (char*) __FUNCTION__);
+		log_Event(ErrorCatalog::Code::kCOMP_START_BLOCKED, "COMP",
+		          {ErrorDetailKind::State, static_cast<uint16_t>(get_errcode()), 0});
+		set_Error(ErrorCatalog::Code::kCOMP_START_BLOCKED, (char*) __FUNCTION__);
 		return;
 	}
 	if(start_compressor_now) compressorON(); // Компрессор включить если нет ошибок и надо включаться
@@ -1426,7 +1447,7 @@ MODE_COMP  HeatPump::UpdateBoiler()
 		dFC.set_target(out.target, out.target_immediate, in.fc_min, in.fc_max);
 	}
 	if(out.reset_pid) resetPID();
-	if(out.error != OK) set_Error(out.error, (char*)__FUNCTION__);
+	if(out.error != ErrorCatalog::Code::kOK) set_Error(out.error, (char*)__FUNCTION__);
 	return out.comp;
 }
 
@@ -1539,7 +1560,7 @@ MODE_COMP HeatPump::UpdateHeat()
 		dFC.set_target(out.target, out.target_immediate, in.fc_min, in.fc_max);
 	}
 	if(out.reset_pid) resetPID();
-	if(out.error != OK) set_Error(out.error, (char*)__FUNCTION__);
+	if(out.error != ErrorCatalog::Code::kOK) set_Error(out.error, (char*)__FUNCTION__);
 	return out.comp;
 }
 
@@ -1640,7 +1661,7 @@ MODE_COMP HeatPump::UpdateCool()
 		dFC.set_target(out.target, out.target_immediate, in.fc_min, in.fc_max);
 	}
 	if(out.reset_pid) resetPID();
-	if(out.error != OK) set_Error(out.error, (char*)__FUNCTION__);
+	if(out.error != ErrorCatalog::Code::kOK) set_Error(out.error, (char*)__FUNCTION__);
 	return out.comp;
 }
 
@@ -1653,12 +1674,12 @@ void HeatPump::vUpdate()
 
 	// Различные проверки на ошибки и защиты
 	if(!CheckAvailableWork()) {  // Нет работы для ТН - ничего не включено, пользователь может изменить в процессе работы
-		set_Error(ERR_NO_WORK, (char*) __FUNCTION__);
+		set_Error(ErrorCatalog::Code::kCONFIG_NO_WORK, (char*) __FUNCTION__);
 		return;
 	}
 #ifdef EEV_DEF
 	if((!sADC[PEVA].get_present()) && (dEEV.get_ruleEEV() == TEVAOUT_PEVA)) {  //  Отсутвует датчик давления, и выбран алгоритм ЭРВ который его использует", пользователь может изменить в процессе работы
-		set_Error(ERR_PEVA_EEV, dEEV.get_name());
+		set_Error(ErrorCatalog::Code::kEEV_CONFIG, dEEV.get_name());
 		return;
 	}
 #endif
@@ -1679,7 +1700,7 @@ void HeatPump::vUpdate()
 			if(!startPump && get_modeHouse() != pOFF)  // Когда режим выключен (не отопление и не охлаждение), то насосы отопления крутить не нужно
 			{
 				startPump = true;                                 // Поставить признак запуска задачи насос
-				if(get_workPump()) journal.jprintf(" %s: Pumps in pause %s. . .\n", (char*) __FUNCTION__, "ON");     // Включить задачу насос конденсатора выключение в переключении насосов
+				if(get_workPump()) log_Event("COMP", "PUMPS", "Насосы переведены в режим паузы");     // Включить задачу насос конденсатора выключение в переключении насосов
 			}
 			command_completed = Uptime_s(); // поменялся режим
 		}
@@ -1840,7 +1861,7 @@ boolean HeatPump::configHP(MODE_HP conf)
 	} else if((conf & pDEFROST)) {  // Разморозка
 		// to do...
 	} else { // ?
-		set_Error(ERR_CONFIG,(char*)__FUNCTION__);   // Ошибка!  что то пошло не так
+		set_Error(ErrorCatalog::Code::kCONFIG,(char*)__FUNCTION__);   // Ошибка!  что то пошло не так
 		return false;
 	}
 	return true;
@@ -1887,6 +1908,8 @@ MODE_HP HeatPump::pressureWorkMode()
 
 // Принимает признаки свежести PEVA и PCON и регистрирует подтверждённую аварию.
 // Верхняя защита проверяется первой и обновляет допуск пуска даже при останове.
+// Включённая защита без привязанного датчика не контролирует контур: пуск не блокируется
+// (см. pressureAllowsStart), рассинхрон диагностируется одним предупреждением за эпизод.
 void HeatPump::checkPressureProtection(bool lowFresh, bool highFresh)
 {
 	const uint32_t now = GetTickCount();
@@ -1894,29 +1917,50 @@ void HeatPump::checkPressureProtection(bool lowFresh, bool highFresh)
 	const MODE_HP mode = pressureWorkMode();
 	const bool running = is_compressor_on();
 	if(PRESS_PROT_HIGH_ENABLED) {
-		const int pressure = sADC[PCON].get_Value();
-		const bool valid = highFresh && (mode != pOFF || (!running && is_heating()));
-		const uint32_t irq = irqSave();
-		const bool trip = pressureProtection.ObserveHigh(now, running && mode != pOFF, valid, pressure,
-			PRESS_PROT_HIGH_CBAR, PRESS_PROT_HIGH_RECOVER_CBAR, PRESS_PROT_HIGH_CONFIRM_MS, maxGapMs);
-		irqRestore(irq);
-		if(trip) {
-			char detail[48];
-			m_snprintf(detail, sizeof(detail), "%.2d бар >= %.2d бар", pressure, PRESS_PROT_HIGH_CBAR);
-			raise_Error(ERR_ANALOG_MAX, ErrorCatalog::kPRESS_PROT_HIGH, "PCON", {}, detail);
-			return;
+		// Статические флаги живут в задаче датчиков, состояние трогает одна задача.
+		static bool highMissingWarned; // Один $WARN на эпизод отсутствия PCON.
+		if(!sADC[PCON].get_present()) {
+			if(!highMissingWarned) {
+				highMissingWarned = true;
+				set_Warning(ErrorCatalog::Code::kSENSOR_MISSING, "PCON", 0,
+				            "Защита высокого давления включена, но датчик не привязан: контроль не работает", true);
+			}
+		} else {
+			highMissingWarned = false;
+			const int pressure = sADC[PCON].get_Value();
+			const bool valid = highFresh && (mode != pOFF || (!running && is_heating()));
+			const uint32_t irq = irqSave();
+			const bool trip = pressureProtection.ObserveHigh(now, running && mode != pOFF, valid, pressure,
+				PRESS_PROT_HIGH_CBAR, PRESS_PROT_HIGH_RECOVER_CBAR, PRESS_PROT_HIGH_CONFIRM_MS, maxGapMs);
+			irqRestore(irq);
+			if(trip) {
+				char detail[48];
+				m_snprintf(detail, sizeof(detail), "%.2d бар >= %.2d бар", pressure, PRESS_PROT_HIGH_CBAR);
+				raise_Error(ErrorCatalog::Code::kPRESS_PROT_HIGH, "PCON", {}, detail);
+				return;
+			}
 		}
 	}
 	if(PRESS_PROT_LOW_ENABLED) {
-		const bool confirmedRunning = running && (!dFC.get_present() || dFC.get_frequency() > 0);
-		const bool valid = lowFresh && (!dFC.get_present() || dFC.get_err() == OK);
-		const int pressure = sADC[PEVA].get_Value();
-		if(pressureProtection.ObserveLow(now, confirmedRunning ? mode : pOFF, get_startCompressor(), valid, pressure,
-		   PRESS_PROT_LOW_CBAR, PRESS_PROT_LOW_RECOVER_CBAR, PRESS_PROT_LOW_STABILIZE_MS,
-		   PRESS_PROT_LOW_CONFIRM_MS, maxGapMs)) {
-			char detail[48];
-			m_snprintf(detail, sizeof(detail), "%.2d бар <= %.2d бар", pressure, PRESS_PROT_LOW_CBAR);
-			raise_Error(ERR_ANALOG_MIN, ErrorCatalog::kPRESS_PROT_LOW, "PEVA", {}, detail);
+		static bool lowMissingWarned; // Как у верхней защиты: один $WARN на эпизод.
+		if(!sADC[PEVA].get_present()) {
+			if(!lowMissingWarned) {
+				lowMissingWarned = true;
+				set_Warning(ErrorCatalog::Code::kSENSOR_MISSING, "PEVA", 0,
+				            "Защита низкого давления включена, но датчик не привязан: контроль не работает", true);
+			}
+		} else {
+			lowMissingWarned = false;
+			const bool confirmedRunning = running && (!dFC.get_present() || dFC.get_frequency() > 0);
+			const bool valid = lowFresh && (!dFC.get_present() || dFC.get_err() == OK);
+			const int pressure = sADC[PEVA].get_Value();
+			if(pressureProtection.ObserveLow(now, confirmedRunning ? mode : pOFF, get_startCompressor(), valid, pressure,
+			   PRESS_PROT_LOW_CBAR, PRESS_PROT_LOW_RECOVER_CBAR, PRESS_PROT_LOW_STABILIZE_MS,
+			   PRESS_PROT_LOW_CONFIRM_MS, maxGapMs)) {
+				char detail[48];
+				m_snprintf(detail, sizeof(detail), "%.2d бар <= %.2d бар", pressure, PRESS_PROT_LOW_CBAR);
+				raise_Error(ErrorCatalog::Code::kPRESS_PROT_LOW, "PEVA", {}, detail);
+			}
 		}
 	}
 }
@@ -1924,7 +1968,10 @@ void HeatPump::checkPressureProtection(bool lowFresh, bool highFresh)
 // Возвращает допуск пуска по актуальному PCON и защёлке высокого давления.
 bool HeatPump::pressureAllowsStart()
 {
-	if(!PRESS_PROT_HIGH_ENABLED) return true;
+	// Защита без привязанного датчика не может ни подтвердить, ни опровергнуть давление:
+	// блокировать пуск бессмысленно (ТН остановится насовсем), рассинхрон диагностирует
+	// checkPressureProtection().
+	if(!PRESS_PROT_HIGH_ENABLED || !sADC[PCON].get_present()) return true;
 	const uint32_t irq = irqSave();
 	const bool allowed = pressureProtection.CanStart(GetTickCount(), pressureWorkMode() != pOFF,
 	                                                  PRESS_PROT_HIGH_CBAR, 2 * TIME_READ_SENSOR);
@@ -1950,7 +1997,7 @@ void HeatPump::compressorON()
 
 	const int8_t reset = ResetFC();
 	if(reset != OK) {
-		if(error == OK) raise_Error(reset, ErrorCatalog::kFC_RESET, driveDevice);
+		if(error == OK) raise_Error(static_cast<ErrorCatalog::Code>(reset), driveDevice);
 		return;
 	}
 
@@ -2008,7 +2055,7 @@ void HeatPump::compressorON()
 		if (startPump)                                      // Проверка задачи насос - должен быть выключен
 		{
 			startPump=false;                               // Поставить признак останова задачи насос
-			if(get_workPump()) journal.jprintf_time("$WARN! %s: Pumps in pause, OFF . . .\n",(char*)__FUNCTION__);
+			if(get_workPump()) log_Event("COMP", "PUMPS", "Отменена пауза насосов перед пуском");
 		}
 	#ifdef DEFROST
 	  if(!(get_modWork() & pDEFROST))  // При разморозке есть лишние проверки
@@ -2016,14 +2063,12 @@ void HeatPump::compressorON()
 	#endif		
 		// Проверка включения насосов с проверкой и предупреждением (этого не должно быть)
 		if(!dRelay[PUMP_IN].get_Relay()) {
-			journal.jprintf_time("$WARN! %s is off before start compressor!\n", dRelay[PUMP_IN].get_name());
-			set_Error(ERR_COMP_NO_PUMP, (char*) dRelay[PUMP_IN].get_name());
+			set_Error(ErrorCatalog::Code::kCOMP_NO_PUMP, (char*) dRelay[PUMP_IN].get_name());
 			return;
 		}
 		if(!(dRelay[PUMP_OUT].get_Relay()
 		)) {
-			journal.jprintf_time("$WARN! %s is off before start compressor!\n", dRelay[PUMP_OUT].get_name());
-			set_Error(ERR_COMP_NO_PUMP, (char*) dRelay[PUMP_OUT].get_name());
+			set_Error(ErrorCatalog::Code::kCOMP_NO_PUMP, (char*) dRelay[PUMP_OUT].get_name());
 			return;
 		}
 
@@ -2041,13 +2086,13 @@ void HeatPump::compressorON()
 			if(error || is_next_command_stop()) return; // прерваться по ошибке, еще бы проверить команду на останов...
 		}
 
-#ifdef FLOW_CONTROL      // если надо проверяем потоки (защита от отказа насосов) ERR_MIN_FLOW
+#ifdef FLOW_CONTROL      // если надо проверяем потоки (защита от отказа насосов) MIN_FLOW
 		for(uint8_t i = 0; i < FNUMBER; i++) {   // Проверка потока по каждому датчику
 			 if(sFrequency[i].get_checkFlow() && sFrequency[i].get_Value() < sFrequency[i].get_minValue()) {  // Поток меньше минимального
 				_delay(TIME_READ_SENSOR);
 				if(sFrequency[i].get_Value() < sFrequency[i].get_minValue()) {  // Поток меньше минимального
 					journal.jprintf(" Flow %s: %.3d\n", sFrequency[i].get_name(), sFrequency[i].get_Value());
-					set_Error(ERR_MIN_FLOW, (char*) sFrequency[i].get_name());
+					set_Error(ErrorCatalog::Code::kFLOW_LOW, (char*) sFrequency[i].get_name());
 					return;
 				}
 			}
@@ -2055,7 +2100,7 @@ void HeatPump::compressorON()
 #endif
 #ifdef SEVA  //Если определен лепестковый датчик протока - это переливная схема ТН - надо контролировать проток при работе
 		if(dRelay[RPUMPI].get_Relay())                                                                                             // Только если включен насос геоконтура  (PUMP_IN)
-			if (sInput[SEVA].get_Input()==SEVA_OFF) {set_Error(ERR_SEVA_FLOW,(char*)"SEVA"); return;}                              // Выход по ошибке отсутствия протока
+			if (sInput[SEVA].get_Input()==SEVA_OFF) {set_Error(ErrorCatalog::Code::kFLOW_LOW,(char*)"SEVA"); return;}                              // Выход по ошибке отсутствия протока
 #endif
 
 #ifdef DEFROST
@@ -2077,7 +2122,7 @@ void HeatPump::compressorON()
 		if(error || dFC.get_err()) return; // Ошибка - выходим
 	} else { // if (get_errcode()==OK)
 		journal.jprintf(" EEV not set before start compressor!\n");
-		set_Error(ERR_COMP_ERR,(char*)__FUNCTION__);return;
+		set_Error(ErrorCatalog::Code::kCOMP_START_BLOCKED,(char*)__FUNCTION__);return;
 	}
 
 	// 4. Если нужно облегченный пуск  в зависимости от флага fEEV_light_start
@@ -2173,12 +2218,12 @@ void HeatPump::compressorOFF()
 void HeatPump::defrost()
 {
       if (get_State()==pOFF_HP) return;                                    // если ТН не работает то выходим
-      bool defrostTimeout = false;                                         // оттайка не закончилась за DEFROST_WAIT_MAX
+      const char *defrostTimeout = nullptr;                                         // оттайка не закончилась за DEFROST_WAIT_MAX
       
       #ifdef R4WAY            // Нет четырехходового - нет режима охлаждения
   if (dRelay[R4WAY].get_Relay() == false) return;                          // режим охлаждения - размораживать не надо, у меня false это охлаждение.
 #else
- set_Error(ERR_DEFROST_R4WAY, (char*)__FUNCTION__);return;                 // Четырех ходового нет разморозка не возможна - это косяк конфигурации
+ set_Error(ErrorCatalog::Code::kCONFIG, (char*)__FUNCTION__);return;                 // Четырех ходового нет разморозка не возможна - это косяк конфигурации
       #endif
          
 // Реализовано два алгоритма выбор по наличию SFROZEN
@@ -2200,7 +2245,7 @@ void HeatPump::defrost()
       // с компрессором в режиме оттайки. DEFROST_WAIT_MAX задаёт предел.
       for(uint16_t w = 0; sInput[SFROZEN].get_Input()!=SFROZEN_OFF; w++)   // ждем оттаивания
       {
-        if(w >= DEFROST_WAIT_MAX / 10) { journal.jprintf_time("$ERROR: defrost sensor timeout, abort\n"); defrostTimeout = true; break; }
+        if(w >= DEFROST_WAIT_MAX / 10) { defrostTimeout = "Истекло ожидание датчика обмерзания"; break; }
       Watchdog_SleepHere(10*1000);                              // Задержка на 10 сек
         journal.jprintf(" Wait process defrost . . .\n"); 
         if((get_State()==pOFF_HP)||(get_State()==pSTARTING_HP)||(get_State()==pSTOPING_HP)) break;     // ТН выключен или включается или выключается выходим из разморозки
@@ -2226,7 +2271,7 @@ void HeatPump::defrost()
 			      dRelay[PUMP_IN].set_OFF();                                        // выключаем вентилятор
 			     }
 		    }
-	    else  { set_Error(ERR_DEFROST_R4WAY, (char*)__FUNCTION__);return; }           // ХА ХА  Работаем на охлаждение но при этом требуется разморозка - Это косяк Карл, но до сюда не доедит
+	    else  { set_Error(ErrorCatalog::Code::kCONFIG, (char*)__FUNCTION__);return; }           // ХА ХА  Работаем на охлаждение но при этом требуется разморозка - Это косяк Карл, но до сюда не доедит
 	  	
 	  }
 	  else  // Компрессор не работает - тяжелый случай все делаем руками
@@ -2245,7 +2290,7 @@ void HeatPump::defrost()
 	 // ПОТОЛОК ОЖИДАНИЯ, та же причина, что и у цикла по датчику обмерзания выше.
 	 for(uint16_t w = 0; sTemp[TEVAOUT].get_Temp()<TEMP_END_DEFROST; w++)   // Ждем оттаивания, поднятия температуры выхода испарителя. Испаритель и конденсатор меняются местами?
 		{
-		  if(w >= DEFROST_WAIT_MAX / 10) { journal.jprintf_time("$ERROR: defrost heat-gas timeout, abort\n"); defrostTimeout = true; break; }
+		  if(w >= DEFROST_WAIT_MAX / 10) { defrostTimeout = "Истекло ожидание конца разморозки горячим газом"; break; }
 		  Watchdog_SleepHere(10*1000);                                                      // Задержка на 10 сек
 		  journal.jprintf(" Wait process HEAT GAS defrost . . .\n");
 		  if (error ||(get_State() == pOFF_HP) || (get_State() == pSTARTING_HP) || (get_State() == pSTOPING_HP)) break; // ТН выключен или включается или выключается выходим из разморозки
@@ -2255,9 +2300,10 @@ void HeatPump::defrost()
 	if(defrostTimeout) {                                                     // залипший датчик или неисправный испаритель: оттайки по кругу не нужны
 		if(++defrostFails >= DEFROST_FAILS_MAX) {
 			compressorOFF();
-			set_Error(ERR_DEFROST, (char*)__FUNCTION__);                         // останов ТН
+			raise_Error(ErrorCatalog::Code::kDEFROST_TIMEOUT, "DEFROST", {}, defrostTimeout);                         // останов ТН
 			return;
 		}
+		log_Event(ErrorCatalog::Code::kDEFROST_TIMEOUT, "DEFROST", {}, defrostTimeout);
 	} else defrostFails = 0;                                                 // оттайка прошла - счёт неудач заново
       journal.jprintf(" Finish defrost, wait delayDefrostOff min.\n"); 
 	compressorOFF();                                                         // выключить компрессор   Пока пусть будет так, в дальнейшем надо доработать
@@ -2320,10 +2366,10 @@ int16_t HeatPump::get_temp_evaporating(void)
 // Возвращает 0 - Нет ошибок или ни одного активного датчика, 1 - ошибка, 2 - превышен предел ошибок
 int8_t	 HeatPump::Prepare_Temp(uint8_t bus)
 {
-	int8_t i, ret = 0;
-	i = OneWireBus.PrepareTemp();
+	int8_t ret = 0;
+	const auto status = OneWireBus.PrepareTemp();
 	if(testMode != NORMAL) return 0;
-	if(i) {
+	if(status != OneWireStatus::Ok) {
 		for(uint8_t j = 0; j < TNUMBER; j++) {
 			if(sTemp[j].get_fAddress() && sTemp[j].get_bus() == bus) {
 				if(sTemp[j].inc_error()) {
@@ -2334,8 +2380,9 @@ int8_t	 HeatPump::Prepare_Temp(uint8_t bus)
 			}
 		}
 		if(ret) {
-			journal.jprintf_time("Error %d PrepareTemp bus %d\n", i, bus+1);
-			if(ret == 2) set_Error(i, (char*) __FUNCTION__);
+			journal.jprintf_time("Error %d PrepareTemp bus %d\n", (int)status, bus+1);
+			if(ret == 2) HP.raise_Error(status == OneWireStatus::Transfer ? ErrorCatalog::Code::kTEMP_READ : ErrorCatalog::Code::kTEMP_BUS,
+			                           "OneWire", {ErrorDetailKind::Local, static_cast<uint16_t>(status), 0});
 		}
 	}
 	return ret ? (1<<bus) : 0;

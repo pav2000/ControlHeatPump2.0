@@ -15,6 +15,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 /*
  * Электронно-регулируемый вентиль: единственный экземпляр devEEV. Пуск и
  * обнуление, расчёт перегрева и ПИД, коррекция, веб-параметры.
@@ -206,7 +207,7 @@ int8_t devEEV::set_zero()
 {
 	journal.jprintf(" EEV: Set zero\n");
 	if(testMode != SAFE_TEST) {
-		if(!stepperEEV.home(EEV_SET_ZERO_OVERRIDE)) return ERR_CONFIG;
+		if(!stepperEEV.home(EEV_SET_ZERO_OVERRIDE)) return ErrorNumber(ErrorCatalog::Code::kCONFIG);
 	} else simulatedPosition = 0;
 	return OK;
 }
@@ -217,11 +218,11 @@ int8_t devEEV::set_EEV(int16_t x)
 {
 	err = OK;
 	if(!(GETBIT(_data.flags, fPresent))) { // ЭРВ не установлен
-		err = ERR_DEVICE;
+		err = ErrorNumber(ErrorCatalog::Code::kCONFIG);
 		return err;
 	}
 	if(x < EEV_CLOSE_STEP) x = EEV_CLOSE_STEP; else if(x > _data.maxSteps) x = _data.maxSteps;
-	if(testMode != SAFE_TEST) { if(!stepperEEV.step(x)) { journal.jprintf_time("$ERROR - Step motor command rejected\n"); return ERR_CONFIG; } }
+	if(testMode != SAFE_TEST) { if(!stepperEEV.step(x)) { HP.log_Event(ErrorCatalog::Code::kCONFIG, "EEV", {ErrorDetailKind::Local, static_cast<uint16_t>(x), 0}, "Отклонена команда позиционирования"); return ErrorNumber(ErrorCatalog::Code::kCONFIG); } }
 	else simulatedPosition = x; // SAFE_TEST не двигает обмотки
 	return err;
 }
@@ -241,8 +242,8 @@ void devEEV::hybDefaults()
 	_data.sphzb100 = c.sphzb100;
 }
 
-// Приоритет: по стартовой частоте -> по температуре подачи -> фиксированная StartPos
-// boiler задаётся явно: при переключении режима на ходу modWork уже может быть новым, а частота ещё старой
+// Возвращает стартовую позицию в шагах для режима boiler (true для ГВС).
+// Приоритет настроек: стартовая частота, температура подачи, фиксированная StartPos.
 uint16_t devEEV::get_StartPos(bool boiler)
 {
 	if(GETBIT(_data.flags, fEEV_StartPosByFreq)) {
@@ -256,7 +257,7 @@ uint16_t devEEV::get_StartPos(bool boiler)
 	} else return _data.StartPos;
 }
 
-// По текущему режиму работы ТН
+// Возвращает стартовую позицию ЭРВ в шагах для текущего режима ТН.
 uint16_t devEEV::get_StartPos()
 {
 	return get_StartPos((HP.get_modWork() & pBOILER) != 0);
@@ -352,8 +353,8 @@ int16_t devEEV::set_Overheat(boolean fHeating)
 	bool overheatErr;
 	Overheat = Overheat_Calc(in, Overheat, &overheatErr);
 	if(overheatErr) {
-		err = ERR_TYPE_OVERHEAT;
-		set_Error(err, name);
+		err = ErrorNumber(ErrorCatalog::Code::kEEV_CONFIG);
+		set_Error(ErrorCatalog::Code::kEEV_CONFIG, name);
 	}
 #endif
 
@@ -449,9 +450,6 @@ int8_t devEEV::Update(void) //boolean fHeating)
 			// хода полная - там отбрасывание теряло до 30 % команды.
 			// Порог обязан быть БОЛЬШЕ мёртвой зоны, иначе он её размывает и возвращается цикл 15.11.
 			// Полный откат: заменить три строки ниже на одну const int32_t pidOut100 = updatePID(...);
-			// const int32_t pidOut100 = updatePID(newEEV, _data.pid, pidw) + pidRemainder100;
-			// newEEV = pidOut100 / 100;               // целые шаги, дробная часть отбрасывается к нулю
-			// pidRemainder100 = pidOut100 % 100;      // переносить только дробную часть: -99..99 сотых шага
 			const bool carry = abs(newEEV) >= 100;     // 100 сотых градуса = 1.0 K
 			const int32_t pidOut100 = updatePID(newEEV, _data.pid, pidw) + (carry ? pidRemainder100 : 0);
 			newEEV = pidOut100 / 100;                  // целые шаги
@@ -480,8 +478,8 @@ int8_t devEEV::Update(void) //boolean fHeating)
 	if(requestedEEV < _data.minSteps) {
 #if !defined(DEMO) && defined(EEV_MIN_CONTROL) // Контролировать достижение минимального открытия, ошибка генерится
 		if(HP.is_compressor_on()) {   // во время работы - Сообщение
-			err = ERR_MIN_EEV;
-			set_Error(err, (char*) name);
+			err = ErrorNumber(ErrorCatalog::Code::kEEV_LIMIT);
+			HP.raise_Error(ErrorCatalog::Code::kEEV_LIMIT, name, {}, "Позиция ЭРВ ниже нижней границы");
 			return err;
 		}
 #endif
@@ -490,8 +488,8 @@ int8_t devEEV::Update(void) //boolean fHeating)
 	if(requestedEEV > _data.maxSteps) {
 #if !defined(DEMO) && defined(EEV_MAX_CONTROL)   // если задан контроль верхнего диапазона
 		if(HP.is_compressor_on()) {   // во время работы - Сообщение
-			err = ERR_MAX_EEV;
-			set_Error(err, (char*) name);
+			err = ErrorNumber(ErrorCatalog::Code::kEEV_LIMIT);
+			HP.raise_Error(ErrorCatalog::Code::kEEV_LIMIT, name, {}, "Позиция ЭРВ выше верхней границы");
 			return err;
 		}
 #endif

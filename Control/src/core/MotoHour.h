@@ -14,6 +14,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 /*
  * Счётчики наработки и энергии.
  *
@@ -36,6 +37,12 @@
 
 #include <stdint.h>
 #include <stddef.h>
+
+enum class MotoHourLoad : uint8_t {
+	Loaded,     // Оба снимка обновлены после полного чтения.
+	Empty,      // Заголовок отсутствует, нужно инициализировать область.
+	ReadFailed  // Чтение прервано, сохранённые снимки остаются прежними.
+};
 
 #define I2C_COUNT_EEPROM_HEADER 0xAA
 

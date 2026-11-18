@@ -15,6 +15,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
  */
+
 // Отправка телеметрии: народный мониторинг, MQTT, ThingSpeak.
 
 #include "../../Constant.h"                       // Вся конфигурация и константы проекта Должен быть первым !!!!
@@ -571,11 +572,8 @@ MqttResult sendMQTT(boolean debug)
 }
 
  
-// Отослать данные на ThingSpeak отсылка идет одним пакетом
-// debug  true - выводить в консоль информацию о посылаемых данных false - нет вывода
+// Отправляет данные на ThingSpeak одним пакетом. debug включает вывод отправляемых данных.
 // Возвращает итог публикации.
-// При удачной отправке Socket# 7 Sn_MR:1 Sn_CR:0 Sn_IR:7 Sn_SR:0 Sn_PORT:401 Sn_DPORT:75b Sn_TOS:0 Sn_TTL:80 Sn_IMR:ff Sn_FRAG:4000 Sn_KPALVTR:0
-// При неудачной
 MqttResult sendThingSpeak(boolean debug)
 {
 
@@ -634,12 +632,22 @@ MqttResult sendThingSpeak(boolean debug)
          if(const char *kind = ErrorDetailToken(event.detail.kind)) {
              const size_t used = strlen(HP.clMQTT.topic);
              if(used + 32 >= LEN_TOPIC) return MqttResult::Skipped;
-             m_snprintf(HP.clMQTT.topic + used, LEN_TOPIC - used, "-%s-%u-%u",
-                        kind, (unsigned)event.detail.value, (unsigned)event.detail.state);
+             m_snprintf(HP.clMQTT.topic + used, LEN_TOPIC - used, "-%s-%d-%u",
+                        kind, (int)ErrorDetailValue(event.detail), (unsigned)event.detail.state);
          }
      }
      // Проверка на длины
-       if((strlen(HP.clMQTT.root)>=LEN_ROOT-2)||(strlen(HP.clMQTT.topic)>LEN_TOPIC-2)) { journal.jprintf_time("$WARN: Long topic or data string, is problem.\n"); return MqttResult::Skipped;}
+       static bool rootTooLong = false; // Предупреждение уже выдано для текущего превышения.
+       if(strlen(HP.clMQTT.root) >= LEN_ROOT - 2) {
+          if(!rootTooLong) HP.log_Event(ErrorCatalog::Code::kCONFIG, "ThingSpeak", {}, "Превышена допустимая длина корня топика");
+          rootTooLong = true;
+          return MqttResult::Skipped;
+       }
+       rootTooLong = false;
+       if(strlen(HP.clMQTT.topic) > LEN_TOPIC - 2) {
+          journal.jprintf_time("ThingSpeak: превышена длина сформированной строки\n");
+          return MqttResult::Skipped;
+       }
      // Отправка
      if(debug || DBG_ON(DBG_MON)) journal.jprintf((char*)MQTTpublish,HP.clMQTT.get_mqtt_server());
      
