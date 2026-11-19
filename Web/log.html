@@ -35,6 +35,7 @@ var ALG = {1: "выключение по подаче", 2: "включение �
 var BITS = [[0x01, 'отопление'], [0x02, 'охлаждение'], [0x04, 'ГВС'], [0x08, 'разморозка'], [0x80, '«продолжение» (режим уже идёт, без нового пуска)']];
 var SRC = {B: 'бойлер (ГВС)', H: 'отопление', C: 'охлаждение'}, ALGN = {h: 'гистерезис', p: 'ПИД'};
 var SPEC = {none: 'в начале, решения ещё нет', MinPause: 'ждём минимальную паузу между включениями', Bdis: 'сброс тепла (слив бойлера)', Bgen: 'запрет на генераторе'};
+var ERROR_INFO = {}; // Кэш записей каталога по отрицательному коду.
 
 function decode(line) {
 	var out = [], m = /\b([BHC])([hp])(\d+)\b/.exec(line), s = /\b(none|MinPause|Bdis|Bgen)\b/.exec(line);
@@ -47,6 +48,21 @@ function decode(line) {
 		out.push('<b>' + c[0].replace(/\s/g, '') + '</b> — ' + (v ? parts.join(' + ') : 'выключено'));
 	}
 	return out.length ? out.join('<br>') : 'В этой строке нет кода режима или точки возврата.';
+}
+// Добавляет расшифровку кода ошибки из кэша или точечного запроса каталога.
+function decodeError(line, selected) {
+	var m = /\$(?:ERROR|WARN)\s+(-\d+)\b/.exec(line);
+	if(!m) return;
+	var code = parseInt(m[1]), cached = ERROR_INFO[code];
+	function show(item) {
+		if(!item || selected != $('log').querySelector('.sel')) return;
+		$('explain').innerHTML += '<br><b>' + code + '</b> — ' + esc(item.description) +
+			' <small>(' + esc(item.group) + ', ' + esc(item.registration) + ')</small>';
+	}
+	if(cached) { show(cached); return; }
+	api.call('errors', 'code=' + code, function(data, err) {
+		if(!err && data && data.item) { ERROR_INFO[code] = data.item; show(data.item); }
+	});
 }
 function refToggle() {
 	var b = $('ref-b');
@@ -85,6 +101,7 @@ window.onload = function() {
 		if(s) s.classList.remove('sel');
 		d.classList.add('sel');
 		$('explain').innerHTML = decode(d.textContent);
+		decodeError(d.textContent, d);
 	});
 	load();
 };

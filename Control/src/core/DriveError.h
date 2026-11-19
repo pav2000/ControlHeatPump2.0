@@ -54,6 +54,24 @@ struct ErrorEvent : ErrorEventInfo {
 	char text[161]; // Короткое описание для оператора без номера события
 };
 
+struct ActiveError {
+	volatile ErrorCatalog::ErrCode code; // Код активной аварии или 0 при её отсутствии.
+	ErrorDetail detail; // Подтверждённые исходные данные устройства.
+	char source[16]; // Короткое имя устройства или операции.
+	char text[161]; // Операторское описание без номера события.
+	bool stopFailed; // Аварийный останов привода не подтверждён.
+};
+
+// Очищает все поля state и оставляет операторский текст «OK». Значение не возвращает.
+inline void ActiveErrorClear(ActiveError &state)
+{
+	state.code = 0;
+	state.detail = {};
+	state.source[0] = 0;
+	state.text[0] = 'O'; state.text[1] = 'K'; state.text[2] = 0;
+	state.stopFailed = false;
+}
+
 // Возвращает имя подтверждённого исходного кода для API и MQTT либо nullptr.
 inline const char *ErrorDetailToken(ErrorDetailKind kind)
 {

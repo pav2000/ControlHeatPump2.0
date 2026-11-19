@@ -220,7 +220,7 @@ xWait:
 		if(!takeCommand()) break;   // очередь пуста, command сброшен в pEMPTY
 		_delay(1);
 	}
-	return error;
+	return activeError.code;
 }
 
 // Возвращает 1, если ТН в паузе

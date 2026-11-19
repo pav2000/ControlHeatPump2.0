@@ -285,8 +285,8 @@ class HeatPump
     void checkPressureProtection(bool lowFresh, bool highFresh);
     void process_error(void);
 
-    inline int8_t get_errcode(){return error;} // Получить код последней ошибки
-    inline void   drop_error_at_boot(){error=OK;} // Освободить поле ошибки для более важной. ТОЛЬКО до старта планировщика: иначе гонка с Error_Claim
+    inline int8_t get_errcode(){return activeError.code;} // Получить код последней ошибки
+    inline void   drop_error_at_boot(){ActiveErrorClear(activeError);} // Очистить аварию для более важной. ТОЛЬКО до старта планировщика
     // Копирует в event текущую аварию вместе с текстом. Значение не возвращает.
     void get_errorEvent(ErrorEvent &event) const;
     // Возвращает согласованный снимок кода, источника и детали активной аварии.
@@ -645,15 +645,11 @@ class HeatPump
 
     // Ошибки и описания
     void copy_errorInfo(ErrorEventInfo &info, char *text) const;
-    ErrorDetail activeErrorDetail{};        // Исходные данные той же аварии
-    volatile int8_t error;                // Код каталога активной аварии для управления и выдачи
-    char   source_error[16];              // источник ошибки
+    ActiveError activeError{};             // Согласованное состояние активной аварии и останова
     WarningRecord lastWarning{};          // Снимок последнего предупреждения
     char lastWarningText[160]{};           // Операторский текст предупреждения без маркера и номера
     WarningEpisodes warningEpisodes{};    // Независимые ключи эпизодов для подавления чередующихся повторов
     NotifyRecent safetyWarnings{};        // Недавние правила межблокировок по источнику и причине
-    bool emergencyStopCommandFailed{};    // Привод не принял аварийный останов, повторный пуск запрещён
-    char   note_error[160+1];             // Операторское описание активной ошибки без её номера
     uint8_t fSD;                          // Признак наличия SD карты: 0 - нет, 1 - есть, но пустая, 2 - есть, веб в наличии
     uint8_t fSPIFlash;                    // Признак наличия (физического) SPI флеш: 0 - нет, 1 - есть, но пустая, 2 - есть, веб в наличии
     boolean startWait;                    // Начало работы с ожидания

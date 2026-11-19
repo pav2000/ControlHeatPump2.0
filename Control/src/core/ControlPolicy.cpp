@@ -39,13 +39,6 @@ const char *Ret_Text(uint8_t ret)
 	return codeRet[ret];
 }
 
-// Атомарно записывает code в поле field. Возвращает true, если поле было свободно.
-bool Error_Claim(volatile int8_t *field, int8_t code)
-{
-	int8_t expected = OK;
-	return __atomic_compare_exchange_n(field, &expected, code, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
-}
-
 // Возвращает true, если код err требует остановки при запрете повтора критической ошибки.
 bool Error_IsCritical(int8_t err)
 {

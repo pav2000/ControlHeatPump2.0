@@ -7,32 +7,25 @@
 	<link rel="stylesheet" type="text/css" href="style.css">
 	<script type='text/javascript' src='scripts.js'></script>
 	<script type="text/javascript">
-		// Читает части справочника и выводит строки с номерами и способом регистрации.
+		// Читает страницы справочника и выводит строки с номерами и способом регистрации.
 		window.onload = function() {
 			var table = document.getElementById('get_syserr');
-			var parts = 0;
 			// Добавляет строку, вставляя значения через textContent.
 			function row(values) {
 				var tr = table.insertRow();
 				values.forEach(function(value) { tr.insertCell().textContent = value; });
 			}
-			// Загружает часть с заданным индексом и продолжает со следующей.
-			function loadPart(index) {
-				if(index === parts) return;
-				var key = 'sys.errors' + (index || '');
-				api.get({k: [key]}, function(D, E, err) {
-					if(err || !D[key]) row(['Часть справочника недоступна']);
-					else D[key].forEach(function(item) {
+			// Загружает страницу с offset и продолжает до total.
+			function loadPart(offset) {
+				api.call('errors', 'offset=' + offset + '&limit=24', function(data, err) {
+					if(err || !data || !data.items) row(['Страница справочника недоступна']);
+					else data.items.forEach(function(item) {
 						row([item.code, item.group, item.registration, item.description]);
 					});
-					loadPart(index + 1);
+					if(data && offset + data.count < data.total) loadPart(offset + data.count);
 				});
 			}
-			api.get({k: ['sys.errors_parts']}, function(D, E, err) {
-				parts = err ? 0 : parseInt(D['sys.errors_parts'] || 0);
-				if(parts < 1) row(['Число частей справочника недоступно']);
-				else loadPart(0);
-			});
+			loadPart(0);
 		};
 	</script>
 </head>

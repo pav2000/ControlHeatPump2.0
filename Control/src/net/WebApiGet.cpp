@@ -474,7 +474,7 @@ uint8_t sensorIpRequest(uint8_t thread, int8_t sock)
 // Работает ТОЛЬКО в Socket[thread].inBuf/outBuf, без static-буферов и strtok. Мьютекс
 // xWebThreadSemaphore уже взят в web_server().
 // ---------------------------------------------------------------------------
-#define API_PROTO    3       // версия протокола; морда сверяет её через /api/ver
+#define API_PROTO    4       // версия протокола; морда сверяет её через /api/ver
 #define API_SCRATCH  256     // рабочая область ядра (разбор значений) в хвосте outBuf: чтение и meta
 #define API_SCRATCH_W 2300   // для set и do: значение до 2 КБ (поток календаря расписания), запрос целиком не длиннее ~1950 байт
 
@@ -647,9 +647,7 @@ extern const ApiGroup ApiGrpEev;
 #endif     // у классов-владельцев
 
 // ---- группа sys: служебные данные для страниц системы ----
-enum { Y_SOCKETS = 1, Y_WEBSOCKS, Y_SOCKRES, Y_OWPIN, Y_LSTATS, Y_LHIST, Y_FREERAM, Y_INFO, Y_CONST, Y_CONST1, Y_WDT, Y_TASKS, Y_ERRORS, Y_ERRORS1, Y_LHISTOLD, Y_WEBSTAT, Y_SPI,
-	Y_ERRORS2, // Третья часть справочника ошибок
-	Y_ERROR_PARTS // Фактическое число частей справочника
+enum { Y_SOCKETS = 1, Y_WEBSOCKS, Y_SOCKRES, Y_OWPIN, Y_LSTATS, Y_LHIST, Y_FREERAM, Y_INFO, Y_CONST, Y_CONST1, Y_WDT, Y_TASKS, Y_LHISTOLD, Y_WEBSTAT, Y_SPI,
 };
 static const ApiParam apiSysTab[] = {
 	{ "sockets",    0, 0, 0, 0, 1, PT_CALL, PF_RO | PF_AR, MK_TABLE, Y_SOCKETS, 0 },    // состояние сокетов сетевого чипа
@@ -666,20 +664,11 @@ static const ApiParam apiSysTab[] = {
 	{ "const1", 0, 0, 0, 0, 1, PT_CALL, PF_RO | PF_AR, MK_TEXT, Y_CONST1, 0 },
 	{ "wdt",    0, 0, 0, 0, 1, PT_CALL, PF_RO | PF_AR, MK_TEXT, Y_WDT,    0 },     // запас наблюдателя задач
 	{ "tasks",  0, 0, 0, 0, 1, PT_CALL, PF_RO | PF_AR, MK_TEXT, Y_TASKS,  0 },     // задачи FreeRTOS, по строке на задачу
-	// Справочник делится на три части по API_ERR_PAGE записей с явными номерами.
-	{ "errors",  0, 0, 0, 0, 1, PT_CALL, PF_RO | PF_AR, MK_TABLE, Y_ERRORS,  0 },
-	{ "errors1", 0, 0, 0, 0, 1, PT_CALL, PF_RO | PF_AR, MK_TABLE, Y_ERRORS1, 0 },
-	{ "errors2", 0, 0, 0, 0, 1, PT_CALL, PF_RO | PF_AR, MK_TABLE, Y_ERRORS2, 0 },
-	{ "errors_parts", 0, 0, 0, 0, 1, PT_CALL, PF_RO | PF_AR, MK_INT, Y_ERROR_PARTS, 0 },
 	{ "webstat", 0, 0, 0, 0, 1, PT_CALL, PF_RO,         MK_TABLE, Y_WEBSTAT, 0 },    // метрики веб-сервера (WebShared.h), обнуляются действием reset.webstat
 	{ "spi",     0, 0, 0, 0, 1, PT_CALL, PF_RO,         MK_TABLE, Y_SPI,     0 },    // шина SPI: устройства, частоты, счётчики (вкладка «SPI&Web»), сброс - reset.spi
 };
 // Предельное число записей каталога на одну страницу API.
 static constexpr int API_ERR_PAGE = 24;
-// Число опубликованных частей справочника; увеличение требует добавить ключ API.
-static constexpr int API_ERR_PARTS = 3;
-static_assert(ErrorCatalog::kEntryCount <= API_ERR_PAGE * API_ERR_PARTS,
-              "Error catalog needs another API page");
 // Имена групп каталога в JSON, в порядке ErrorCatalog::Group.
 static const char *const apiErrorGroups[] = {"SENSORS", "CONTROL", "INVERTER", "MODBUS_POWER", "SETTINGS", "STORAGE_SYSTEM", "INFRASTRUCTURE", "STAGE_TWO"};
 // Имена разрешённых способов регистрации в JSON, в порядке ErrorCatalog::Registration.
@@ -688,22 +677,79 @@ static_assert(sizeof(apiErrorRegistration) / sizeof(apiErrorRegistration[0]) ==
               static_cast<uint8_t>(ErrorCatalog::Registration::LogOnly) + 1,
               "API registration names differ from ErrorCatalog::Registration");
 
-// Пишет в o выбранную часть каталога с явными номерами и метаданными.
-static void api_put_errors(ApiOut *o, uint8_t part)
+// Пишет в o одну запись entry каталога. Значение не возвращает.
+static void api_put_error(ApiOut *o, const ErrorCatalog::Entry &entry)
 {
-	const int from = part * API_ERR_PAGE;
-	const int to = from + API_ERR_PAGE;
-	api_putc(o, '[');
-	for(int i = from; i < to && i < ErrorCatalog::Count(); ++i) {
-		const auto &entry = *ErrorCatalog::At(i);
-		if(i != from) api_putc(o, ',');
-		api_put(o, "{\"code\":"); api_put_int(o, entry.code);
-		api_put(o, ",\"group\":"); api_put_str(o, apiErrorGroups[static_cast<uint8_t>(entry.group)]);
-		api_put(o, ",\"registration\":"); api_put_str(o, apiErrorRegistration[static_cast<uint8_t>(entry.registration)]);
-		api_put(o, ",\"description\":"); api_put_str(o, entry.description);
-		api_putc(o, '}');
+	api_put(o, "{\"code\":"); api_put_int(o, entry.code);
+	api_put(o, ",\"group\":"); api_put_str(o, apiErrorGroups[static_cast<uint8_t>(entry.group)]);
+	api_put(o, ",\"registration\":"); api_put_str(o, apiErrorRegistration[static_cast<uint8_t>(entry.registration)]);
+	api_put(o, ",\"description\":"); api_put_str(o, entry.description);
+	api_putc(o, '}');
+}
+
+struct ApiErrorQuery {
+	long offset = 0; // Индекс первой записи страницы.
+	long limit = API_ERR_PAGE; // Запрошенное число записей страницы.
+	long code = 0; // Отрицательный код для точечного поиска.
+	bool hasCode = false; // Запрошен точечный поиск вместо страницы.
+};
+
+// Разбирает offset/limit либо code из q. Возвращает false при неизвестном или неверном параметре.
+static bool api_parse_error_query(const char *q, ApiErrorQuery &out)
+{
+	bool hasOffset = false, hasLimit = false;
+	while(*q && !(q[0] == '&' && q[1] == '&')) {
+		const char *end = q;
+		while(*end && *end != '&') ++end;
+		const char *eq = q;
+		while(eq < end && *eq != '=') ++eq;
+		if(eq == end || eq + 1 == end) return false;
+		char *numberEnd = nullptr;
+		const long value = strtol(eq + 1, &numberEnd, 10);
+		if(numberEnd != end) return false;
+		const size_t nameLen = eq - q;
+		if(nameLen == 4 && strncmp(q, "code", 4) == 0) {
+			if(out.hasCode) return false;
+			out.code = value; out.hasCode = true;
+		} else if(nameLen == 6 && strncmp(q, "offset", 6) == 0) {
+			if(hasOffset) return false;
+			out.offset = value; hasOffset = true;
+		} else if(nameLen == 5 && strncmp(q, "limit", 5) == 0) {
+			if(hasLimit) return false;
+			out.limit = value; hasLimit = true;
+		} else return false;
+		q = *end ? end + 1 : end;
 	}
-	api_putc(o, ']');
+	if(out.hasCode) return !hasOffset && !hasLimit && out.code >= -128 && out.code < 0;
+	return out.offset >= 0 && out.limit > 0 && out.limit <= API_ERR_PAGE;
+}
+
+// Формирует страницу каталога или одну запись по code из запроса q. Возвращает статус API.
+static int api_errors(const char *q, ApiOut *o)
+{
+	ApiErrorQuery query;
+	if(!api_parse_error_query(q, query)) return -1;
+	api_put(o, "{\"total\":"); api_put_int(o, ErrorCatalog::Count());
+	if(query.hasCode) {
+		api_put(o, ",\"item\":");
+		const auto *entry = ErrorCatalog::Find(static_cast<ErrorCatalog::ErrCode>(query.code));
+		if(entry) api_put_error(o, *entry); else api_put(o, "null");
+		api_putc(o, '}');
+		return o->over ? -2 : 0;
+	}
+	const int total = ErrorCatalog::Count();
+	const int offset = query.offset < total ? static_cast<int>(query.offset) : total;
+	int count = total - offset;
+	if(count > query.limit) count = static_cast<int>(query.limit);
+	api_put(o, ",\"offset\":"); api_put_int(o, offset);
+	api_put(o, ",\"count\":"); api_put_int(o, count);
+	api_put(o, ",\"items\":[");
+	for(int i = 0; i < count; ++i) {
+		if(i) api_putc(o, ',');
+		api_put_error(o, *ErrorCatalog::At(offset + i));
+	}
+	api_put(o, "]}");
+	return o->over ? -2 : 0;
 }
 // Список файлов статистики или истории: годы от текущего вниз, пока файл существует (имя отдаётся с расширением csv, как раньше).
 // Карта годов ведёт Statistics (скан при старте + создание файлов): открытие файла SdFat в веб-задаче съедало почти весь её стек.
@@ -838,9 +884,6 @@ static int api_get_sys(uint8_t hook, uint8_t, ApiOut *o)
 	else if(hook == Y_LHIST) api_put_year_files(o, 1);
 	else if(hook == Y_LHISTOLD) api_put_year_files(o, 2);
 	else if(hook == Y_FREERAM) api_put_int(o, freeHeapReserve());
-	else if(hook == Y_ERRORS || hook == Y_ERRORS1) api_put_errors(o, hook - Y_ERRORS);
-	else if(hook == Y_ERRORS2) api_put_errors(o, 2);
-	else if(hook == Y_ERROR_PARTS) api_put_int(o, API_ERR_PARTS);
 	else if(hook >= Y_INFO && hook <= Y_TASKS) return api_sys_table(hook, o);
 	else if(hook == Y_OWPIN) {
 		char t[24]; t[0] = 0;
@@ -1638,6 +1681,7 @@ uint8_t api_dispatch(uint8_t thread)
 	else if(vl == 2 && !strncmp(path, "do", 2)) r = api_do(&c, q, &o);
 	else if(vl == 4 && !strncmp(path, "meta", 4)) r = api_meta(&c, q, &o);
 	else if(vl == 5 && !strncmp(path, "chart", 5)) r = api_chart(q, &o);
+	else if(vl == 6 && !strncmp(path, "errors", 6)) r = api_errors(q, &o);
 	else if(vl == 3 && !strncmp(path, "ver", 3)) { api_ver(&c, &o); r = o.over ? -2 : 0; }
 
 	if(r == -1) return api_reply_small(thread, "400 Bad Request", "{\"e\":\"bad_request\"}");

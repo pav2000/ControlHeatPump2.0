@@ -48,8 +48,6 @@
 #define PRINTF_BUF 256                           // размер буфера для одной строки - большая длина нужна при отправке уведомлений, там длинные строки (видел 178)
 
 #include "../net/Network.h"   // sendPacketRTOS и прочий транспорт
-STRCONST(MessageLongString,  "Jornal: Input string too long, skip string!");  
-STRCONST(promtUser,  "> ");   
 
 class Journal :public Print
 {

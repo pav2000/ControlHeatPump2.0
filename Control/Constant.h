@@ -44,6 +44,7 @@
  * ПРО sizeof. Размер массива берётся из литерала: объявление получается с ПОЛНЫМ типом,
  * sizeof(X) работает во всех единицах, а расхождение объявления и определения ловит компилятор.
  */
+
 #ifdef CONFIG_DEFINE_OBJECTS
 #define STRCONST(name, value) extern const char name[sizeof(value)]; const char name[sizeof(value)] = value
 #else
@@ -51,7 +52,7 @@
 #endif
 
 // ---- ОПЦИИ КОМПИЛЯЦИИ ПРОЕКТА ----
-#define VERSION			"2.39" // График нагнетания и конденсации при отсутствии PCON
+#define VERSION			"2.40" // График нагнетания и конденсации при отсутствии PCON
 // Версия формата, которой прошивка ПИШЕТ настройки в I2C память.
 // Должна совпадать с версией каркаса, которым пишутся настройки (150): иначе Option.ver по
 // умолчанию неверен, первое сохранение на чистом контроллере печатает
@@ -584,7 +585,6 @@ STRCONST(cYes, "Да");
 STRCONST(cNo, "Нет");
 STRCONST(cOne, "1");
 STRCONST(cZero, "0");
-STRCONST(cOk, "Ok");
 STRCONST(cError, "error");
 STRCONST(cInvalid, "invalid");
 STRCONST(cStrEnd, "\n");
@@ -930,18 +930,6 @@ STRCONST(ip_SENSOR, "SENSOR");           // ------------------------------------
 
 // Названия типы фреонов
 static const char * const noteFreon[] =   {"R22","R410A","R600","R134a","R407C","R12","R290","R404A","R717"};
-// Названия правил работы ЭРВ для веба
-const char noteRuleEEV[]   =	"TEVAOUT-T[PEVA]:0;"
-	#ifdef TCOMPIN
-								"TCOMPIN-T[PEVA]:0;"
-		#ifdef TEVAIN
-								"TEVAOUT-TEVAIN:0;"
-								"TCOMPIN-TEVAIN:0;"
-								"TABLE[EVA,CON]:0;"
-		#endif
-	#endif
-								"MANUAL:0;";
-
 // Описание правила работы ЭРВ
 static const char * const noteRemarkEEV[] = {	"Перегрев равен: температура на выходе испарителя - температура по давлению на выходе испарителя.",
 #ifdef TCOMPIN

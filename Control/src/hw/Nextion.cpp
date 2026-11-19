@@ -33,7 +33,6 @@ static const char _NO_8859[] = { "\xBD\xB5\xC2" };   // НЕТ
 static const char _HP_OFF_8859[] = { "\xc2\xbd\x20\xd2\xeb\xda\xdb\xee\xe7\xd5\xdd\x0d\x0a" }; // ТН выключен
 static const char _xB0[] = { "\xB0" }; // °
 #define COMM_END_B 0xFF
-static const char comm_end[3] = { COMM_END_B, COMM_END_B, COMM_END_B };
 
 #define NXTID_PAGE_MAIN		0x00
 #define NXTID_PAGE_MENU		0x01

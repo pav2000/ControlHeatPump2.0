@@ -19,9 +19,9 @@
 #include "Arduino.h"
 #include "Constant.h"                       // Должен быть первым !!!! кое что берется в стандартных либах для настройки либ, Config.h входит в него
 
-#include <WireSam.h>                        // vad711 доработанная библиотека https://github.com/vad7/Arduino-DUE-WireSam
-#include <DS3232.h>                         // vad711 Работа с часами i2c - используются при выключении питания. модифицированная https://github.com/vad7/Arduino-DUE-WireSam
-#include <extEEPROM.h>                      // vad711 Работа с eeprom и fram i2c библиотека доработана для DUE!!! https://github.com/vad7/Arduino-DUE-WireSam
+#include <WireSam.h>                        // Доработанная библиотека
+#include <DS3232.h>                         // Работа с часами i2c - используются при выключении питания, модифицированная и исправленная
+#include <extEEPROM.h>                      // Работа с eeprom и fram i2c библиотека доработана для DUE!!
 
 #include <SPI.h>                            // SPI - стандартная
 #include "SdFat.h"                          // SdFat - модифицированная
@@ -50,8 +50,8 @@ void vUpdateStepperEEV(void *);
 #include "src/hw/StepMotor.h"
 #include "src/net/Network.h"
 #include "src/hw/Clock.h"                   // транспорт и переключатели SPI
-#include "src/core/Rtos.h"                      // обёртки FreeRTOS: _delay, SemaphoreTake/Give
-#include "src/net/WebShared.h"                 // объявление буферов веб-потоков (Socket[])
+#include "src/core/Rtos.h"                  // обёртки FreeRTOS: _delay, SemaphoreTake/Give
+#include "src/net/WebShared.h"              // объявление буферов веб-потоков (Socket[])
 
 // ---------------------------------------------------------------------------
 // Контроль раскладки сохраняемых в EEPROM структур.
@@ -741,7 +741,7 @@ x_I2C_init_std_message:
 	journal.jprintf("2. Init %s main class . . .\n",(char*)nameHeatPump);
 	HP.initHeatPump();                           // Основной класс
 	// Ошибку поднимаем ТОЛЬКО здесь: raise_Error пишет в HP, а initHeatPump выше
-	// обнуляет HP.error - поднятая раньше пропала бы. Ошибка нужна, чтобы
+	// очищает активную ошибку HP - поднятая раньше пропала бы. Ошибка нужна, чтобы
 	// расхождение было видно в морде и в get_error, а не только в журнале.
 	// Второй случай (чип больше объявленного) ошибкой не считается: всё
 	// работает, просто половина микросхемы простаивает.
@@ -937,7 +937,7 @@ x_I2C_init_std_message:
 	if(HP.get_HP_ON()>0) {                           // если надо запустить ТН - отложенный старт
 		if(Boot_NoAutoStart(boot)) {
 			journal.jprintf("$Delayed start canceled: %d abnormal resets in a row\n", boot.resets);
-			// Поле ошибки занимает первая (Error_Claim), а при старте его часто уже заняла ошибка инициализации
+			// Состояние активной аварии занимает первая причина, а при старте его часто уже заняла ошибка инициализации
 			// (на стенде -39 «инвертор не найден»): причину отмены не было бы видно в морде. Она важнее - вытесняем.
 			// Планировщик ещё не запущен, прямая запись безопасна; прежняя ошибка осталась в журнале.
 			HP.drop_error_at_boot();

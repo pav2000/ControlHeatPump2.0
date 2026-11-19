@@ -80,11 +80,11 @@ bool HeatPump::compressor_emergency_off()
 void HeatPump::copy_errorInfo(ErrorEventInfo &info, char *text) const
 {
 	const uint32_t irq = irqSave();
-	info.code = error;
-	info.detail = info.code ? activeErrorDetail : ErrorDetail{};
+	info.code = activeError.code;
+	info.detail = info.code ? activeError.detail : ErrorDetail{};
 	if(info.code) {
-		memcpy(info.source, source_error, sizeof(info.source));
-		if(text) memcpy(text, note_error, sizeof(note_error));
+		memcpy(info.source, activeError.source, sizeof(info.source));
+		if(text) memcpy(text, activeError.text, sizeof(activeError.text));
 	} else {
 		info.source[0] = 0;
 		if(text) text[0] = 0;
@@ -252,13 +252,22 @@ SAFETY_WHY HeatPump::safety_check(SAFETY_OUT out, bool on, const char *name, con
 // Возвращает false при отказе команды инвертору и запрещает автоматический повторный пуск.
 bool HeatPump::stopForError()
 {
-	if(!is_compressor_on()) return !emergencyStopCommandFailed;
+	if(!is_compressor_on()) {
+		const uint32_t irq = irqSave();
+		const bool stopped = !activeError.stopFailed;
+		irqRestore(irq);
+		return stopped;
+	}
 	if(compressor_emergency_off()) {
 		set_stopCompressor();
-		emergencyStopCommandFailed = false;
+		const uint32_t irq = irqSave();
+		activeError.stopFailed = false;
+		irqRestore(irq);
 		return true;
 	}
-	emergencyStopCommandFailed = true;
+	const uint32_t irq = irqSave();
+	activeError.stopFailed = true;
+	irqRestore(irq);
 	log_Event(ErrorCatalog::Code::kCOMP_NO_STOP, driveDevice, {},
 	          "Команда аварийного останова не подтверждена");
 	return false;
@@ -269,7 +278,7 @@ void HeatPump::log_Event(ErrorCatalog::Code code, const char *device, ErrorDetai
 {
 	const auto *entry = ErrorCatalog::Find(code);
 	if(!entry) return;
-	char line[sizeof(note_error)];
+	char line[sizeof(activeError.text)];
 	formatEvent(line, sizeof(line), EventLevel::Warning, entry, nullptr, device, detail, meaning);
 	journal.jprintf_time("%s\n", line);
 }
@@ -277,7 +286,7 @@ void HeatPump::log_Event(ErrorCatalog::Code code, const char *device, ErrorDetai
 // Пишет служебное событие source от устройства device с пояснением text.
 void HeatPump::log_Event(const char *source, const char *device, const char *text)
 {
-	char line[sizeof(note_error)];
+	char line[sizeof(activeError.text)];
 	formatEvent(line, sizeof(line), EventLevel::Event, nullptr, source, device, {}, text);
 	journal.jprintf_time("%s\n", line);
 }
@@ -311,9 +320,9 @@ void HeatPump::record_StoppedError(ErrorCatalog::Code code, const char *device,
 {
 	if(code == ErrorCatalog::Code::kOK) return;
 
-	char source[sizeof(source_error)]{};
-	char note[sizeof(note_error)]{};
-	char operatorText[sizeof(note_error)]{};
+	char source[sizeof(activeError.source)]{};
+	char note[sizeof(activeError.text)]{};
+	char operatorText[sizeof(activeError.text)]{};
 	const auto *entry = ErrorCatalog::Find(code);
 	if(!entry) {
 		code = ErrorCatalog::Code::kCONFIG;
@@ -325,16 +334,17 @@ void HeatPump::record_StoppedError(ErrorCatalog::Code code, const char *device,
 	formatEvent(note, sizeof(note), EventLevel::Error, entry, nullptr, source, detail, meaning,
 	            operatorText, sizeof(operatorText));
 	const uint32_t irq = irqSave();
-	const bool first = Error_Claim(&error, ErrorNumber(code));
-	const bool duplicate = !first && error == ErrorNumber(code) &&
-	                       strcmp(source_error, source) == 0 &&
-	                       activeErrorDetail.kind == detail.kind &&
-	                       activeErrorDetail.value == detail.value &&
-	                       activeErrorDetail.state == detail.state;
+	const bool first = activeError.code == OK;
+	const bool duplicate = !first && activeError.code == ErrorNumber(code) &&
+	                       strcmp(activeError.source, source) == 0 &&
+	                       activeError.detail.kind == detail.kind &&
+	                       activeError.detail.value == detail.value &&
+	                       activeError.detail.state == detail.state;
 	if(first) {
-		activeErrorDetail = detail;
-		memcpy(source_error, source, sizeof(source_error));
-		memcpy(note_error, operatorText, sizeof(note_error));
+		activeError.code = ErrorNumber(code);
+		activeError.detail = detail;
+		memcpy(activeError.source, source, sizeof(activeError.source));
+		memcpy(activeError.text, operatorText, sizeof(activeError.text));
 	}
 	irqRestore(irq);
 	if(duplicate) return;
@@ -349,7 +359,7 @@ void HeatPump::record_StoppedError(ErrorCatalog::Code code, const char *device,
 	WarningRecord key{ErrorNumber(code), detail.value, 0, {}, detail};
 	strncpy(key.device, source, sizeof(key.device) - 1);
 	const uint32_t subject = key.Subject() ^ ((uint32_t)detail.kind << 16) ^ detail.state;
-	char messageText[sizeof(note_error)]{};
+	char messageText[sizeof(activeError.text)]{};
 	m_snprintf(messageText, sizeof(messageText), "%d %s", (int)ErrorNumber(code), operatorText);
 	ErrorTrimUtf8(messageText);
 	message.setMessage(pMESSAGE_ERROR, messageText, ErrorNumber(code), subject);
@@ -359,18 +369,22 @@ void HeatPump::record_StoppedError(ErrorCatalog::Code code, const char *device,
 void HeatPump::process_error(void)
 {
 	if(get_State() == pOFF_HP) return;   // Насос выключен, выключать нечего
+	const uint32_t irq = irqSave();
+	const bool stopFailed = activeError.stopFailed;
+	const int8_t code = activeError.code;
+	irqRestore(irq);
 
 	// Решение принимает ControlPolicy, каталог хранит расшифровку кодов.
 	// Режим "не перезапускать после
 	// критических ошибок" приходит параметром, а не через препроцессор:
 	// иначе его ветка не собирается и не проверяется ничем.
-	ERROR_ACTION act = Error_Decide(emergencyStopCommandFailed, get_nStart(), num_repeat,
+	ERROR_ACTION act = Error_Decide(stopFailed, get_nStart(), num_repeat,
 #ifdef NOT_RESTART_ON_CRITICAL_ERRORS
 	                                true,
 #else
 	                                false,
 #endif
-	                                error);
+	                                code);
 	if(act == ERR_ACT_Repeat) sendCommand(pREPEAT);     // Повторный пуск ТН
 	else if(act == ERR_ACT_Stop) sendCommand(pSTOP);    // Останов без попыток пуска
 
@@ -430,11 +444,7 @@ void HeatPump::initHeatPump()
 void HeatPump::eraseError()
 {
 	const uint32_t irq = irqSave();
-	strcpy(note_error, "OK");
-	source_error[0] = '\0';
-	activeErrorDetail = {};
-	error = OK;
-	emergencyStopCommandFailed = false;
+	ActiveErrorClear(activeError);
 	irqRestore(irq);
 }
 
@@ -1748,7 +1758,7 @@ void HeatPump::vUpdate()
 
 	Status.modWork = EvaluateWorkMode();                                         // определяем что делаем
 	if(DBG_ON(DBG_DUMP)) { save_DumpJournal(true); }                          // Вывод строки состояния
-	if(error) return;
+	if(activeError.code) return;
 	//  реализуем требуемый режим
 	if(Status.modWork == pOFF) {
 		if(is_compressor_on()) {  // ЕСЛИ компрессор работает, то выключить компрессор,и затем сконфигурировать 3 и 4-х клапаны и включаем насосы
@@ -1803,7 +1813,7 @@ MODE_HP HeatPump::EvaluateWorkMode()
 	}
 
 	if(DBG_ON(DBG_MODW)) { journal.jprintf(" EvaluateWorkMode-Boiler: %s(%s), ret=%X, onBoiler=%d, flagRBOILER=%d\n", Ret_Text(Status.ret), Ret_Text(Status.prev), ret, onBoiler, flagRBOILER); }
-	if(((get_modeHouse() == pOFF) && (ret == pOFF)) || error) return ret; // режим ДОМА выключен (т.е. запрещено отопление или охлаждение дома) И бойлер надо выключить, то выходим с сигналом pOFF (переводим ТН в паузу)
+	if(((get_modeHouse() == pOFF) && (ret == pOFF)) || activeError.code) return ret; // режим ДОМА выключен (т.е. запрещено отопление или охлаждение дома) И бойлер надо выключить, то выходим с сигналом pOFF (переводим ТН в паузу)
 	if((ret & pBOILER)) return ret; // работает бойлер больше ничего анализировать не надо выход
 
 	// 3. Отопление/охлаждение
@@ -2042,7 +2052,7 @@ bool HeatPump::pressureAllowsStart()
 const char *EEV_go={" EEV go "};  // экономим место
 void HeatPump::compressorON()
 {
-	if(get_State() == pOFF_HP || get_State() == pSTOPING_HP || error) return;  // ТН выключен или выключается выходим ничего не делаем!!!
+	if(get_State() == pOFF_HP || get_State() == pSTOPING_HP || activeError.code) return;  // ТН выключен или выключается выходим ничего не делаем!!!
 
 	if(is_compressor_on()) return;                                  // Компрессор уже работает
 	if((get_modWork() & pBOILER) && boilerHeatBlocked()) return;
@@ -2054,7 +2064,7 @@ void HeatPump::compressorON()
 
 	const int8_t reset = ResetFC();
 	if(reset != OK) {
-		if(error == OK) raise_Error(static_cast<ErrorCatalog::Code>(reset), driveDevice);
+		if(activeError.code == OK) raise_Error(static_cast<ErrorCatalog::Code>(reset), driveDevice);
 		return;
 	}
 
@@ -2140,7 +2150,7 @@ void HeatPump::compressorON()
 			// на стартовую позицию ниже это 90 с из предела 120 с уже на
 			// заводских настройках. Отмечаемся на каждой секунде.
 			Watchdog_SleepHere(1000);
-			if(error || is_next_command_stop()) return; // прерваться по ошибке, еще бы проверить команду на останов...
+			if(activeError.code || is_next_command_stop()) return; // прерваться по ошибке, еще бы проверить команду на останов...
 		}
 
 #ifdef FLOW_CONTROL      // если надо проверяем потоки (защита от отказа насосов) MIN_FLOW
@@ -2170,13 +2180,13 @@ void HeatPump::compressorON()
 		if(dFC.get_present()) safety_check(SAFE_COMP, true, dFC.get_name(), "Modbus");   // инвертор пускается по шине, мимо реле RCOMP
 #endif
 		const bool boilerStart = (get_modWork() & pBOILER) != 0;
-		if(error || !pressureAllowsStart() || (boilerStart && boilerHeatBlocked())) return;
+		if(activeError.code || !pressureAllowsStart() || (boilerStart && boilerHeatBlocked())) return;
 	  	COMPRESSOR_ON;                                      // Включить компрессор
 		if(boilerStart && boilerHeatBlocked()) {
 			stopForError();
 			return;
 		}
-		if(error || dFC.get_err()) return; // Ошибка - выходим
+		if(activeError.code || dFC.get_err()) return; // Ошибка - выходим
 	} else { // if (get_errcode()==OK)
 		journal.jprintf(" EEV not set before start compressor!\n");
 		raise_Error(ErrorCatalog::Code::kCOMP_START_BLOCKED, "EEV", {},
@@ -2352,7 +2362,7 @@ void HeatPump::defrost()
 		  if(w >= DEFROST_WAIT_MAX / 10) { defrostTimeout = "Истекло ожидание конца разморозки горячим газом"; break; }
 		  Watchdog_SleepHere(10*1000);                                                      // Задержка на 10 сек
 		  journal.jprintf(" Wait process HEAT GAS defrost . . .\n");
-		  if (error ||(get_State() == pOFF_HP) || (get_State() == pSTARTING_HP) || (get_State() == pSTOPING_HP)) break; // ТН выключен или включается или выключается выходим из разморозки
+		  if (activeError.code ||(get_State() == pOFF_HP) || (get_State() == pSTARTING_HP) || (get_State() == pSTOPING_HP)) break; // ТН выключен или включается или выключается выходим из разморозки
 		}
 #endif // #ifdef SFROZEN 
     // Завершение
