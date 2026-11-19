@@ -60,7 +60,7 @@ function testPoll(d) {
 	if('state.work' in d) { working = d['state.work']; drawModes(); lock(); }
 	if('test.mode' in d) { cur = d['test.mode']; drawModes(); }
 	if('test.remark' in d) put('remark', stEsc(d['test.remark']));
-	if('state.error' in d) { var v = d['state.error']; put('err', v == 'OK' ? '<b class="okc">OK</b>' : '<b class="errc">' + stEsc(v) + '</b>'); }
+	if('state.error' in d) { var v = d['state.error'], c = parseInt(d['state.errcode'] || 0); put('err', !c ? '<b class="okc">OK</b>' : '<b class="errc">' + c + ' ' + stEsc(v) + '</b>'); }
 	if('eev.pospp' in d) put('eev-pos', d['eev.pospp']);
 	if('fc.cfc' in d) put('fc-cur', num(d['fc.cfc'], 1));
 	if('fc.info1' in d) put('fc-pw', d['fc.info1']);
@@ -119,7 +119,7 @@ window.onload = function() {
 		$('rows').innerHTML = list.map(relayRow).join('');
 		stLoadK();
 		lock();
-		api.poll({k: ['state.work', 'test.mode', 'test.remark', 'state.error', 'eev.pospp', 'fc.cfc', 'fc.info1', 'fc.on_off'].concat(stDevKeys('relay', list, ['on']))}, testPoll);
+		api.poll({k: ['state.work', 'test.mode', 'test.remark', 'state.errcode', 'state.error', 'eev.pospp', 'fc.cfc', 'fc.info1', 'fc.on_off'].concat(stDevKeys('relay', list, ['on']))}, testPoll);
 	});
 	api.get({k: ['fc.on_off', 'fc.name', 'fc.fc', 'eev.pins', 'eev.pos', 'eev.posp']}, function(D) {
 		if('fc.on_off' in D) $('get_pfc-on_off').checked = D['fc.on_off'] === true;

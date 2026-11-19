@@ -222,9 +222,9 @@ xErr:
 	{
 		if(group == 0 || group == 1) updateLinkEvent(exchange);
 #ifdef SDM_MAX_VOLTAGE
-		if((settingSDM.maxVoltage>1)&&(settingSDM.maxVoltage< Voltage)) {err=ErrorNumber(ErrorCatalog::Code::kPOWER_VOLTAGE_HIGH);set_Error(ErrorCatalog::Code::kPOWER_VOLTAGE_HIGH,name);return err; }       // Контроль входного напряжения
+		if((settingSDM.maxVoltage>1)&&(settingSDM.maxVoltage< Voltage)) {err=ErrorNumber(ErrorCatalog::Code::kPOWER_VOLTAGE_HIGH);HP.raise_Error(ErrorCatalog::Code::kPOWER_VOLTAGE_HIGH,name);return err; }       // Контроль входного напряжения
 #endif
-		if ((settingSDM.maxPower>1)&&(settingSDM.maxPower< AcPower))     {err=ErrorNumber(ErrorCatalog::Code::kPOWER_HIGH);set_Error(ErrorCatalog::Code::kPOWER_HIGH,name);return err; }         // Контроль мощности потребления
+		if ((settingSDM.maxPower>1)&&(settingSDM.maxPower< AcPower))     {err=ErrorNumber(ErrorCatalog::Code::kPOWER_HIGH);HP.raise_Error(ErrorCatalog::Code::kPOWER_HIGH,name);return err; }         // Контроль мощности потребления
 #ifdef SDM_MIN_VOLTAGE
 		if(group == 1) {
 			const bool low = settingSDM.minVoltage > 1 && Voltage < settingSDM.minVoltage;

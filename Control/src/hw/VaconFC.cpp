@@ -32,7 +32,7 @@
  * оно окажется ложным и файл выпадет целиком - так уже случилось с MQTT.cpp.
  */
 #include "VaconFC.h"
-#include "../core/HeatPump.h"     // HP, set_Error
+#include "../core/HeatPump.h"     // HP и публикация аварий инвертора
 #include "Hardware.h"     // Modbus: чтение и запись регистров
 #include "../log/Journal.h"      // journal
 #include "../core/Rtos.h"         // _delay, замки шин
@@ -295,10 +295,10 @@ int8_t devVaconFC::get_readState()
 				HP.stopForError();
 				const uint16_t fault = HP.get_errcode() == OK ? readActiveFault() : 0;
 				err = fault ? ErrorNumber(ErrorCatalog::Code::kINVERTER_FAULT) : ErrorNumber(ErrorCatalog::Code::kFC_TRIP);
-				if(fault) HP.record_Error(ErrorCatalog::Code::kINVERTER_FAULT, "VACON",
+				if(fault) HP.record_StoppedError(ErrorCatalog::Code::kINVERTER_FAULT, "VACON",
 				                             {ErrorDetailKind::Fault, fault, 0},
 				                             fault <= UINT8_MAX ? get_fault_str(fault) : nullptr);
-				else HP.record_Error(ErrorCatalog::Code::kFC_TRIP, "VACON", {});
+				else HP.record_StoppedError(ErrorCatalog::Code::kFC_TRIP, "VACON", {});
 				return err;
 			}
 			if(get_startTime() && Uptime_s() - get_startTime() > FC_ACCEL_TIME / 100 &&

@@ -26,7 +26,7 @@
 #include "SensorTemp.h"
 #include "../core/SettingsLegacy.h"   // чтение старых форматов, файл к удалению
 #include "Hardware.h"      // rtcSAM3X8, addressToHex
-#include "../core/HeatPump.h"      // HP, set_Error
+#include "../core/HeatPump.h"      // HP и единый аварийный путь raise_Error
 #include "../log/Journal.h"       // journal
 #include "../core/Rtos.h"          // _delay, замки шин
 #include "../net/ParamRegistry.h"   // таблица параметров веб-API (внизу файла)
@@ -103,7 +103,7 @@ int8_t sensorTemp::Read(bool *freshLocal)
 		if(!(GETBIT(flags,fAddress))) { // Адрес не установлен
 			if(cfg.number == TCOMP) { // эти датчики должны быть привязаны
 				err = ErrorNumber(ErrorCatalog::Code::kSENSOR_MISSING);
-				set_Error(ErrorCatalog::Code::kSENSOR_MISSING, name);
+				HP.raise_Error(ErrorCatalog::Code::kSENSOR_MISSING, name);
 				return err;
 			} else if(cfg.number == TIN) return OK; // Этот может получать значения от других датчиков
 			else {
@@ -174,7 +174,7 @@ int8_t sensorTemp::Read(bool *freshLocal)
   #endif
 
 	// Проверка на ошибки именно здесь обрабатывются ошибки и передаются на верх
-	if(Temp<minTemp) { err = ErrorNumber(ErrorCatalog::Code::kTEMP_MIN); set_Error(ErrorCatalog::Code::kTEMP_MIN, name); return err; }
+	if(Temp<minTemp) { err = ErrorNumber(ErrorCatalog::Code::kTEMP_MIN); HP.raise_Error(ErrorCatalog::Code::kTEMP_MIN, name); return err; }
 	const int16_t limit = maxTemp;
 	if(cfg.number == TBOILER) {
 #ifdef DEMO
@@ -183,7 +183,7 @@ int8_t sensorTemp::Read(bool *freshLocal)
 		HP.observeBoilerTemperature(Temp, limit, accepted);
 #endif
 	}
-	if(Temp>limit) { err = ErrorNumber(ErrorCatalog::Code::kTEMP_MAX); set_Error(ErrorCatalog::Code::kTEMP_MAX, name); return err; }
+	if(Temp>limit) { err = ErrorNumber(ErrorCatalog::Code::kTEMP_MAX); HP.raise_Error(ErrorCatalog::Code::kTEMP_MAX, name); return err; }
 #ifdef DEMO
 	accepted = testMode != NORMAL;
 #endif

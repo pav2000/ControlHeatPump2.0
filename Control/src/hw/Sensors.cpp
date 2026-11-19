@@ -147,7 +147,7 @@ void sensorADC::initSensorADC(uint8_t sensor, uint8_t pinA, uint16_t filter_size
 	else adc_filter_max = 1;
 	adc_filter = (uint16_t*) malloc(sizeof(uint16_t) * adc_filter_max);
 	if(adc_filter == NULL) {   // ОШИБКА если память не выделена
-		set_Error(ErrorCatalog::Code::kMEMORY, (char*) "sensorADC");
+		HP.raise_Error(ErrorCatalog::Code::kMEMORY, "sensorADC");
 		return;
 	}
 	memset(adc_filter, 0, sizeof(uint16_t) * adc_filter_max);
@@ -247,12 +247,12 @@ void sensorADC::initSensorADC(uint8_t sensor, uint8_t pinA, uint16_t filter_size
 	 // Проверка на ошибки именно здесь обрабатывются ошибки и передаются на верх
 	 if(Value < cfg.minValue) {
 		 err = ErrorNumber(ErrorCatalog::Code::kPRESS_RANGE_LOW);
-		 set_Error(ErrorCatalog::Code::kPRESS_RANGE_LOW, name);
+		 HP.raise_Error(ErrorCatalog::Code::kPRESS_RANGE_LOW, name);
 		 return err;
 	 }
 	 if(Value > cfg.maxValue) {
 		 err = ErrorNumber(ErrorCatalog::Code::kPRESS_RANGE_HIGH);
-		 set_Error(ErrorCatalog::Code::kPRESS_RANGE_HIGH, name);
+		 HP.raise_Error(ErrorCatalog::Code::kPRESS_RANGE_HIGH, name);
 		 return err;
 	 }
 	 // Дошли до сюда значит ошибок нет
@@ -352,7 +352,7 @@ int8_t sensorDigitalInput::Read(boolean fast)
 	if(type == pALARM && Input == cfg.alarmInput)     // Срабатывание аварийного датчика (только его!)
 	{
 		err = ErrorNumber(ErrorCatalog::Code::kDINPUT_ALARM);
-		set_Error(ErrorCatalog::Code::kDINPUT_ALARM, name);
+		HP.raise_Error(ErrorCatalog::Code::kDINPUT_ALARM, name);
 	}
 	return err;
 }

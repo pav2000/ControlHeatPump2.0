@@ -67,7 +67,7 @@ INIT_STOP Error_InitStopWait(bool stopped, bool lost, uint32_t elapsed_ms, uint3
 // Аварии ядра FreeRTOS (errorBlink: assert, нехватка памяти, переполнение стека, HardFault и т.п.): аварийный хук
 // (vApplicationFaultHook, Board.cpp) выключает все реле и перезагружает контроллер. Счёт перезагрузок подряд - Boot_Decide (Watchdog.h).
 // Уровень ноги, выключающий реле, - тот же, что ставят devRelay::initRelay и set_Relay(выкл).
-// Флаги сборки передаются параметрами: ErrorCodes не видит Config.h.
+// Флаги сборки передаются параметрами: ControlPolicy не включает Config.h.
 bool     Fault_RelayOffLevel(bool relay_invert, bool r4way_invert, bool is_r4way);
 
 // ---- Сторож сетевого чипа W5500 ----
@@ -154,7 +154,6 @@ bool   Error_LinkLost(uint8_t fails, uint32_t since_ms, bool running,
 
 // Что делать после критической ошибки
 enum ERROR_ACTION : uint8_t {
-	ERR_ACT_Nothing,   // насос и так выключен - выключать нечего
 	ERR_ACT_Stop,      // останов без попыток пуска
 	ERR_ACT_Repeat,    // повторный пуск
 };
@@ -165,13 +164,13 @@ enum ERROR_ACTION : uint8_t {
  * Режим приходит параметром, и обе ветки проходят тест: при сборке по умолчанию он
  * выключен и не собирается, поэтому через #ifdef проверить его было бы негде.
  *
- * hp_off      - насос уже выключен
+ * stop_command_failed - команда аварийного останова не принята приводом
  * nStart      - разрешённое число повторных пусков, 0 - повторов нет
  * num_repeat  - сколько повторов уже сделано
  * no_restart  - включён режим NOT_RESTART_ON_CRITICAL_ERRORS
  * err         - код ошибки
  */
-ERROR_ACTION Error_Decide(bool hp_off, uint8_t nStart, uint8_t num_repeat,
+ERROR_ACTION Error_Decide(bool stop_command_failed, uint8_t nStart, uint8_t num_repeat,
                           bool no_restart, int8_t err);
 
 // Перечисляемый тип - точка возврата из алгоритма управления (расшифровка состояния)
@@ -334,7 +333,7 @@ const char *Ret_Text(uint8_t ret);
  * Занять поле кода ошибки. Возвращает true, если код записал именно этот вызов (поле было OK),
  * и false, если ошибка уже стоит - тогда первая остаётся, а повторная только игнорируется.
  *
- * ЗАЧЕМ ОТДЕЛЬНО. set_Error зовут из ReadSensor, UpdateHP, UpdateEEV, CommandHP и веб-потоков, а
+ * ЗАЧЕМ ОТДЕЛЬНО. raise_Error зовут из ReadSensor, UpdateHP, UpdateEEV, CommandHP и веб-потоков, а
  * прежнее "if(error == OK) { error = code; ... }" - проверка и запись двумя действиями. Задача
  * с более высоким приоритетом успевала вклиниться между ними: обе видели OK, обе писали
  * source_error/note_error (рваная строка из двух ошибок) и обе звали process_error (двойной

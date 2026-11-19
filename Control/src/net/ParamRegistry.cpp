@@ -49,7 +49,7 @@ void api_put_event_detail(ApiOut *o, int8_t code, const char *source, ErrorDetai
 	if(kind) {
 		api_put(o, ",\"kind\":"); api_put_str(o, kind);
 		api_put(o, ",\"code\":"); api_put_int(o, ErrorDetailValue(detail));
-		if(detail.kind == ErrorDetailKind::Fault && strcmp(source, "OMRON") == 0) {
+		if(detail.kind == ErrorDetailKind::OmronFault) {
 			api_put(o, ",\"status\":"); api_put_int(o, detail.state);
 		}
 	}

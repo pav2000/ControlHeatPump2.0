@@ -420,6 +420,11 @@ static const char *mqtt_topic_name(const Mqtt_item &it, uint8_t n)
 static MqttResult mqtt_send_error(bool debug, bool close)
 {
 	const auto event = HP.get_errorInfo();
+	const bool hasDetail = event.code != 0 && event.detail.kind != ErrorDetailKind::None;
+	itoa(event.code, HP.clMQTT.temp, 10);
+	const auto result = HP.clMQTT.sendTopic(false, debug, close && !hasDetail);
+	if(result != MqttResult::Ok || !hasDetail) return result;
+
 	// После temp[16] свободен хвост выходного буфера MAIN_WEB_TASK.
 	char *payload = HP.clMQTT.temp + 16;
 	ApiOut out;
@@ -427,10 +432,7 @@ static MqttResult mqtt_send_error(bool debug, bool close)
 	api_put(&out, "{\"event\":"); api_put_int(&out, event.code);
 	api_put(&out, ",\"detail\":"); api_put_event_detail(&out, event.code, event.source, event.detail);
 	api_putc(&out, '}');
-	itoa(event.code, HP.clMQTT.temp, 10);
 	if(out.over) return MqttResult::Skipped;
-	const auto result = HP.clMQTT.sendTopic(false, debug, false);
-	if(result != MqttResult::Ok) return result;
 	strcpy(HP.clMQTT.topic, HP.clMQTT.root);
 	strcat(HP.clMQTT.topic, "ERROR_DETAIL");
 	return HP.clMQTT.sendTopic(false, debug, close, payload);

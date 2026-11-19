@@ -28,7 +28,7 @@
  * уход в не ту ветку означал бы молча отключённую телеметрию.
  */
 #include "MQTT.h"
-#include "../core/HeatPump.h"     // HP, set_Error
+#include "../core/HeatPump.h"     // HP и единый аварийный путь raise_Error
 #include "../hw/Hardware.h"     // readEEPROM_I2C / writeEEPROM_I2C, IPAddress2String
 #include "../log/Journal.h"      // journal
 #include "Network.h"      // сеть: initW5200, linkStatusWiznet, zeroIP
@@ -155,16 +155,17 @@ boolean clientMQTT::dnsUpdate()
 	return ret;
 }
 
-// Записать настройки в eeprom i2c на входе адрес с какого, на выходе конечный адрес, число меньше 0 это код ошибки
+// Записывает настройки MQTT с адреса adr. Возвращает следующий адрес или код ошибки.
 int32_t clientMQTT::save(int32_t adr)
 {
- if (writeEEPROM_I2C(adr, (byte*)&mqttSettintg, sizeof(mqttSettintg))) { set_Error(ErrorCatalog::Code::kSETTINGS_WRITE,(char*)nameHeatPump); return ErrorNumber(ErrorCatalog::Code::kSETTINGS_WRITE);}  adr=adr+sizeof(mqttSettintg);           // записать параметры MQTT
+ if (writeEEPROM_I2C(adr, (byte*)&mqttSettintg, sizeof(mqttSettintg))) return ErrorNumber(ErrorCatalog::Code::kSETTINGS_WRITE);
+ adr=adr+sizeof(mqttSettintg);           // записать параметры MQTT
  return adr;
 }
 // Считать настройки из eeprom i2c на входе адрес с какого, на выходе конечный адрес, число меньше 0 это код ошибки
 int32_t clientMQTT::load(int32_t adr)
 {
-  if (readEEPROM_I2C(adr, (byte*)&mqttSettintg, sizeof(mqttSettintg))) { set_Error(ErrorCatalog::Code::kSETTINGS_READ,(char*)nameHeatPump); return ErrorNumber(ErrorCatalog::Code::kSETTINGS_READ);}  adr=adr+sizeof(mqttSettintg);           // прочитать параметры MQTT
+  if (readEEPROM_I2C(adr, (byte*)&mqttSettintg, sizeof(mqttSettintg))) { HP.raise_Error(ErrorCatalog::Code::kSETTINGS_READ, nameHeatPump); return ErrorNumber(ErrorCatalog::Code::kSETTINGS_READ);}  adr=adr+sizeof(mqttSettintg);           // прочитать параметры MQTT
   return adr;
 }
 // Считать настройки из буфера на входе адрес с какого, на выходе конечный адрес, число меньше 0 это код ошибки

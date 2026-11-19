@@ -10,6 +10,7 @@
 		// Читает части справочника и выводит строки с номерами и способом регистрации.
 		window.onload = function() {
 			var table = document.getElementById('get_syserr');
+			var parts = 0;
 			// Добавляет строку, вставляя значения через textContent.
 			function row(values) {
 				var tr = table.insertRow();
@@ -17,7 +18,7 @@
 			}
 			// Загружает часть с заданным индексом и продолжает со следующей.
 			function loadPart(index) {
-				if(index === 3) return;
+				if(index === parts) return;
 				var key = 'sys.errors' + (index || '');
 				api.get({k: [key]}, function(D, E, err) {
 					if(err || !D[key]) row(['Часть справочника недоступна']);
@@ -27,7 +28,11 @@
 					loadPart(index + 1);
 				});
 			}
-			loadPart(0);
+			api.get({k: ['sys.errors_parts']}, function(D, E, err) {
+				parts = err ? 0 : parseInt(D['sys.errors_parts'] || 0);
+				if(parts < 1) row(['Число частей справочника недоступно']);
+				else loadPart(0);
+			});
 		};
 	</script>
 </head>

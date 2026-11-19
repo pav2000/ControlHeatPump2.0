@@ -323,13 +323,11 @@ class HeatPump
     boolean takeCommand();               // CommandHP: взять следующую команду из очереди, true - есть что выполнять
     uint8_t is_pause();					// Возвращает 1, если ТН в паузе
 	inline boolean is_compressor_on() { return dRelay[RCOMP].get_Relay() || dFC.isfOnOff(); }    // Проверка работает ли компрессор
-    void stopForError();
+    // Немедленно снимает команду компрессора. Возвращает true, если команда останова принята.
+    bool stopForError();
     // Отдаёт команду останова и публикует code с источником device и деталями.
     void raise_Error(ErrorCatalog::Code code, const char *device,
                      ErrorDetail detail = {}, const char *meaning = nullptr);
-    // Публикует первую аварию code после уже отданной команды останова.
-    void record_Error(ErrorCatalog::Code code, const char *device,
-                      ErrorDetail detail = {}, const char *meaning = nullptr);
     // Пишет только в журнал событие с группой source, устройством device и сообщением text. Возврата нет.
     void log_Event(const char *source, const char *device, const char *text);
     // Пишет только в журнал событие code для device. detail уточняет причину, meaning заменяет текст каталога. Возврата нет.
@@ -338,7 +336,7 @@ class HeatPump
     // Регистрирует отказ result от device. transport задаёт код для транспортного сбоя. Возврата нет.
     void raise_ModbusError(ModbusResult result, const char *device,
                            ErrorCatalog::Code transport = ErrorCatalog::Code::kMODBUS_EXCHANGE);
-	bool    compressor_emergency_off();                                                           // аварийный останов компрессора (set_Error): true - останов отдан
+	bool    compressor_emergency_off();                                                           // аварийный останов компрессора (raise_Error): true - останов отдан
 	SAFETY_WHY safety_check(SAFETY_OUT out, bool on, const char *name, const char *src);              // межблокировки выходов (Safety.h), отказ - в журнал
 
     // Строковые функции
@@ -591,6 +589,11 @@ class HeatPump
     void     set_HeatBoilerUrgently(boolean onoff);
 
   private:
+    friend class devOmronMX2; // Драйвер Omron публикует отказ после собственного аварийного останова.
+    friend class devVaconFC;  // Драйвер Vacon публикует отказ после собственного аварийного останова.
+    // Публикует code после уже выполненного драйвером останова; доступен только двум инверторам.
+    void record_StoppedError(ErrorCatalog::Code code, const char *device,
+                             ErrorDetail detail = {}, const char *meaning = nullptr);
     void    StartResume(boolean start);    // Функция Запуска/Продолжения работы ТН - возвращает ок или код ошибки
     void    StopWait(boolean stop);        // Функция Останова/Ожидания ТН  - возвращает код ошибки
     int8_t  ResetFC();                     // Сброс инвертора, если он стоит в ошибке, проверяется наличие инвертора и проверка ошибки
@@ -646,9 +649,11 @@ class HeatPump
     volatile int8_t error;                // Код каталога активной аварии для управления и выдачи
     char   source_error[16];              // источник ошибки
     WarningRecord lastWarning{};          // Снимок последнего предупреждения
-    char lastWarningText[160]{};           // Текст того же снимка предупреждения
+    char lastWarningText[160]{};           // Операторский текст предупреждения без маркера и номера
+    WarningEpisodes warningEpisodes{};    // Независимые ключи эпизодов для подавления чередующихся повторов
     NotifyRecent safetyWarnings{};        // Недавние правила межблокировок по источнику и причине
-    char   note_error[160+1];             // Строка c описанием ошибки формат "время источник:описание"
+    bool emergencyStopCommandFailed{};    // Привод не принял аварийный останов, повторный пуск запрещён
+    char   note_error[160+1];             // Операторское описание активной ошибки без её номера
     uint8_t fSD;                          // Признак наличия SD карты: 0 - нет, 1 - есть, но пустая, 2 - есть, веб в наличии
     uint8_t fSPIFlash;                    // Признак наличия (физического) SPI флеш: 0 - нет, 1 - есть, но пустая, 2 - есть, веб в наличии
     boolean startWait;                    // Начало работы с ожидания

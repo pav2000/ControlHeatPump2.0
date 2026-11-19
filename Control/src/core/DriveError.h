@@ -31,6 +31,7 @@ enum class EventLevel : uint8_t {
 enum class ErrorDetailKind : uint8_t {
 	None, // Дополнительных данных нет
 	Fault, // Собственный код отказа привода
+	OmronFault, // Код и состояние отказа Omron MX2
 	Exception, // Байт исключения ведомого Modbus
 	Transport, // Статус транспорта Modbus
 	Local, // Внутренний статус контроллера обмена
@@ -50,7 +51,7 @@ struct ErrorEventInfo {
 };
 
 struct ErrorEvent : ErrorEventInfo {
-	char text[161]; // Полная строка журнала без отметки времени
+	char text[161]; // Короткое описание для оператора без номера события
 };
 
 // Возвращает имя подтверждённого исходного кода для API и MQTT либо nullptr.
@@ -58,6 +59,7 @@ inline const char *ErrorDetailToken(ErrorDetailKind kind)
 {
 	switch(kind) {
 	case ErrorDetailKind::Fault: return "FAULT";
+	case ErrorDetailKind::OmronFault: return "FAULT";
 	case ErrorDetailKind::Exception: return "EXC";
 	case ErrorDetailKind::Transport: return "RX";
 	case ErrorDetailKind::Local: return "LOCAL";

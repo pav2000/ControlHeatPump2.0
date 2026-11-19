@@ -80,7 +80,7 @@ bool HeatPump::waitEEVService()
 		if(interrupt) return false;
 		if(!active) return true;
 		if((TickType_t)(xTaskGetTickCount() - started) > timeoutTicks) {
-			set_Error(ErrorCatalog::Code::kCONFIG, (char*) "EEV motion timeout");
+			raise_Error(ErrorCatalog::Code::kCONFIG, "EEV motion timeout");
 			return false;
 		}
 		Watchdog_SleepHere(100);

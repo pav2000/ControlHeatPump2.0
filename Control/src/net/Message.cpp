@@ -245,12 +245,11 @@ char* Message::get_messageSetting(char *var, char *ret)
 	} else return strcat(ret, (char*) cInvalid);
 
 }
-// Записать настройки в eeprom i2c на входе адрес с какого, на выходе конечный адрес, число меньше 0 это код ошибки
+// Записывает настройки уведомлений с адреса adr. Возвращает следующий адрес или код ошибки.
 int32_t Message::save(int32_t adr)
 {
 
   if (writeEEPROM_I2C(adr, (byte*)&messageSetting, sizeof(messageSetting))) {
-    set_Error(ErrorCatalog::Code::kSETTINGS_WRITE, (char*)nameHeatPump);
     return ErrorNumber(ErrorCatalog::Code::kSETTINGS_WRITE);
   }  adr = adr + sizeof(messageSetting);       // записать параметры Уведомлений
   return adr;
@@ -259,7 +258,7 @@ int32_t Message::save(int32_t adr)
 int32_t Message::load(int32_t adr)
 {
   if (readEEPROM_I2C(adr, (byte*)&messageSetting, sizeof(messageSetting))) {
-    set_Error(ErrorCatalog::Code::kSETTINGS_READ, (char*)nameHeatPump);
+    HP.raise_Error(ErrorCatalog::Code::kSETTINGS_READ, nameHeatPump);
     return ErrorNumber(ErrorCatalog::Code::kSETTINGS_READ);
   }  adr = adr + sizeof(messageSetting);       // прочитать параметры Уведомлений
   return adr;
@@ -492,7 +491,7 @@ boolean Message::setMessage(MESSAGE ms, char *c, int p1, uint32_t subject) // м
   if (((GETBIT(messageSetting.flags, fMessageSD)) == 0) && (ms == pMESSAGE_SD))             return true;
   if (((GETBIT(messageSetting.flags, fMessageWarning)) == 0) && (ms == pMESSAGE_WARNING))   return true;
 
-  // Решение и запись - под запретом прерываний: функцию зовут задачи разных приоритетов (set_Error из ReadSensor, Web0 при
+  // Решение и запись - под запретом прерываний: функцию зовут задачи разных приоритетов (raise_Error из ReadSensor, Web0 при
   // этом отправляет). Копируется не больше 200 байт - микросекунды. Место отправляемого (nq.cur) очередь не выдаёт.
   // Тестовые сообщения и сигнал жизни можно посылать многократно подряд, остальные - не чаще REPEAT_TIME.
   const uint32_t now = Uptime_s();                       // окно повторов - интервал, по времени работы (раздел 6.5)
@@ -1111,7 +1110,15 @@ void get_mailState(char *buf, uint16_t buf_size)
 	{
 		ErrorEvent event;
 		HP.get_errorEvent(event);
-		m_snprintf(buf, buf_size, "Последняя ошибка: %s", event.code ? event.text : "-");
+		if(event.code) m_snprintf(buf, buf_size, "Последняя ошибка: %d %s", event.code, event.text);
+		else m_snprintf(buf, buf_size, "Последняя ошибка: -");
+	}
+	HP.message.smtpWriteBody(buf);
+	{
+		char warningText[160];
+		const WarningRecord warning = HP.get_lastWarning(warningText, sizeof(warningText));
+		if(warning.code) m_snprintf(buf, buf_size, "Последнее предупреждение: %d %s", warning.code, warningText);
+		else m_snprintf(buf, buf_size, "Последнее предупреждение: -");
 	}
 	HP.message.smtpWriteBody(buf);
 

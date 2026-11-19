@@ -88,7 +88,12 @@ void get_txtState(uint8_t thread, boolean header)
      if (header) get_Header(thread,(char*)"state.txt");   // Если нужен заголовок
      ErrorEvent event;
      HP.get_errorEvent(event);
-     sendPrintfRTOS(thread, "\n  1. Тепловой насос\r\nСостояниеТН: %s\r\nПоследняя ошибка: %s\r\n", HP.StateToStr(), event.code ? event.text : "-");
+     if(event.code) sendPrintfRTOS(thread, "\n  1. Тепловой насос\r\nСостояниеТН: %s\r\nПоследняя ошибка: %d %s\r\n", HP.StateToStr(), event.code, event.text);
+     else sendPrintfRTOS(thread, "\n  1. Тепловой насос\r\nСостояниеТН: %s\r\nПоследняя ошибка: -\r\n", HP.StateToStr());
+     char warningText[160];
+     const WarningRecord warning = HP.get_lastWarning(warningText, sizeof(warningText));
+     if(warning.code) sendPrintfRTOS(thread, "Последнее предупреждение: %d %s\r\n", warning.code, warningText);
+     else sendPrintfRTOS(thread, "Последнее предупреждение: -\r\n");
      
      // Состояние ТН
      strcpy(Socket[thread].outBuf,"Режим работы:");strcat(Socket[thread].outBuf,HP.TestToStr()); 
@@ -231,7 +236,12 @@ void get_txtSettings(uint8_t thread)
      get_Header(thread,(char*)"settings.txt");
      ErrorEvent event;
      HP.get_errorEvent(event);
-     sendPrintfRTOS(thread, "Состояние ТН: %s\r\nПоследняя ошибка: %s\r\n", HP.StateToStr(), event.code ? event.text : "-");
+     if(event.code) sendPrintfRTOS(thread, "Состояние ТН: %s\r\nПоследняя ошибка: %d %s\r\n", HP.StateToStr(), event.code, event.text);
+     else sendPrintfRTOS(thread, "Состояние ТН: %s\r\nПоследняя ошибка: -\r\n", HP.StateToStr());
+     char warningText[160];
+     const WarningRecord warning = HP.get_lastWarning(warningText, sizeof(warningText));
+     if(warning.code) sendPrintfRTOS(thread, "Последнее предупреждение: %d %s\r\n", warning.code, warningText);
+     else sendPrintfRTOS(thread, "Последнее предупреждение: -\r\n");
      strcpy(Socket[thread].outBuf,"\n  1. Общие настройки\r\n");
      strcat(Socket[thread].outBuf,"Режим работы :");
      switch ((MODE_HP)HP.get_modeHouse() )   // режим работы отопления

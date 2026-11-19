@@ -529,7 +529,7 @@ static const ApiParam apiStateTab[] = {
 struct ApiEventSnapshot {
 	ErrorEvent error;      // Активная авария на момент начала чтения
 	WarningRecord warning; // Метаданные последнего предупреждения
-	char warningText[160]; // Текст того же предупреждения
+	char warningText[160]; // Операторский текст предупреждения без маркера и номера
 };
 
 // Читает поле состояния по hook в ответ o, используя снимок аварии при его наличии. Возвращает статус API.
@@ -648,7 +648,8 @@ extern const ApiGroup ApiGrpEev;
 
 // ---- группа sys: служебные данные для страниц системы ----
 enum { Y_SOCKETS = 1, Y_WEBSOCKS, Y_SOCKRES, Y_OWPIN, Y_LSTATS, Y_LHIST, Y_FREERAM, Y_INFO, Y_CONST, Y_CONST1, Y_WDT, Y_TASKS, Y_ERRORS, Y_ERRORS1, Y_LHISTOLD, Y_WEBSTAT, Y_SPI,
-	Y_ERRORS2 // Третья часть справочника ошибок
+	Y_ERRORS2, // Третья часть справочника ошибок
+	Y_ERROR_PARTS // Фактическое число частей справочника
 };
 static const ApiParam apiSysTab[] = {
 	{ "sockets",    0, 0, 0, 0, 1, PT_CALL, PF_RO | PF_AR, MK_TABLE, Y_SOCKETS, 0 },    // состояние сокетов сетевого чипа
@@ -669,15 +670,23 @@ static const ApiParam apiSysTab[] = {
 	{ "errors",  0, 0, 0, 0, 1, PT_CALL, PF_RO | PF_AR, MK_TABLE, Y_ERRORS,  0 },
 	{ "errors1", 0, 0, 0, 0, 1, PT_CALL, PF_RO | PF_AR, MK_TABLE, Y_ERRORS1, 0 },
 	{ "errors2", 0, 0, 0, 0, 1, PT_CALL, PF_RO | PF_AR, MK_TABLE, Y_ERRORS2, 0 },
+	{ "errors_parts", 0, 0, 0, 0, 1, PT_CALL, PF_RO | PF_AR, MK_INT, Y_ERROR_PARTS, 0 },
 	{ "webstat", 0, 0, 0, 0, 1, PT_CALL, PF_RO,         MK_TABLE, Y_WEBSTAT, 0 },    // метрики веб-сервера (WebShared.h), обнуляются действием reset.webstat
 	{ "spi",     0, 0, 0, 0, 1, PT_CALL, PF_RO,         MK_TABLE, Y_SPI,     0 },    // шина SPI: устройства, частоты, счётчики (вкладка «SPI&Web»), сброс - reset.spi
 };
 // Предельное число записей каталога на одну страницу API.
 static constexpr int API_ERR_PAGE = 24;
+// Число опубликованных частей справочника; увеличение требует добавить ключ API.
+static constexpr int API_ERR_PARTS = 3;
+static_assert(ErrorCatalog::kEntryCount <= API_ERR_PAGE * API_ERR_PARTS,
+              "Error catalog needs another API page");
 // Имена групп каталога в JSON, в порядке ErrorCatalog::Group.
 static const char *const apiErrorGroups[] = {"SENSORS", "CONTROL", "INVERTER", "MODBUS_POWER", "SETTINGS", "STORAGE_SYSTEM", "INFRASTRUCTURE", "STAGE_TWO"};
-// Имена способов регистрации в JSON, в порядке ErrorCatalog::Registration.
-static const char *const apiErrorRegistration[] = {"ERROR", "WARN", "REQUIRED_AT_BOOT", "BY_DEVICE", "BY_OPERATION", "LOG_ONLY"};
+// Имена разрешённых способов регистрации в JSON, в порядке ErrorCatalog::Registration.
+static const char *const apiErrorRegistration[] = {"ERROR", "WARN", "ERROR_OR_WARN", "LOG_ONLY"};
+static_assert(sizeof(apiErrorRegistration) / sizeof(apiErrorRegistration[0]) ==
+              static_cast<uint8_t>(ErrorCatalog::Registration::LogOnly) + 1,
+              "API registration names differ from ErrorCatalog::Registration");
 
 // Пишет в o выбранную часть каталога с явными номерами и метаданными.
 static void api_put_errors(ApiOut *o, uint8_t part)
@@ -831,6 +840,7 @@ static int api_get_sys(uint8_t hook, uint8_t, ApiOut *o)
 	else if(hook == Y_FREERAM) api_put_int(o, freeHeapReserve());
 	else if(hook == Y_ERRORS || hook == Y_ERRORS1) api_put_errors(o, hook - Y_ERRORS);
 	else if(hook == Y_ERRORS2) api_put_errors(o, 2);
+	else if(hook == Y_ERROR_PARTS) api_put_int(o, API_ERR_PARTS);
 	else if(hook >= Y_INFO && hook <= Y_TASKS) return api_sys_table(hook, o);
 	else if(hook == Y_OWPIN) {
 		char t[24]; t[0] = 0;
@@ -1429,6 +1439,7 @@ static int api_modbus(ApiOut *o, const char *p, bool wr)
 	}
 	if(result.Succeeded()) {
 		uint16_t w16 = 0; int32_t l32 = 0; float f = 0;
+		const uint16_t mark = o->len;
 		api_put(o, "{\"v\":");
 		if(type == 'w') { if((result = Modbus.readInputRegisters16(id, par, &w16)).Succeeded()) api_put_int(o, w16); }
 		else if(type == 'l') { if((result = Modbus.readInputRegisters32(id, par, (uint32_t *)&l32)).Succeeded()) api_put_int(o, l32); }
@@ -1438,7 +1449,7 @@ static int api_modbus(ApiOut *o, const char *p, bool wr)
 		else if(type == 'c') { if((result = Modbus.readCoil(id, par, (boolean *)&w16)).Succeeded()) api_put_int(o, w16 & 1); }
 		else return AE_BAD_VALUE;
 		if(result.Succeeded()) { api_putc(o, '}'); return AE_OK; }
-		o->len -= 5; o->p[o->len] = 0;                         // откат заготовки «{"v":»
+		o->len = mark; o->p[mark] = 0;                         // откат заготовки «{"v":» без вычитания из переполненного буфера
 	}
 	api_put_modbus_failure(o, result);
 	return AE_OK;

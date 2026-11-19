@@ -723,7 +723,12 @@ void Nextion::Encode_UTF8_to_ISO8859_5(char* outstr, const char* instr, uint16_t
 			uint16_t c2 = c * 256 + *instr++;
 			if(c2 >= 0xD090 && c2 <= 0xD0BF) c = c2 - 0xD090 + 0xB0;
 			else if(c2 >= 0xD180 && c2 <= 0xD18F) c = c2 - 0xD180 + 0xE0;
-			else if(c2 == 0xE284 && *instr++ == 0x96) c = 0xF0;
+			else if(c2 == 0xE280) {
+				const uint8_t c3 = *instr++;
+				if(c3 == 0x94) c = '-';       // U+2014, длинное тире
+				else if(c3 == 0x96) c = '|';  // U+2016, двойная вертикальная черта
+				else continue;
+			}
 			else {
 				if(c > 0xE0) {
 					instr++;

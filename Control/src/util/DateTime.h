@@ -77,7 +77,7 @@ NtpPacket Http_ParseTime(const char *buf, int len, uint32_t *unix_s);
 
 // ---- Clock.cpp: читают часы ----
 // Буфер обязателен и свой у каждого вызова: прежде при buf == NULL функции писали в общую статическую строку, и две
-// задачи, вызвавшие их одновременно (set_Error из ReadSensor и письмо из Web0), портили друг другу время (Н-4).
+// задачи, вызвавшие их одновременно (raise_Error из ReadSensor и письмо из Web0), портили друг другу время (Н-4).
 #define NOW_TIME_LEN  9                               // "xx:xx:xx" + 0
 #define NOW_DATE_LEN  11                              // "xx.xx.xxxx" + 0
 char* NowTimeToStr(char *buf);                        // текущее время "xx:xx:xx" в buf (NOW_TIME_LEN байт), возвращает buf

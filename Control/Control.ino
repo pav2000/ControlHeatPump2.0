@@ -613,9 +613,10 @@ void setup() {
 		// Историческая запись о предыдущем запуске, поле активной аварии не занимаем.
 		char source[48], meaning[112];
 		m_snprintf(source, sizeof(source), "%s%s%s", tag, *task ? " " : "", task);
-		const auto *entry = ErrorCatalog::Find(ErrorCatalog::Code::kABNORMAL_RESET);
 		m_snprintf(meaning, sizeof(meaning), "%s, %u подряд (предел %u)",
-		           entry->description, (unsigned)boot.resets, (unsigned)BOOT_MAX_RESETS);
+		           ErrorCatalog::DescriptionOr(ErrorCatalog::Code::kABNORMAL_RESET, "аварийный сброс"),
+		           (unsigned)boot.resets,
+		           (unsigned)BOOT_MAX_RESETS);
 		HP.log_Event(ErrorCatalog::Code::kABNORMAL_RESET, source, {}, meaning);
 	}
 
@@ -739,7 +740,7 @@ x_I2C_init_std_message:
 	// 4. Инициализировать основной класс
 	journal.jprintf("2. Init %s main class . . .\n",(char*)nameHeatPump);
 	HP.initHeatPump();                           // Основной класс
-	// Ошибку поднимаем ТОЛЬКО здесь: set_Error пишет в HP, а initHeatPump выше
+	// Ошибку поднимаем ТОЛЬКО здесь: raise_Error пишет в HP, а initHeatPump выше
 	// обнуляет HP.error - поднятая раньше пропала бы. Ошибка нужна, чтобы
 	// расхождение было видно в морде и в get_error, а не только в журнале.
 	// Второй случай (чип больше объявленного) ошибкой не считается: всё
@@ -872,63 +873,63 @@ x_I2C_init_std_message:
 	Diag.mRTOS=Diag.mRTOS+64+4*configMINIMAL_STACK_SIZE;  // задача бездействия
 
 	// ПРИОРИТЕТ 4 Высший приоритет датчики читаются всегда и шаговик ЭРВ всегда шагает если нужно
-	if (xTaskCreate(vReadSensor,"ReadSensor",STACK_vReadSensor,NULL,4,&Tasks.xHandleReadSensor)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY)    set_Error(ErrorCatalog::Code::kRTOS,(char*)nameFREERTOS);
+	if (xTaskCreate(vReadSensor,"ReadSensor",STACK_vReadSensor,NULL,4,&Tasks.xHandleReadSensor)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY)    HP.raise_Error(ErrorCatalog::Code::kRTOS, nameFREERTOS);
 	Diag.mRTOS=Diag.mRTOS+64+4*STACK_vReadSensor;// 200
 
 #ifdef EEV_DEF
-	if (xTaskCreate(vUpdateStepperEEV,"StepperEEV",STACK_vUpdateStepperEEV,NULL,4,&HP.dEEV.stepperEEV.xHandleStepperEEV)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY)  set_Error(ErrorCatalog::Code::kRTOS,(char*)nameFREERTOS);
+	if (xTaskCreate(vUpdateStepperEEV,"StepperEEV",STACK_vUpdateStepperEEV,NULL,4,&HP.dEEV.stepperEEV.xHandleStepperEEV)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY)  HP.raise_Error(ErrorCatalog::Code::kRTOS, nameFREERTOS);
 	Diag.mRTOS=Diag.mRTOS+64+4*STACK_vUpdateStepperEEV; // 50, 100, 150
 #endif
 
 	// ПРИОРИТЕТ 3 Очень высокий приоритет Выполнение команд управления (разбор очереди комманд) - должен быть выше чем задачи обновления ТН и ЭРВ
-	if(xTaskCreate(vUpdateCommand,"CommandHP", STACK_vUpdateCommand,NULL,3,&Tasks.xHandleUpdateCommand)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY)     set_Error(ErrorCatalog::Code::kRTOS,(char*)nameFREERTOS);
+	if(xTaskCreate(vUpdateCommand,"CommandHP", STACK_vUpdateCommand,NULL,3,&Tasks.xHandleUpdateCommand)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY)     HP.raise_Error(ErrorCatalog::Code::kRTOS, nameFREERTOS);
 	Diag.mRTOS=Diag.mRTOS+64+4*STACK_vUpdateCommand;// 200
 
 
 	// ПРИОРИТЕТ 2 высокий - это управление ТН управление ЭРВ, сервис
-	if(xTaskCreate(vServiceHP, "ServiceHP", STACK_vServiceHP, NULL, 2, &Tasks.xHandleSericeHP)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY) set_Error(ErrorCatalog::Code::kRTOS,(char*)nameFREERTOS);
+	if(xTaskCreate(vServiceHP, "ServiceHP", STACK_vServiceHP, NULL, 2, &Tasks.xHandleSericeHP)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY) HP.raise_Error(ErrorCatalog::Code::kRTOS, nameFREERTOS);
 	Diag.mRTOS=Diag.mRTOS+64+4*STACK_vServiceHP;// 200
 
 	Tasks.xCommandSemaphore = xSemaphoreCreateMutex();  // мьютекс: захват и отдача всегда в одной задаче                       // Создание семафора
-	if (Tasks.xCommandSemaphore==NULL) set_Error(ErrorCatalog::Code::kRTOS,(char*)nameFREERTOS);
+	if (Tasks.xCommandSemaphore==NULL) HP.raise_Error(ErrorCatalog::Code::kRTOS, nameFREERTOS);
 
-	if (xTaskCreate(vUpdate,"UpdateHP",STACK_vUpdate,NULL,2,&Tasks.xHandleUpdate)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY)    set_Error(ErrorCatalog::Code::kRTOS,(char*)nameFREERTOS);
+	if (xTaskCreate(vUpdate,"UpdateHP",STACK_vUpdate,NULL,2,&Tasks.xHandleUpdate)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY)    HP.raise_Error(ErrorCatalog::Code::kRTOS, nameFREERTOS);
 	Diag.mRTOS=Diag.mRTOS+64+4*STACK_vUpdate;// см. STACK_vUpdate в Config.h
 	Tasks.Task_vUpdate_run = false;
 
 #ifdef EEV_DEF
-	if (xTaskCreate(vUpdateEEV,"UpdateEEV",STACK_vUpdateEEV,NULL,2,&Tasks.xHandleUpdateEEV)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY)     set_Error(ErrorCatalog::Code::kRTOS,(char*)nameFREERTOS);
+	if (xTaskCreate(vUpdateEEV,"UpdateEEV",STACK_vUpdateEEV,NULL,2,&Tasks.xHandleUpdateEEV)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY)     HP.raise_Error(ErrorCatalog::Code::kRTOS, nameFREERTOS);
 	Diag.mRTOS=Diag.mRTOS+64+4*STACK_vUpdateEEV;
 #endif  
 
 	// ПРИОРИТЕТ 1 средний - обслуживание вебморды в несколько потоков и дисплея Nextion
 	// ВНИМАНИЕ первый поток должен иметь больший стек для обработки фоновых сетевых задач
 	// 1 - поток
-	if ( xTaskCreate(vWeb0,"Web0", STACK_vWebX+14,NULL,1,&Tasks.xHandleUpdateWeb0)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY) set_Error(ErrorCatalog::Code::kRTOS,(char*)nameFREERTOS);
+	if ( xTaskCreate(vWeb0,"Web0", STACK_vWebX+14,NULL,1,&Tasks.xHandleUpdateWeb0)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY) HP.raise_Error(ErrorCatalog::Code::kRTOS, nameFREERTOS);
 	Diag.mRTOS=Diag.mRTOS+64+4*(STACK_vWebX+14);
 #if W5200_THREAD >= 2 // - потока
-	if ( xTaskCreate(vWeb1,"Web1", STACK_vWebX,NULL,1,&Tasks.xHandleUpdateWeb1)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY) set_Error(ErrorCatalog::Code::kRTOS,(char*)nameFREERTOS);
+	if ( xTaskCreate(vWeb1,"Web1", STACK_vWebX,NULL,1,&Tasks.xHandleUpdateWeb1)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY) HP.raise_Error(ErrorCatalog::Code::kRTOS, nameFREERTOS);
 	Diag.mRTOS=Diag.mRTOS+64+4*STACK_vWebX;
 #endif
 #if W5200_THREAD >= 3 // - потока
-	if ( xTaskCreate(vWeb2,"Web2", STACK_vWebX,NULL,1,&Tasks.xHandleUpdateWeb2)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY) set_Error(ErrorCatalog::Code::kRTOS,(char*)nameFREERTOS);
+	if ( xTaskCreate(vWeb2,"Web2", STACK_vWebX,NULL,1,&Tasks.xHandleUpdateWeb2)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY) HP.raise_Error(ErrorCatalog::Code::kRTOS, nameFREERTOS);
 	Diag.mRTOS=Diag.mRTOS+64+4*STACK_vWebX;
 #endif
 #if W5200_THREAD >= 4 // - потока
-	if ( xTaskCreate(vWeb3,"Web3", STACK_vWebX,NULL,1,&Tasks.xHandleUpdateWeb3)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY) set_Error(ErrorCatalog::Code::kRTOS,(char*)nameFREERTOS);
+	if ( xTaskCreate(vWeb3,"Web3", STACK_vWebX,NULL,1,&Tasks.xHandleUpdateWeb3)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY) HP.raise_Error(ErrorCatalog::Code::kRTOS, nameFREERTOS);
 	Diag.mRTOS=Diag.mRTOS+64+4*STACK_vWebX;
 #endif
 
 	xWebThreadSemaphore = xSemaphoreCreateMutex();   // мьютекс: сеть + шина SPI               // Создание мютекса
-	if (xWebThreadSemaphore==NULL) set_Error(ErrorCatalog::Code::kRTOS,(char*)nameFREERTOS);
+	if (xWebThreadSemaphore==NULL) HP.raise_Error(ErrorCatalog::Code::kRTOS, nameFREERTOS);
 	xI2CSemaphore = xSemaphoreCreateMutex();         // мьютекс: FRAM, часы, мастер OneWire                     // Создание мютекса
-	if (xI2CSemaphore==NULL) set_Error(ErrorCatalog::Code::kRTOS,(char*)nameFREERTOS);
+	if (xI2CSemaphore==NULL) HP.raise_Error(ErrorCatalog::Code::kRTOS, nameFREERTOS);
 	journal.CreateLocks();                           // замки журнала: L1 строки/кольцо, L2 писатель EEPROM
 	// Дополнительные семафоры (почему то именно здесь) Создается когда есть Modbus
 	if(Modbus.get_present())
 	{
 		xModbusSemaphore = xSemaphoreCreateMutex();   // мьютекс: нужна передача приоритета                       // Создание мютекса
-		if (xModbusSemaphore==NULL) set_Error(ErrorCatalog::Code::kRTOS,(char*)nameFREERTOS);
+		if (xModbusSemaphore==NULL) HP.raise_Error(ErrorCatalog::Code::kRTOS, nameFREERTOS);
 	}
 
 	journal.jprintf(" Create tasks - OK, size %d bytes\n",(int)(Diag.mRTOS));
@@ -940,7 +941,7 @@ x_I2C_init_std_message:
 			// (на стенде -39 «инвертор не найден»): причину отмены не было бы видно в морде. Она важнее - вытесняем.
 			// Планировщик ещё не запущен, прямая запись безопасна; прежняя ошибка осталась в журнале.
 			HP.drop_error_at_boot();
-			set_Error(ErrorCatalog::Code::kRESET_LOOP, (char*)nameFREERTOS);
+			HP.raise_Error(ErrorCatalog::Code::kRESET_LOOP, nameFREERTOS);
 		} else HP.sendCommand(pRESTART);
 	}
 
@@ -1417,7 +1418,7 @@ void vReadSensor(void *)
 		if (digitalReadDirect(PIN_STEP_DIAG)) // Перечитываем два раза
 		{
 			vReadSensor_delay1ms(5);
-			if (digitalReadDirect(PIN_STEP_DIAG)) set_Error(ErrorCatalog::Code::kEEV_DRIVER,(char*)__FUNCTION__); // Контроль за работой драйвера ЭРВ
+			if (digitalReadDirect(PIN_STEP_DIAG)) HP.raise_Error(ErrorCatalog::Code::kEEV_DRIVER, __FUNCTION__); // Контроль за работой драйвера ЭРВ
 		}
 #endif
 
@@ -1426,13 +1427,13 @@ void vReadSensor(void *)
 		for(uint8_t i = 0; i < FNUMBER; i++){   // Проверка потока по каждому датчику
 			if(HP.sFrequency[i].get_checkFlow() && HP.sFrequency[i].get_Value() < HP.sFrequency[i].get_minValue()) {     // Поток меньше минимального ошибка останавливаем ТН
 				journal.jprintf("%s low flow: %.3f\n",(char*) HP.sFrequency[i].get_name(), (float) HP.sFrequency[i].get_Value() / 1000);
-				set_Error(ErrorCatalog::Code::kFLOW_LOW, (char*) HP.sFrequency[i].get_name());
+				HP.raise_Error(ErrorCatalog::Code::kFLOW_LOW, HP.sFrequency[i].get_name());
 			}
 		}
 #endif
 #ifdef SEVA  //Если определен лепестковый датчик протока - это переливная схема ТН - надо контролировать проток при работе
  	if(HP.dRelay[RPUMPI].get_Relay())                                                                                             // Только если включен насос геоконтура  (PUMP_IN)
-		if (HP.sInput[SEVA].get_Input()==SEVA_OFF) set_Error(ErrorCatalog::Code::kFLOW_LOW,(char*)"SEVA");                                        // Нет протока: ошибка останавливает ТН. НЕ return - это тело задачи, возврат из неё аварийный выход FreeRTOS
+		if (HP.sInput[SEVA].get_Input()==SEVA_OFF) HP.raise_Error(ErrorCatalog::Code::kFLOW_LOW, "SEVA");                                        // Нет протока: ошибка останавливает ТН. НЕ return - это тело задачи, возврат из неё аварийный выход FreeRTOS
 #endif
 
 		//  Синхронизация часов с I2C часами если стоит соответсвующий флаг

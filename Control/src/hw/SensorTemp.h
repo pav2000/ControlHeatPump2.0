@@ -21,7 +21,7 @@
 #ifndef DigitalTemp_h
 #define DigitalTemp_h
 // Заголовок самодостаточен.
-#include "../core/Device.h"      // флаги датчиков, часы, set_Error
+#include "../core/Device.h"      // общие флаги датчиков и часы
 #include "BusOneWire.h"  // deviceOneWire - шина, с которой читает датчик
 #define STARTTEMP 32767  // Значение инициализации датчика температуры, по нему определяется первая итерация (сотые градуса)
 

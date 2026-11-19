@@ -27,7 +27,7 @@
  * оно окажется ложным и файл выпадет целиком - так уже случилось с MQTT.cpp.
  */
 #include "OmronFC.h"
-#include "../core/HeatPump.h"     // HP, set_Error
+#include "../core/HeatPump.h"     // HP и публикация аварий инвертора
 #include "Hardware.h"     // Modbus: чтение и запись регистров
 #include "../log/Journal.h"      // journal
 #include "../core/Rtos.h"         // _delay, замки шин
@@ -480,10 +480,10 @@ void devOmronMX2::reportTrip()
        Modbus.readHoldingRegisters16(FC_MODBUS_ADR, MX2_NUM_ERR - 1, &after).Succeeded() &&
        OmronCurrentFault(previous, count, after, history[0])) {
         err = ErrorNumber(ErrorCatalog::Code::kINVERTER_FAULT);
-        HP.record_Error(ErrorCatalog::Code::kINVERTER_FAULT, "OMRON",
-                            {ErrorDetailKind::Fault, history[0], history[1]});
+        HP.record_StoppedError(ErrorCatalog::Code::kINVERTER_FAULT, "OMRON",
+                            {ErrorDetailKind::OmronFault, history[0], history[1]});
     } else {
-        HP.record_Error(ErrorCatalog::Code::kFC_TRIP, "OMRON", {ErrorDetailKind::State, 8, 0});
+        HP.record_StoppedError(ErrorCatalog::Code::kFC_TRIP, "OMRON", {ErrorDetailKind::State, 8, 0});
     }
 }
 #endif

@@ -35,6 +35,13 @@ enum class Code : ErrCode {
 #undef ERROR_DEF
 };
 
+// Число строк каталога, вычисленное из того же списка, что и enum Code.
+constexpr uint8_t kEntryCount = 0
+#define ERROR_DEF(name, code, group, source, registration, description) + 1
+#include "ErrorCatalogRows.h"
+#undef ERROR_DEF
+;
+
 // Возвращает номер события для числовых интерфейсов и результатов операций.
 constexpr ErrCode ErrorNumber(Code code) { return static_cast<ErrCode>(code); }
 
@@ -50,18 +57,28 @@ enum class Group : uint8_t {
 };
 
 enum class Registration : uint8_t {
-	Alarm,          // Обычно вызывает защитное действие
-	Warning,        // Сообщает о проблеме без аварийного останова
-	RequiredAtBoot, // Авария при отказе обязательных данных на старте
-	ByDevice,       // Уровень зависит от роли устройства
-	ByOperation,    // Уровень зависит от обязательности операции
-	LogOnly         // Запись об уже произошедшем событии, без установки активной аварии
+	Alarm,          // Допускает аварийный останов и активную ошибку
+	Warning,        // Допускает предупреждение без аварийного останова
+	AlarmOrWarning, // Допускает оба пути в зависимости от места проверки
+	LogOnly         // Допускает только историческую запись в журнале
 };
+
+// Проверяет, допускает ли способ регистрации аварийный путь.
+constexpr bool AllowsAlarm(Registration value)
+{
+	return value == Registration::Alarm || value == Registration::AlarmOrWarning;
+}
+
+// Проверяет, допускает ли способ регистрации предупреждение.
+constexpr bool AllowsWarning(Registration value)
+{
+	return value == Registration::Warning || value == Registration::AlarmOrWarning;
+}
 
 struct Entry {
 	ErrCode code; // Отрицательный номер события
 	Group group; // Функциональная группа
-	Registration registration; // Обычный способ регистрации
+	Registration registration; // Разрешённые способы регистрации события
 	const char *source; // Короткая метка источника
 	const char *description; // Описание причины для оператора
 };
@@ -70,6 +87,12 @@ struct Entry {
 const Entry *Find(ErrCode code);
 // Возвращает запись по типизированному коду события либо nullptr.
 inline const Entry *Find(Code code) { return Find(ErrorNumber(code)); }
+// Возвращает описание code либо fallback, если запись отсутствует в каталоге.
+inline const char *DescriptionOr(Code code, const char *fallback)
+{
+	const Entry *entry = Find(code);
+	return entry ? entry->description : fallback;
+}
 // Возвращает запись по индексу index в порядке каталога, иначе nullptr.
 const Entry *At(uint8_t index);
 // Возвращает число строк справочника.

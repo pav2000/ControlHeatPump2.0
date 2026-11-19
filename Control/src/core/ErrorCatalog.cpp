@@ -32,8 +32,11 @@ static constexpr Entry catalog[] = {
 
 // Число записей, доступных по отрицательному коду.
 static constexpr size_t count = sizeof(catalog) / sizeof(catalog[0]);
+static_assert(count == kEntryCount, "Error catalog count differs from Code list");
+static_assert(count <= UINT8_MAX, "Error catalog index does not fit uint8_t");
+static_assert(catalog[count - 1].code >= INT8_MIN, "Error catalog code does not fit ErrCode");
 
-// Проверяет уникальность и убывание отрицательных номеров начиная с index.
+// Проверяет уникальность и строгое убывание отрицательных номеров начиная с index.
 // Возвращает true, если оставшиеся записи упорядочены.
 constexpr bool IsOrdered(size_t index)
 {
@@ -64,7 +67,7 @@ const Entry *At(uint8_t index)
 // Возвращает число строк справочника.
 uint8_t Count()
 {
-	return count;
+	return kEntryCount;
 }
 
 }

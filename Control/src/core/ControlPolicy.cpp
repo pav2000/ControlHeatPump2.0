@@ -52,11 +52,12 @@ bool Error_IsCritical(int8_t err)
 	return err == ErrorNumber(ErrorCatalog::Code::kCOMP_START_BLOCKED);
 }
 
-// По hp_off, лимиту nStart, числу повторов num_repeat, флагу no_restart и коду err возвращает останов, повторный пуск либо отсутствие действий.
-ERROR_ACTION Error_Decide(bool hp_off, uint8_t nStart, uint8_t num_repeat,
+// По состоянию ТН, результату останова и лимиту повторов выбирает останов или повторный пуск.
+// stop_command_failed запрещает повтор при отказе команды, err задаёт политику критичности.
+ERROR_ACTION Error_Decide(bool stop_command_failed, uint8_t nStart, uint8_t num_repeat,
                           bool no_restart, int8_t err)
 {
-	if(hp_off) return ERR_ACT_Nothing;                        // выключать нечего
+	if(stop_command_failed) return ERR_ACT_Stop;              // привод не принял команду останова
 	if(nStart == 0) return ERR_ACT_Stop;                      // повторные пуски запрещены
 	if(no_restart && Error_IsCritical(err)) return ERR_ACT_Stop;
 	return num_repeat < nStart ? ERR_ACT_Repeat : ERR_ACT_Stop;

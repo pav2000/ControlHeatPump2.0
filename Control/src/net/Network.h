@@ -76,7 +76,7 @@ boolean   parseIPAddress(const char *str, char sep, IPAddress &ip);
 char     *IPAddress2String(IPAddress &ip);
 void     ShowSockRegisters(uint8_t s);
 void     checkSockStatus();               // сторож зависших сокетов, зовётся из Control.ino
-// ---- Сторож сетевого чипа (решения - NetChip_* в ErrorCodes) ----
+// ---- Сторож сетевого чипа (решения NetChip_* находятся в ControlPolicy) ----
 boolean  netChipReinit(boolean verbose);  // аппаратный и программный сброс чипа и инициализация; замок сети берёт сама. Её зовёт и команда pNETWORK
 void     netChipBaseline();               // снимок регистров после успешной инициализации; замок сети держит вызывающий
 bool     netChipSelfTest();               // самотест чипа из vWeb0 раз в NETCHIP_TEST_S секунд; true - чип сброшен

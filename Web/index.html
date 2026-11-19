@@ -62,6 +62,7 @@ urlupdate = 4000;
 var CH_COLORS = {tout: '#2f7fd1', tevaing: '#72b4ee', tconoutg: '#f2762e', power: '#8a6fd1', cop: '#0f8b8d', tin: '#0f8b8d'};
 var chart = null, spark = null, chData = {}, chRange = 0, homeTrg = NaN, chStep = 30, chTimer = null;
 var curTime = '', ev = [], prev = {};
+var warningCode = 0, warningText = ''; // Раздельный снимок предупреждения для согласованного показа номера и текста.
 
 
 // ---- значения, пришедшие от контроллера: ответ /api/get раскладывается в прежние имена (onPageValue), логика страницы осталась как была ----
@@ -69,7 +70,7 @@ var IDX_KEYS = {'temp.TIN.value': 'get_Temp(TIN)', 'temp.TOUT.value': 'get_Temp(
 	'temp.TCONING.value': 'get_Temp(TCONING)', 'temp.TCONOUTG.value': 'get_Temp(TCONOUTG)', 'temp.TBOILER.value': 'get_Temp(TBOILER)',
 	'state.trg_home': 'get_TrgT(1)', 'boiler.trg': 'get_Boiler(TRG)', 'fc.cfc': 'get_pFC(cFC)', 'state.overheat': 'get_OverHeat', 'eev.pospp': 'get_pEEV(POSpp)',
 	'state.power_220': 'get_Power220', 'state.power_out': 'get_PowerCO', 'state.cop': 'get_fullCOP', 'relay.RBOILER.on': 'get_Relay(RBOILER)',
-	'relay.RPUMPI.on': 'get_Relay(RPUMPI)', 'relay.RPUMPO.on': 'get_Relay(RPUMPO)', 'state.errcode': 'get_errcode', 'state.error': 'get_error', 'state.warning_text': 'get_warning_text', 'state.time': 'get_status',
+	'relay.RPUMPI.on': 'get_Relay(RPUMPI)', 'relay.RPUMPO.on': 'get_Relay(RPUMPO)', 'state.errcode': 'get_errcode', 'state.error': 'get_error', 'state.warning': 'get_warning', 'state.warning_text': 'get_warning_text', 'state.time': 'get_status',
 	'state.work': 'get_WORK', 'state.mode': 'get_MODE'};
 function idxPoll(d) {
 	for(var k in d) {
@@ -123,7 +124,8 @@ window.onPageValue = function(n, v) {
 	case 'get_Relay(RPUMPO)':  pump('c-po', v); break;
 	case 'get_errcode':     errState(parseInt(v)); break;
 	case 'get_error':       prev.errtext = v; showErr(); break;
-	case 'get_warning_text': { var w = $('warning'); w.textContent = v ? 'Последнее предупреждение: ' + v : ''; w.hidden = !v; break; }
+	case 'get_warning': warningCode = parseInt(v) || 0; showWarning(); break;
+	case 'get_warning_text': warningText = v || ''; showWarning(); break;
 	case 'get_Heat(ADT)':   night.t = parseFloat(v); showNight(); break;
 	case 'get_Heat(ADH)':   night.h = parseInt(v); showNight(); break;
 	case 'get_Heat(ADEH)':  night.e = parseInt(v); showNight(); break;
@@ -132,6 +134,12 @@ window.onPageValue = function(n, v) {
 	case 'get_MODE':        hot.mode = v; heatIcons(); track('mode', v, 'Режим: ' + v.toLowerCase()); break;
 	}
 };
+// Обновляет строку последнего предупреждения из кода и операторского текста; ничего не возвращает.
+function showWarning() {
+	var w = $('warning'), shown = warningCode && warningText;
+	w.textContent = shown ? 'Последнее предупреждение: ' + warningCode + ' ' + warningText : '';
+	w.hidden = !shown;
+}
 // чем греется бойлер: ТН - компрессор работает в режиме «ГВС», ТЭН - включено реле RBOILER (иконка есть, пока реле есть в конфигурации)
 var hot = {work: false, mode: '', ten: false, hasTen: false};
 function heatIcons() {
@@ -160,7 +168,7 @@ function errState(code) {
 function showErr() {
 	var e = $('err');
 	if(!e || prev.errcode === undefined) return;
-	if(prev.errcode) { e.className = 'tag bad'; e.innerHTML = '⚠ ' + esc(prev.errtext || 'Ошибка ' + prev.errcode); }
+	if(prev.errcode) { e.className = 'tag bad'; e.innerHTML = '⚠ ' + prev.errcode + ' ' + esc(prev.errtext || 'Ошибка'); }
 	else { e.className = 'tag ok'; e.innerHTML = '✓ Ошибок нет'; }
 }
 

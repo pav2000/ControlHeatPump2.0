@@ -354,7 +354,7 @@ int16_t devEEV::set_Overheat(boolean fHeating)
 	Overheat = Overheat_Calc(in, Overheat, &overheatErr);
 	if(overheatErr) {
 		err = ErrorNumber(ErrorCatalog::Code::kEEV_CONFIG);
-		set_Error(ErrorCatalog::Code::kEEV_CONFIG, name);
+		HP.raise_Error(ErrorCatalog::Code::kEEV_CONFIG, name);
 	}
 #endif
 

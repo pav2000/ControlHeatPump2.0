@@ -26,7 +26,7 @@
  */
 #include "BusOneWire.h"
 #include "Hardware.h"     // addressToHex, Recover_I2C_bus
-#include "../core/HeatPump.h"     // HP, set_Error
+#include "../core/HeatPump.h"     // HP и единый аварийный путь raise_Error
 #include "../log/Journal.h"      // journal
 #include "../core/Rtos.h"         // _delay, замки шин, Watchdog_AliveHere
 #include "../util/Util.h"         // _itoa, _dtoa

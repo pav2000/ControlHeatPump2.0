@@ -106,10 +106,11 @@ ErrorEventInfo HeatPump::get_errorInfo() const
 	return info;
 }
 
-// Форматирует событие entry от device с типизированной деталью и текстом meaning.
-// При пустом entry пишет служебное событие с группой source. note и size задают буфер без времени.
+// Формирует журнальную строку и, если задан, короткий текст оператора для события entry.
+// note/operatorText задают выходы; level, source, device, detail и meaning описывают событие.
 static void formatEvent(char *note, size_t size, EventLevel level, const ErrorCatalog::Entry *entry, const char *source,
-                        const char *device, ErrorDetail detail, const char *meaning)
+                        const char *device, ErrorDetail detail, const char *meaning,
+                        char *operatorText = nullptr, size_t operatorSize = 0)
 {
 	const char *marker = level == EventLevel::Error ? "$ERROR" : level == EventLevel::Warning ? "$WARN" : "$EVENT";
 	if(!entry) {
@@ -117,23 +118,44 @@ static void formatEvent(char *note, size_t size, EventLevel level, const ErrorCa
 		ErrorTrimUtf8(note);
 		return;
 	}
+	const char *description = meaning ? meaning : entry->description;
 	char extra[32]{};
 	switch(detail.kind) {
-	case ErrorDetailKind::Fault:
-		if(strcmp(device, "OMRON") == 0)
-			m_snprintf(extra, sizeof(extra), " FAULT E%02d.%d", (int)detail.value, (int)detail.state);
-		else m_snprintf(extra, sizeof(extra), " FAULT %d", (int)detail.value);
+	case ErrorDetailKind::OmronFault:
+		m_snprintf(extra, sizeof(extra), " FAULT E%02d.%d", (int)detail.value, (int)detail.state);
+		if(operatorText && meaning) m_snprintf(operatorText, operatorSize, "%s: отказ инвертора E%02d.%d — %s", device, (int)detail.value, (int)detail.state, description);
+		else if(operatorText) m_snprintf(operatorText, operatorSize, "%s: отказ инвертора E%02d.%d", device, (int)detail.value, (int)detail.state);
 		break;
-	case ErrorDetailKind::Exception: m_snprintf(extra, sizeof(extra), " EXC 0x%02X", (unsigned)detail.value); break;
-	case ErrorDetailKind::Transport: m_snprintf(extra, sizeof(extra), " RX 0x%02X", (unsigned)detail.value); break;
-	case ErrorDetailKind::Local: m_snprintf(extra, sizeof(extra), " LOCAL 0x%02X", (unsigned)detail.value); break;
-	case ErrorDetailKind::State: m_snprintf(extra, sizeof(extra), " STATE %d", (int)(int16_t)detail.value); break;
+	case ErrorDetailKind::Fault:
+		m_snprintf(extra, sizeof(extra), " FAULT %d", (int)detail.value);
+		if(operatorText && meaning) m_snprintf(operatorText, operatorSize, "%s: отказ инвертора %d — %s", device, (int)detail.value, description);
+		else if(operatorText) m_snprintf(operatorText, operatorSize, "%s: отказ инвертора %d", device, (int)detail.value);
+		break;
+	case ErrorDetailKind::Exception:
+		m_snprintf(extra, sizeof(extra), " EXC 0x%02X", (unsigned)detail.value);
+		if(operatorText) m_snprintf(operatorText, operatorSize, "%s: ошибка Modbus 0x%02X, %s", device, (unsigned)detail.value, description);
+		break;
+	case ErrorDetailKind::Transport:
+		m_snprintf(extra, sizeof(extra), " RX 0x%02X", (unsigned)detail.value);
+		if(operatorText) m_snprintf(operatorText, operatorSize, "%s: сбой обмена RX 0x%02X, %s", device, (unsigned)detail.value, description);
+		break;
+	case ErrorDetailKind::Local:
+		m_snprintf(extra, sizeof(extra), " LOCAL 0x%02X", (unsigned)detail.value);
+		if(operatorText) m_snprintf(operatorText, operatorSize, "%s: причина LOCAL 0x%02X, %s", device, (unsigned)detail.value, description);
+		break;
+	case ErrorDetailKind::State:
+		m_snprintf(extra, sizeof(extra), " STATE %d", (int)(int16_t)detail.value);
+		if(operatorText) m_snprintf(operatorText, operatorSize, "%s: состояние STATE %d, %s", device, (int)(int16_t)detail.value, description);
+		break;
 	default: break;
 	}
+	if(operatorText && detail.kind == ErrorDetailKind::None)
+		m_snprintf(operatorText, operatorSize, "%s: %s", device, description);
 	m_snprintf(note, size, "%s %d %s %s%s  — %s", marker,
-	           (int)entry->code, entry->source, device, extra, meaning ? meaning : entry->description);
+	           (int)entry->code, entry->source, device, extra, description);
 
 	ErrorTrimUtf8(note);
+	if(operatorText) ErrorTrimUtf8(operatorText);
 }
 
 // Возвращает согласованный снимок предупреждения и при наличии буфера копирует в него текст.
@@ -145,6 +167,7 @@ WarningRecord HeatPump::get_lastWarning(char *text, size_t size) const
 		const size_t count = size < sizeof(lastWarningText) ? size : sizeof(lastWarningText);
 		memcpy(text, lastWarningText, count);
 		text[count - 1] = '\0';
+		ErrorTrimUtf8(text);
 	}
 	irqRestore(irq);
 	return snapshot;
@@ -157,21 +180,27 @@ void HeatPump::set_Warning(ErrorCatalog::Code code, const char *device, uint16_t
 {
 	const auto *entry = ErrorCatalog::Find(code);
 	if(!entry) return;
+	if(!ErrorCatalog::AllowsWarning(entry->registration)) {
+		log_Event("CATALOG", device, "Код каталога не допускает регистрацию предупреждения");
+		return;
+	}
 
 	WarningRecord event{ErrorNumber(code), cause, rtcSAM3X8.unixtime(), {}, errorDetail};
 	strncpy(event.device, device, sizeof(event.device) - 1);
 	char line[sizeof(lastWarningText)]{};
-	formatEvent(line, sizeof(line), EventLevel::Warning, entry, nullptr, event.device, event.detail, detail);
+	char operatorText[sizeof(lastWarningText)]{};
+	formatEvent(line, sizeof(line), EventLevel::Warning, entry, nullptr, event.device, event.detail, detail,
+	            operatorText, sizeof(operatorText));
 	const uint32_t subject = event.Subject();
 	const bool safety = code == ErrorCatalog::Code::kSAFETY_INTERLOCK;
 	const uint32_t now = safety ? Uptime_s() : 0;
 	const uint32_t irq = irqSave();
 	const bool publish = safety ? !Notify_Seen(&safetyWarnings, subject, now, SAFETY_INTERLOCK_WINDOW_S) :
-	                             (newEpisode || !lastWarning.SameCause(event));
+	                             warningEpisodes.Open(subject, newEpisode);
 	if(publish) {
 		if(safety) Notify_Remember(&safetyWarnings, subject, now);
 		lastWarning = event;
-		memcpy(lastWarningText, line, sizeof(lastWarningText));
+		memcpy(lastWarningText, operatorText, sizeof(lastWarningText));
 	}
 	irqRestore(irq);
 	if(!publish) return;
@@ -187,8 +216,13 @@ void HeatPump::set_Warning(ErrorCatalog::Code code, const char *device, uint16_t
 		return;
 	}
 	journal.jprintf_time("%s\n", line);
-	if(code != ErrorCatalog::Code::kNOTIFY)
-		message.setMessage(code == ErrorCatalog::Code::kSD ? pMESSAGE_SD : pMESSAGE_WARNING, line, ErrorNumber(code), subject);
+	if(code != ErrorCatalog::Code::kNOTIFY) {
+		char messageText[sizeof(lastWarningText)]{};
+		m_snprintf(messageText, sizeof(messageText), "%d %s", (int)ErrorNumber(code), operatorText);
+		ErrorTrimUtf8(messageText);
+		message.setMessage(code == ErrorCatalog::Code::kSD ? pMESSAGE_SD : pMESSAGE_WARNING,
+		                   messageText, ErrorNumber(code), subject);
+	}
 }
 
 // Межблокировки выходов (Safety.h). Этап наблюдения: отказ только пишется в журнал, переключение выполняет вызывающий.
@@ -214,10 +248,20 @@ SAFETY_WHY HeatPump::safety_check(SAFETY_OUT out, bool on, const char *name, con
 	return w;
 }
 
-// Снимает команду работающего компрессора и отмечает время успешно отданного останова.
-void HeatPump::stopForError()
+// Снимает команду работающего компрессора и отмечает время принятой команды останова.
+// Возвращает false при отказе команды инвертору и запрещает автоматический повторный пуск.
+bool HeatPump::stopForError()
 {
-	if(is_compressor_on() && compressor_emergency_off()) set_stopCompressor();
+	if(!is_compressor_on()) return !emergencyStopCommandFailed;
+	if(compressor_emergency_off()) {
+		set_stopCompressor();
+		emergencyStopCommandFailed = false;
+		return true;
+	}
+	emergencyStopCommandFailed = true;
+	log_Event(ErrorCatalog::Code::kCOMP_NO_STOP, driveDevice, {},
+	          "Команда аварийного останова не подтверждена");
+	return false;
 }
 
 // Пишет предупреждение code только в журнал с источником device, деталями и пояснением meaning.
@@ -238,19 +282,18 @@ void HeatPump::log_Event(const char *source, const char *device, const char *tex
 	journal.jprintf_time("%s\n", line);
 }
 
-// Передаёт код каталога и устройство в общий аварийный путь ТН.
-void set_Error(ErrorCatalog::Code code, const char *device)
-{
-	HP.raise_Error(code, device);
-}
-
 // Отдаёт команду останова и публикует аварию code от device с переданными деталями.
 void HeatPump::raise_Error(ErrorCatalog::Code code, const char *device,
                            ErrorDetail detail, const char *meaning)
 {
 	if(code == ErrorCatalog::Code::kOK) return;
+	const auto *entry = ErrorCatalog::Find(code);
+	if(entry && !ErrorCatalog::AllowsAlarm(entry->registration)) {
+		log_Event("CATALOG", device, "Код каталога не допускает регистрацию аварии");
+		return;
+	}
 	stopForError();
-	record_Error(code, device, detail, meaning);
+	record_StoppedError(code, device, detail, meaning);
 }
 
 // Регистрирует окончательный сбой обмена. transport задаёт код для контекста транспортного отказа.
@@ -261,42 +304,55 @@ void HeatPump::raise_ModbusError(ModbusResult result, const char *device, ErrorC
 	raise_Error(code, device, ModbusDetail(result));
 }
 
-// Записывает первую аварию, её описание и детали, затем публикует журнал и уведомление.
-// code задаёт событие, device и detail уточняют источник и первичную причину.
-// meaning заменяет текст каталога.
-void HeatPump::record_Error(ErrorCatalog::Code code, const char *device,
-                           ErrorDetail detail, const char *meaning)
+// После выполненного драйвером останова публикует первую аварию; вторичную оставляет как $WARN.
+// code задаёт событие, device и detail уточняют источник; meaning заменяет текст каталога.
+void HeatPump::record_StoppedError(ErrorCatalog::Code code, const char *device,
+                                  ErrorDetail detail, const char *meaning)
 {
-	if(code == ErrorCatalog::Code::kOK || error != OK) return;
+	if(code == ErrorCatalog::Code::kOK) return;
 
 	char source[sizeof(source_error)]{};
 	char note[sizeof(note_error)]{};
+	char operatorText[sizeof(note_error)]{};
 	const auto *entry = ErrorCatalog::Find(code);
 	if(!entry) {
-		journal.jprintf_time("Invalid alarm code %d\n", (int)code);
 		code = ErrorCatalog::Code::kCONFIG;
 		entry = ErrorCatalog::Find(code);
 		meaning = nullptr;
 		detail = {};
 	}
 	strncpy(source, device, sizeof(source) - 1);
-	formatEvent(note, sizeof(note), EventLevel::Error, entry, nullptr, source, detail, meaning);
+	formatEvent(note, sizeof(note), EventLevel::Error, entry, nullptr, source, detail, meaning,
+	            operatorText, sizeof(operatorText));
 	const uint32_t irq = irqSave();
 	const bool first = Error_Claim(&error, ErrorNumber(code));
+	const bool duplicate = !first && error == ErrorNumber(code) &&
+	                       strcmp(source_error, source) == 0 &&
+	                       activeErrorDetail.kind == detail.kind &&
+	                       activeErrorDetail.value == detail.value &&
+	                       activeErrorDetail.state == detail.state;
 	if(first) {
 		activeErrorDetail = detail;
 		memcpy(source_error, source, sizeof(source_error));
-		memcpy(note_error, note, sizeof(note_error));
+		memcpy(note_error, operatorText, sizeof(note_error));
 	}
 	irqRestore(irq);
-	if(!first) return;
+	if(duplicate) return;
+	if(!first) {
+		formatEvent(note, sizeof(note), EventLevel::Warning, entry, nullptr, source, detail, meaning);
+		journal.jprintf_time("%s\n", note);
+		return;
+	}
 
 	journal.jprintf_time("%s\n", note);
 	if(xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) save_DumpJournal(true);
 	WarningRecord key{ErrorNumber(code), detail.value, 0, {}, detail};
 	strncpy(key.device, source, sizeof(key.device) - 1);
 	const uint32_t subject = key.Subject() ^ ((uint32_t)detail.kind << 16) ^ detail.state;
-	message.setMessage(pMESSAGE_ERROR, note, ErrorNumber(code), subject);
+	char messageText[sizeof(note_error)]{};
+	m_snprintf(messageText, sizeof(messageText), "%d %s", (int)ErrorNumber(code), operatorText);
+	ErrorTrimUtf8(messageText);
+	message.setMessage(pMESSAGE_ERROR, messageText, ErrorNumber(code), subject);
 	process_error();
 }
 
@@ -304,11 +360,11 @@ void HeatPump::process_error(void)
 {
 	if(get_State() == pOFF_HP) return;   // Насос выключен, выключать нечего
 
-	// Решение принимается в ErrorCodes - там же, где лежит список
-	// критических ошибок и расшифровка кодов. Режим "не перезапускать после
+	// Решение принимает ControlPolicy, каталог хранит расшифровку кодов.
+	// Режим "не перезапускать после
 	// критических ошибок" приходит параметром, а не через препроцессор:
 	// иначе его ветка не собирается и не проверяется ничем.
-	ERROR_ACTION act = Error_Decide(false, get_nStart(), num_repeat,
+	ERROR_ACTION act = Error_Decide(emergencyStopCommandFailed, get_nStart(), num_repeat,
 #ifdef NOT_RESTART_ON_CRITICAL_ERRORS
 	                                true,
 #else
@@ -365,7 +421,7 @@ void HeatPump::initHeatPump()
 
 	// Графики в памяти
 	for(i = 0; i < sizeof(Charts) / sizeof(Charts[0]); i++)
-		if(!Charts[i].init(CHART_POINT)) set_Error(ErrorCatalog::Code::kMEMORY, (char*)"Charts");
+		if(!Charts[i].init(CHART_POINT)) raise_Error(ErrorCatalog::Code::kMEMORY, "Charts");
 	clearChart();
 
 	resetSettingHP();                                          // все переменные
@@ -378,6 +434,7 @@ void HeatPump::eraseError()
 	source_error[0] = '\0';
 	activeErrorDetail = {};
 	error = OK;
+	emergencyStopCommandFailed = false;
 	irqRestore(irq);
 }
 
@@ -971,7 +1028,7 @@ xGoWait:
 	if(!CheckAvailableWork())   // Нет работы для ТН - ничего не включено
 	{
 		setState(pOFF_HP);  // Еще ничего не сделали по этому сразу ставим состоение выключено
-		set_Error(ErrorCatalog::Code::kCONFIG_NO_WORK, (char*) __FUNCTION__);
+		raise_Error(ErrorCatalog::Code::kCONFIG_NO_WORK, __FUNCTION__);
 		return;
 	}
     if(get_State() != pSTARTING_HP) return;            // Могли нажать кнопку стоп, выход из процесса запуска
@@ -979,7 +1036,7 @@ xGoWait:
 	if((!sADC[PEVA].get_present()) && (dEEV.get_ruleEEV() == TEVAOUT_PEVA))  //  Отсутвует датчик давления, и выбран алгоритм ЭРВ который его использует",
 	{
 		setState(pOFF_HP);    // Еще ничего не сделали по этому сразу ставим состоение выключено
-		set_Error(ErrorCatalog::Code::kEEV_CONFIG, (char*) __FUNCTION__);        // остановить по ошибке;
+		raise_Error(ErrorCatalog::Code::kEEV_CONFIG, __FUNCTION__);        // остановить по ошибке;
 		return;
 	}
 #endif
@@ -988,7 +1045,7 @@ xGoWait:
 		if(bad != NULL) {
 			setState(pOFF_HP);
 			journal.jprintf(" Sensor %s: not in config or no address!\n", bad->get_name());
-			set_Error(ErrorCatalog::Code::kSENSOR_MISSING, bad->get_name());       // источник ошибки - имя датчика
+			raise_Error(ErrorCatalog::Code::kSENSOR_MISSING, bad->get_name());       // источник ошибки - имя датчика
 			return;
 		}
 	}
@@ -999,19 +1056,19 @@ xGoWait:
 		if(!dRelay[PUMP_OUT].get_present())  // отсутсвует насос на конденсаторе, пользователь НЕ может изменить в процессе работы проверка при старте
 		{
 			setState(pOFF_HP);    // Еще ничего не сделали по этому сразу ставим состоение выключено
-			set_Error(ErrorCatalog::Code::kCONFIG_PUMP, (char*) __FUNCTION__);        // остановить по ошибке;
+			raise_Error(ErrorCatalog::Code::kCONFIG_PUMP, __FUNCTION__);        // остановить по ошибке;
 			return;
 		}
 		if(!dRelay[PUMP_IN].get_present())   // отсутсвует насос на испарителе, пользователь может изменить в процессе работы
 		{
 			setState(pOFF_HP);    // Еще ничего не сделали по этому сразу ставим состоение выключено
-			set_Error(ErrorCatalog::Code::kCONFIG_PUMP, (char*) __FUNCTION__);        // остановить по ошибке;
+			raise_Error(ErrorCatalog::Code::kCONFIG_PUMP, __FUNCTION__);        // остановить по ошибке;
 			return;
 		}
 		if((!dRelay[RCOMP].get_present()) && (!dFC.get_present()))   // отсутсвует компрессор, пользователь может изменить в процессе работы
 		{
 			setState(pOFF_HP);    // Еще ничего не сделали по этому сразу ставим состоение выключено
-			set_Error(ErrorCatalog::Code::kCONFIG_COMPRESSOR, (char*) __FUNCTION__);        // остановить по ошибке;
+			raise_Error(ErrorCatalog::Code::kCONFIG_COMPRESSOR, __FUNCTION__);        // остановить по ошибке;
 			return;
 		}
 	} //  if (start)  // Команда старт
@@ -1022,7 +1079,7 @@ xGoWait:
 	{
 #ifdef EEV_DEF
 		if(get_State() != pSTARTING_HP) return;            // Могли нажать кнопку стоп, выход из процесса запуска
-		else { int8_t r = dEEV.Start(); if(r != OK) { setState(pOFF_HP); set_Error(ErrorCatalog::Code::kCONFIG, "EEV"); return; } }
+		else { int8_t r = dEEV.Start(); if(r != OK) { setState(pOFF_HP); raise_Error(ErrorCatalog::Code::kCONFIG, "EEV"); return; } }
 		if(!waitEEVService()) return; // поиск нуля должен закончиться до стартовой позиции
 #endif
 
@@ -1077,7 +1134,7 @@ xGoWait:
 	{
 		log_Event(ErrorCatalog::Code::kCOMP_START_BLOCKED, "COMP",
 		          {ErrorDetailKind::State, static_cast<uint16_t>(get_errcode()), 0});
-		set_Error(ErrorCatalog::Code::kCOMP_START_BLOCKED, (char*) __FUNCTION__);
+		stopForError();
 		return;
 	}
 	if(start_compressor_now) compressorON(); // Компрессор включить если нет ошибок и надо включаться
@@ -1447,7 +1504,7 @@ MODE_COMP  HeatPump::UpdateBoiler()
 		dFC.set_target(out.target, out.target_immediate, in.fc_min, in.fc_max);
 	}
 	if(out.reset_pid) resetPID();
-	if(out.error != ErrorCatalog::Code::kOK) set_Error(out.error, (char*)__FUNCTION__);
+	if(out.error != ErrorCatalog::Code::kOK) raise_Error(out.error, __FUNCTION__);
 	return out.comp;
 }
 
@@ -1560,7 +1617,7 @@ MODE_COMP HeatPump::UpdateHeat()
 		dFC.set_target(out.target, out.target_immediate, in.fc_min, in.fc_max);
 	}
 	if(out.reset_pid) resetPID();
-	if(out.error != ErrorCatalog::Code::kOK) set_Error(out.error, (char*)__FUNCTION__);
+	if(out.error != ErrorCatalog::Code::kOK) raise_Error(out.error, __FUNCTION__);
 	return out.comp;
 }
 
@@ -1661,7 +1718,7 @@ MODE_COMP HeatPump::UpdateCool()
 		dFC.set_target(out.target, out.target_immediate, in.fc_min, in.fc_max);
 	}
 	if(out.reset_pid) resetPID();
-	if(out.error != ErrorCatalog::Code::kOK) set_Error(out.error, (char*)__FUNCTION__);
+	if(out.error != ErrorCatalog::Code::kOK) raise_Error(out.error, __FUNCTION__);
 	return out.comp;
 }
 
@@ -1674,12 +1731,12 @@ void HeatPump::vUpdate()
 
 	// Различные проверки на ошибки и защиты
 	if(!CheckAvailableWork()) {  // Нет работы для ТН - ничего не включено, пользователь может изменить в процессе работы
-		set_Error(ErrorCatalog::Code::kCONFIG_NO_WORK, (char*) __FUNCTION__);
+		raise_Error(ErrorCatalog::Code::kCONFIG_NO_WORK, __FUNCTION__);
 		return;
 	}
 #ifdef EEV_DEF
 	if((!sADC[PEVA].get_present()) && (dEEV.get_ruleEEV() == TEVAOUT_PEVA)) {  //  Отсутвует датчик давления, и выбран алгоритм ЭРВ который его использует", пользователь может изменить в процессе работы
-		set_Error(ErrorCatalog::Code::kEEV_CONFIG, dEEV.get_name());
+		raise_Error(ErrorCatalog::Code::kEEV_CONFIG, dEEV.get_name());
 		return;
 	}
 #endif
@@ -1861,7 +1918,7 @@ boolean HeatPump::configHP(MODE_HP conf)
 	} else if((conf & pDEFROST)) {  // Разморозка
 		// to do...
 	} else { // ?
-		set_Error(ErrorCatalog::Code::kCONFIG,(char*)__FUNCTION__);   // Ошибка!  что то пошло не так
+		raise_Error(ErrorCatalog::Code::kCONFIG, __FUNCTION__);   // Ошибка!  что то пошло не так
 		return false;
 	}
 	return true;
@@ -2063,12 +2120,12 @@ void HeatPump::compressorON()
 	#endif		
 		// Проверка включения насосов с проверкой и предупреждением (этого не должно быть)
 		if(!dRelay[PUMP_IN].get_Relay()) {
-			set_Error(ErrorCatalog::Code::kCOMP_NO_PUMP, (char*) dRelay[PUMP_IN].get_name());
+			raise_Error(ErrorCatalog::Code::kCOMP_NO_PUMP, dRelay[PUMP_IN].get_name());
 			return;
 		}
 		if(!(dRelay[PUMP_OUT].get_Relay()
 		)) {
-			set_Error(ErrorCatalog::Code::kCOMP_NO_PUMP, (char*) dRelay[PUMP_OUT].get_name());
+			raise_Error(ErrorCatalog::Code::kCOMP_NO_PUMP, dRelay[PUMP_OUT].get_name());
 			return;
 		}
 
@@ -2092,7 +2149,7 @@ void HeatPump::compressorON()
 				_delay(TIME_READ_SENSOR);
 				if(sFrequency[i].get_Value() < sFrequency[i].get_minValue()) {  // Поток меньше минимального
 					journal.jprintf(" Flow %s: %.3d\n", sFrequency[i].get_name(), sFrequency[i].get_Value());
-					set_Error(ErrorCatalog::Code::kFLOW_LOW, (char*) sFrequency[i].get_name());
+					raise_Error(ErrorCatalog::Code::kFLOW_LOW, sFrequency[i].get_name());
 					return;
 				}
 			}
@@ -2100,7 +2157,7 @@ void HeatPump::compressorON()
 #endif
 #ifdef SEVA  //Если определен лепестковый датчик протока - это переливная схема ТН - надо контролировать проток при работе
 		if(dRelay[RPUMPI].get_Relay())                                                                                             // Только если включен насос геоконтура  (PUMP_IN)
-			if (sInput[SEVA].get_Input()==SEVA_OFF) {set_Error(ErrorCatalog::Code::kFLOW_LOW,(char*)"SEVA"); return;}                              // Выход по ошибке отсутствия протока
+			if (sInput[SEVA].get_Input()==SEVA_OFF) {raise_Error(ErrorCatalog::Code::kFLOW_LOW, "SEVA"); return;}                              // Выход по ошибке отсутствия протока
 #endif
 
 #ifdef DEFROST
@@ -2122,7 +2179,9 @@ void HeatPump::compressorON()
 		if(error || dFC.get_err()) return; // Ошибка - выходим
 	} else { // if (get_errcode()==OK)
 		journal.jprintf(" EEV not set before start compressor!\n");
-		set_Error(ErrorCatalog::Code::kCOMP_START_BLOCKED,(char*)__FUNCTION__);return;
+		raise_Error(ErrorCatalog::Code::kCOMP_START_BLOCKED, "EEV", {},
+		            "ЭРВ не установлена в стартовую позицию");
+		return;
 	}
 
 	// 4. Если нужно облегченный пуск  в зависимости от флага fEEV_light_start
@@ -2223,7 +2282,7 @@ void HeatPump::defrost()
       #ifdef R4WAY            // Нет четырехходового - нет режима охлаждения
   if (dRelay[R4WAY].get_Relay() == false) return;                          // режим охлаждения - размораживать не надо, у меня false это охлаждение.
 #else
- set_Error(ErrorCatalog::Code::kCONFIG, (char*)__FUNCTION__);return;                 // Четырех ходового нет разморозка не возможна - это косяк конфигурации
+ raise_Error(ErrorCatalog::Code::kCONFIG, __FUNCTION__);return;                 // Четырех ходового нет разморозка не возможна - это косяк конфигурации
       #endif
          
 // Реализовано два алгоритма выбор по наличию SFROZEN
@@ -2271,7 +2330,7 @@ void HeatPump::defrost()
 			      dRelay[PUMP_IN].set_OFF();                                        // выключаем вентилятор
 			     }
 		    }
-	    else  { set_Error(ErrorCatalog::Code::kCONFIG, (char*)__FUNCTION__);return; }           // ХА ХА  Работаем на охлаждение но при этом требуется разморозка - Это косяк Карл, но до сюда не доедит
+	    else  { raise_Error(ErrorCatalog::Code::kCONFIG, __FUNCTION__);return; }           // ХА ХА  Работаем на охлаждение но при этом требуется разморозка - Это косяк Карл, но до сюда не доедит
 	  	
 	  }
 	  else  // Компрессор не работает - тяжелый случай все делаем руками
