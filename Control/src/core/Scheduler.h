@@ -67,6 +67,7 @@ public:
 	uint16_t Timetable_ptr(uint8_t num);				// Возвращает указатель на запись календаря в TimeTable по его номеру
 	void	 web_get_param(char *param, char* result);	// Вернуть строку параметра для веба
 	uint8_t  web_set_param(char *param, char *val);		// Установить параметр из веба
+	void     selectCalendar(uint8_t calendar);             // Выбрать проверенный номер календаря
 	const char* get_note(void); 						// Получить описание
 	const char* get_name(void) { return  "Scheduler"; } // Получить имя
 	int8_t   save(void);  			               		// Записать настройки в eeprom i2c

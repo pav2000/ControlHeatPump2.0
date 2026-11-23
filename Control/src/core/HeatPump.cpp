@@ -114,17 +114,11 @@ ErrorEventInfo HeatPump::get_errorInfo(char *text, size_t size) const
 }
 
 // Формирует журнальную строку и, если задан, короткий текст оператора для события entry.
-// note/operatorText задают выходы; level, source, device, detail и meaning описывают событие.
-static void formatEvent(char *note, size_t size, EventLevel level, const ErrorCatalog::Entry *entry, const char *source,
+// note/operatorText задают выходы; level, device, detail и meaning описывают событие.
+static void formatEvent(char *note, size_t size, EventLevel level, const ErrorCatalog::Entry *entry,
                         const char *device, ErrorDetail detail, const char *meaning,
                         char *operatorText = nullptr, size_t operatorSize = 0)
 {
-	const char *marker = level == EventLevel::Error ? "$ERROR" : level == EventLevel::Warning ? "$WARN" : "$EVENT";
-	if(!entry) {
-		m_snprintf(note, size, "%s %s %s  — %s", marker, source, device, meaning);
-		ErrorTrimUtf8(note);
-		return;
-	}
 	const char *description = meaning ? meaning : entry->description;
 	char extra[32]{};
 	switch(detail.kind) {
@@ -158,7 +152,7 @@ static void formatEvent(char *note, size_t size, EventLevel level, const ErrorCa
 	}
 	if(operatorText && detail.kind == ErrorDetailKind::None)
 		m_snprintf(operatorText, operatorSize, "%s: %s", device, description);
-	m_snprintf(note, size, "%s %d %s %s%s  — %s", marker,
+	m_snprintf(note, size, "%s %d %s %s%s  — %s", EventMarker(level),
 	           (int)entry->code, entry->source, device, extra, description);
 
 	ErrorTrimUtf8(note);
@@ -196,7 +190,7 @@ void HeatPump::set_Warning(ErrorCatalog::Code code, const char *device, uint16_t
 	strncpy(event.device, device, sizeof(event.device) - 1);
 	char line[sizeof(lastWarningText)]{};
 	char operatorText[sizeof(lastWarningText)]{};
-	formatEvent(line, sizeof(line), EventLevel::Warning, entry, nullptr, event.device, event.detail, detail,
+	formatEvent(line, sizeof(line), EventLevel::Warning, entry, event.device, event.detail, detail,
 	            operatorText, sizeof(operatorText));
 	const uint32_t subject = event.Subject();
 	const bool safety = code == ErrorCatalog::Code::kSAFETY_INTERLOCK;
@@ -264,7 +258,7 @@ static void logCatalogEvent(EventLevel level, ErrorCatalog::Code code, const cha
 	const auto *entry = ErrorCatalog::Find(code);
 	if(!entry) return;
 	char line[sizeof(ActiveError::text)];
-	formatEvent(line, sizeof(line), level, entry, nullptr, device, detail, meaning);
+	formatEvent(line, sizeof(line), level, entry, device, detail, meaning);
 	journal.jprintf_time("%s\n", line);
 }
 
@@ -304,9 +298,7 @@ void HeatPump::log_Event(ErrorCatalog::Code code, const char *device, ErrorDetai
 // Пишет служебное событие source от устройства device с пояснением text.
 void HeatPump::log_Event(const char *source, const char *device, const char *text)
 {
-	char line[sizeof(activeError.text)];
-	formatEvent(line, sizeof(line), EventLevel::Event, nullptr, source, device, {}, text);
-	journal.jprintf_time("%s\n", line);
+	journal.event(Journal::Stamp::Time, source, device, "%s", text);
 }
 
 // Отдаёт команду останова и публикует аварию code от device с переданными деталями.
@@ -349,7 +341,7 @@ void HeatPump::record_StoppedError(ErrorCatalog::Code code, const char *device,
 		detail = {};
 	}
 	strncpy(source, device, sizeof(source) - 1);
-	formatEvent(note, sizeof(note), EventLevel::Error, entry, nullptr, source, detail, meaning,
+	formatEvent(note, sizeof(note), EventLevel::Error, entry, source, detail, meaning,
 	            operatorText, sizeof(operatorText));
 	const uint32_t irq = irqSave();
 	const bool first = activeError.code == OK;
@@ -476,23 +468,39 @@ void HeatPump::Reset_TempErrors()
 	for(uint8_t i=0; i<TNUMBER; i++) sTemp[i].Reset_Errors();
 }
 
-// Установить состояние ТН, при необходимости пишем состояние в ЕЕПРОМ
-// true - есть изменения false - нет изменений
+// Меняет состояние ТН, сохраняет признак работы и пишет подтверждённый переход.
 boolean HeatPump::setState(TYPE_STATE_HP st)
 {
-  if (st==Status.State) return false;     // Состояние не меняется
-  switch (st)
-  {
-  case pOFF_HP:       Status.State=pOFF_HP; if(GETBIT(motoHour.flags,fMH_ON))   {SETBIT0(motoHour.flags,fMH_ON);save_motoHour();}  break;  // 0 ТН выключен, при необходимости записываем в ЕЕПРОМ
-  case pSTARTING_HP:  Status.State=pSTARTING_HP; break;                                                                                    // 1 Стартует
-  case pSTOPING_HP:   Status.State=pSTOPING_HP;  break;                                                                                    // 2 Останавливается
-  case pWORK_HP:      Status.State=pWORK_HP;if(!(GETBIT(motoHour.flags,fMH_ON))) {SETBIT1(motoHour.flags,fMH_ON);save_motoHour();}  break; // 3 Работает, при необходимости записываем в ЕЕПРОМ
-  case pWAIT_HP:      Status.State=pWAIT_HP;if(!(GETBIT(motoHour.flags,fMH_ON))) {SETBIT1(motoHour.flags,fMH_ON);save_motoHour();}  break; // 4 Ожидание, при необходимости записываем в ЕЕПРОМ
-  case pERROR_HP:     Status.State=pERROR_HP;    break;                                                                                    // 5 Ошибка ТН
-  case pERROR_CODE:                                                                                                                        // 6 - Эта ошибка возникать не должна!
-  default:            Status.State=pERROR_HP;    break;                                                                                    // Обязательно должен быть последним, добавляем ПЕРЕД!!!
-  }   
- return true; 
+	if(st == Status.State) return false;
+	switch(st) {
+	case pOFF_HP:
+		Status.State = st;
+		if(GETBIT(motoHour.flags, fMH_ON)) {
+			SETBIT0(motoHour.flags, fMH_ON);
+			save_motoHour();
+		}
+		journal.event(Journal::Stamp::Time, "HP", "OFF", "ТН перешёл в состояние «Выключен»");
+		break;
+	case pWORK_HP:
+	case pWAIT_HP:
+		Status.State = st;
+		if(!GETBIT(motoHour.flags, fMH_ON)) {
+			SETBIT1(motoHour.flags, fMH_ON);
+			save_motoHour();
+		}
+		// WORK означает готовность автоматики. Компрессор может ждать запроса тепла.
+		journal.event(Journal::Stamp::Time, "HP", st == pWORK_HP ? "ON" : "WAIT",
+		              "%s", st == pWORK_HP ? "ТН перешёл в рабочее состояние" : "ТН перешёл в ожидание");
+		break;
+	case pSTARTING_HP:
+	case pSTOPING_HP:
+		Status.State = st;
+		break;
+	default:
+		Status.State = pERROR_HP;
+		break;
+	}
+	return true;
 }
 
 // возвращает строку с найденными датчиками
@@ -596,8 +604,13 @@ void HeatPump::set_profile()
 // слота идёт одним блоком внутри Prof.load, номер профиля запоминается после него.
 int32_t HeatPump::switch_profile(int8_t num)
 {
-	int32_t r = Prof.load(num);
-	if(r >= 0) set_profile();
+	const int8_t previous = Prof.get_idProfile();
+	const int32_t r = Prof.load(num);
+	if(r >= 0) {
+		set_profile();
+		if(Option.numProf != previous)
+			journal.event(Journal::Stamp::Time, "HP", "PROFILE", "Выбран профиль #%d", (int)Option.numProf);
+	}
 	return r;
 }
 
@@ -811,7 +824,6 @@ boolean HeatPump::switchBoiler(boolean b)
 #endif
 	}
 	
-	journal.jprintf(" swBoiler(%d): %X, mW:%d\n", b, onBoiler, get_modWork());
 #ifdef R3WAY
 	dRelay[R3WAY].set_Relay(b);            // Установить в нужное положение 3-х ходового
 #else // Нет трехходового - схема с двумя насосами
@@ -832,7 +844,10 @@ boolean HeatPump::switchBoiler(boolean b)
 		Watchdog_SleepHere(Option.delayBoilerSW * 1000); // выравниваем температуру в контуре отопления/ГВС что бы сразу защиты не сработали
 	}
 	offBoiler = b ? 0 : Uptime_s(); // запомнить время выключения ГВС (нужно для переключения)
-	return onBoiler = b;
+	const bool changed = onBoiler != b;
+	onBoiler = b;
+	if(changed) journal.event(Journal::Stamp::Time, "HP", "MODE", "%s", b ? "Переход на нагрев ГВС" : "Выход из режима ГВС");
+	return onBoiler;
 }
 // Проверка и если надо включение EVI если надо то выключение возвращает состояние реле
 // Если реле нет то ничего не делает возвращает false
@@ -987,7 +1002,6 @@ void HeatPump::StartResume(boolean start)
 		NO_Power = 2; // Resume after
 xGoWait:
 		journal.jprintf(" Start task UpdateHP\n");
-		journal.jprintf_time("%s WAIT . . .\n", (char*) nameHeatPump);
 		startWait = true;                    // Начало работы с ожидания=true;
 		setState(pWAIT_HP);
 		Wake_UpdateHP();
@@ -1003,17 +1017,17 @@ xGoWait:
 			goto xGoWait;
 #else
 		journal.jprintf(" Start task UpdateHP\n");
-		journal.jprintf_time("%s WAIT . . .\n", (char*) nameHeatPump);
 		startWait = true;                    // Начало работы с ожидания=true;
 		setState(pWAIT_HP);
 		Wake_UpdateHP();
 		return;
 #endif			
 		} else if(Scheduler_NeedProfileSwitch(profile, Prof.get_idProfile())) {
-			if(switch_profile(profile) >= 0) journal.jprintf("Profile changed to #%d\n", profile);
-			else journal.jprintf("Error load profile #%d\n", profile);
+			if(switch_profile(profile) < 0) journal.jprintf("Error load profile #%d\n", profile);
 		}
 	}
+	// Возобновление из ожидания иногда требует полной инициализации.
+	const bool resume = !start;
 	if(startWait) {
 		startWait = false;
 		start = true;   // Делаем полный запуск, т.к. в положение wait переходили из стопа (расписания)
@@ -1023,12 +1037,12 @@ xGoWait:
 	if(start)  // Команда старт
 	{
 		if((get_State() == pWORK_HP) || (get_State() == pSTOPING_HP) || (get_State() == pSTARTING_HP)) return; // Если ТН включен или уже стартует или идет процесс остановки то ничего не делаем (исключается многократный заход в функцию)
-		journal.jprintf_date( "  Start . . .\n");
 	} else {
 		if(get_State() != pWAIT_HP) return; // Если состяние НЕ РАВНО ожиданию то ничего не делаем, выходим восстанавливать нечего
-		journal.jprintf_date( "  Resume . . .\n");
 	}
 	setState(pSTARTING_HP);                              // Производится старт -  устанавливаем соответсвующее состояние
+	journal.event(Journal::Stamp::DateTime, "HP", resume ? "RESUME" : "START",
+	              "%s", resume ? "Начато возобновление работы ТН" : "Начат пуск ТН");
 	//  Если требуется сбрасываем инвертор  (проверям ошибку и пишем в журнал)
 	eraseError();                                      // Обнулить ошибку только после сброса инвертора! иначе она может повторно возникнет при ошибке инвертора
 
@@ -1173,11 +1187,6 @@ xGoWait:
 		journal.jprintf(" Start task UpdateHP\n");
 		Wake_UpdateHP();                                                        // Запустить задачу Обновления ТН, дальше она все доделает
 	}
-
-	// ---- 12. насос запущен ----
-	journal.jprintf_time("%s ON . . .\n", (char*) nameHeatPump);
-
-	return;
 }
 
 // ---- STOP/WAIT ----
@@ -1230,15 +1239,7 @@ void HeatPump::StopWait(boolean stop)
    relayAllOFF(); // Все выключить, все (на всякий случай), * внимание - выключатся реле по расписанию!
   #endif 
  
-  if(stop)
-  {
-     setState(pOFF_HP);
-     journal.jprintf_time("%s OFF . . .\n",(char*)nameHeatPump);
-  } else {
-     setState(pWAIT_HP);
-     journal.jprintf_time("%s WAIT . . .\n",(char*)nameHeatPump);
-  }
-  return;
+  setState(stop ? pOFF_HP : pWAIT_HP);
 }
 
 // Инициализировать переменные ПИД регулятора
@@ -1795,7 +1796,11 @@ void HeatPump::vUpdate()
 		}
 		if(!check_compressor_pause()) {
 			if(configHP(Status.modWork)) {                   // Конфигурируем насосы
+				const bool wasRunning = is_compressor_on();
 				compressorON();                              // Включаем компрессор
+				// ТН уже работал. Команда пуска компрессора начинает новый цикл после паузы.
+				if(!wasRunning && get_State() == pWORK_HP && is_compressor_on())
+					journal.event(Journal::Stamp::Time, "HP", "WORK", "Подана команда пуска компрессора");
 			}
 		}
 	}
@@ -1955,7 +1960,6 @@ boolean HeatPump::Switch_R4WAY(boolean fCool)
 {
 #ifdef R4WAY
 	if(fCool == dRelay[R4WAY].get_Relay()) return false;
-	journal.jprintf("Switch to %s\n", fCool ? "COOL" : "HEAT");
 	boolean ret = false;
 	if(is_compressor_on()) {
 		compressorOFF();
@@ -1963,6 +1967,9 @@ boolean HeatPump::Switch_R4WAY(boolean fCool)
 	}
 	if(fCool) dRelay[R4WAY].set_ON(); else dRelay[R4WAY].set_OFF();
 	_delay(DELAY_AFTER_SWITCH_RELAY);                        // Задержка
+	// Состояние реле подтверждает изменение команды клапану.
+	if(dRelay[R4WAY].get_Relay() == fCool)
+		journal.event(Journal::Stamp::Time, "HP", "MODE", "Четырёхходовой клапан: %s", fCool ? "охлаждение" : "нагрев");
 //	пауза не нужна, отстоялись в насосах
 #else // R4WAY
     boolean ret = false; 
@@ -2241,12 +2248,6 @@ void HeatPump::compressorON()
 		dEEV.Resume();
 		Wake_UpdateEEV();                                                  // Запустить задачу Обновления ЭРВ
 		journal.jprintf(" Resume task UpdateEEV\n");
-		#ifdef DEFROST
-		 if(!(get_modWork() & pDEFROST)) journal.jprintf_time("%s WORK . . .\n",(char*)nameHeatPump);     // Сообщение о работе
-		 else journal.jprintf_time("%s DEFROST . . .\n",(char*)nameHeatPump);               // Сообщение о разморозке
-		#else
-		journal.jprintf_time("%s WORK . . .\n",(char*)nameHeatPump);     // Сообщение о работе
-		#endif
 	}
 	else  // признак первой итерации
 	{
@@ -2303,6 +2304,7 @@ void HeatPump::defrost()
 {
       if (get_State()==pOFF_HP) return;                                    // если ТН не работает то выходим
       const char *defrostTimeout = nullptr;                                         // оттайка не закончилась за DEFROST_WAIT_MAX
+	      bool defrostInterrupted = false;
       
       #ifdef R4WAY            // Нет четырехходового - нет режима охлаждения
   if (dRelay[R4WAY].get_Relay() == false) return;                          // режим охлаждения - размораживать не надо, у меня false это охлаждение.
@@ -2318,7 +2320,7 @@ void HeatPump::defrost()
       if (startDefrost==0) startDefrost=xTaskGetTickCount();               // первое срабатывание датчика - запоминаем время (тики)
       if (!Defrost_DelayPassed(xTaskGetTickCount(), startDefrost, Option.delayDefrostOn))  return; //  Еще рано размораживать
       // придется размораживать
-       journal.jprintf("Start defrost\n");
+	       journal.event(Journal::Stamp::Time, "HP", "DEFROST", "Начата оттайка по датчику обмерзания");
        Switch_R4WAY(true);  // охлаждение
        
        compressorON();                                                 // включить компрессор на холод
@@ -2332,7 +2334,10 @@ void HeatPump::defrost()
         if(w >= DEFROST_WAIT_MAX / 10) { defrostTimeout = "Истекло ожидание датчика обмерзания"; break; }
       Watchdog_SleepHere(10*1000);                              // Задержка на 10 сек
         journal.jprintf(" Wait process defrost . . .\n"); 
-        if((get_State()==pOFF_HP)||(get_State()==pSTARTING_HP)||(get_State()==pSTOPING_HP)) break;     // ТН выключен или включается или выключается выходим из разморозки
+	        if(get_State() == pOFF_HP || get_State() == pSTARTING_HP || get_State() == pSTOPING_HP) {
+	          defrostInterrupted = true;
+	          break;
+	        }
       }
 #else          // Алгоритм разморозки по температуре
   if (sTemp[TOUT].get_Temp()>TEMP_NO_DEFROST) return;                      // Если температура на улице выше TEMP_NO_DEFROST ТН не обмерзает
@@ -2342,7 +2347,7 @@ void HeatPump::defrost()
   // организация задержки перед включением
   if (startDefrost==0) startDefrost=xTaskGetTickCount();                    // первое срабатывание датчика - запоминаем время (тики)// Наступило условие, средняя температура испарителя ниже воздуха, более чем 15С - запоминаем время (тики)
   if (!Defrost_DelayPassed(xTaskGetTickCount(), startDefrost, Option.delayDefrostOn))  return;  // Еще рано размораживать
-  journal.jprintf("Start defrost\n");                                       // Пошла оттайка
+	  journal.event(Journal::Stamp::Time, "HP", "DEFROST", "Начата оттайка по температуре испарителя");
 	 // Дальше в зависимости от работает компрессор или нет - это главное условие
 	  if (is_compressor_on())
 	  {
@@ -2377,7 +2382,10 @@ void HeatPump::defrost()
 		  if(w >= DEFROST_WAIT_MAX / 10) { defrostTimeout = "Истекло ожидание конца разморозки горячим газом"; break; }
 		  Watchdog_SleepHere(10*1000);                                                      // Задержка на 10 сек
 		  journal.jprintf(" Wait process HEAT GAS defrost . . .\n");
-		  if (activeError.code ||(get_State() == pOFF_HP) || (get_State() == pSTARTING_HP) || (get_State() == pSTOPING_HP)) break; // ТН выключен или включается или выключается выходим из разморозки
+			  if(activeError.code || get_State() == pOFF_HP || get_State() == pSTARTING_HP || get_State() == pSTOPING_HP) {
+				  defrostInterrupted = true;
+				  break;
+			  }
 		}
 #endif // #ifdef SFROZEN 
     // Завершение
@@ -2389,10 +2397,12 @@ void HeatPump::defrost()
 		}
 		log_Event(ErrorCatalog::Code::kDEFROST_TIMEOUT, "DEFROST", {}, defrostTimeout);
 	} else defrostFails = 0;                                                 // оттайка прошла - счёт неудач заново
-      journal.jprintf(" Finish defrost, wait delayDefrostOff min.\n"); 
 	compressorOFF();                                                         // выключить компрессор   Пока пусть будет так, в дальнейшем надо доработать
 	Watchdog_SleepHere(Option.delayDefrostOff*1000);                                     // Задержка путь стекут остатки воды    
-   journal.jprintf("Finish defrost\n");                                      // выходим ТН сам определит что надо делать
+	// Таймаут уже зарегистрирован как отклонение или авария.
+	if(!defrostTimeout)
+		journal.event(Journal::Stamp::Time, "HP", "DEFROST", "%s",
+		              defrostInterrupted || activeError.code ? "Оттайка прервана" : "Оттайка завершена");
      
 }
 #endif

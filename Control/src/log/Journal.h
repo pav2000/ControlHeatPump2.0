@@ -53,6 +53,7 @@ class Journal :public Print
 {
 public:
  // SemaphoreHandle_t xJournalSemaphore;                    // Семафор Journal
+  enum class Stamp : uint8_t { Time, DateTime };
   void Init();                                            // Инициализация
   // MINI_PRINTF_FMT - проверка форматных строк компилятором. У метода класса
   // первым аргументом идёт this, поэтому номера сдвинуты: формат второй,
@@ -61,6 +62,8 @@ public:
   void jprintf(const char *format, ...) MINI_PRINTF_FMT(2, 3);                 // Печать в консоль и журнал возвращает число записанных байт
   void jprintf_time(const char *format, ...) MINI_PRINTF_FMT(2, 3);			// +Time, далее печать в консоль и журнал
   void jprintf_date(const char *format, ...) MINI_PRINTF_FMT(2, 3);			// +DateTime, далее печать в консоль и журнал
+  // Пишет событие с отметкой времени и завершает строку.
+  void event(Stamp stamp, const char *source, const char *action, const char *format, ...) MINI_PRINTF_FMT(5, 6);
   int32_t send_Data(uint8_t thread);                     // отдать журнал в сеть клиенту  Возвращает число записанных байт
   int32_t available(void);                               // Возвращает размер журнала
   // Возвращает состояние носителя и последней операции журнала.
@@ -79,6 +82,7 @@ private:
   // Порядок: xWebThread -> L2 -> L1 | xI2C; L1 берётся последним, L2 продюсеры не берут никогда.
   bool _lock(void);                                      // взять L1; при отказе строка засчитана в потери
   void _unlock(void);
+  uint8_t _stamp(Stamp stamp);                           // Начало текста после отметки времени в pbuf
   uint16_t _take(uint8_t *chunk, bool reportLoss);        // Под L1 забрать порцию данных из кольца
 
   void _post(char *line);                                // Положить строку в кольцо (или записать сразу)

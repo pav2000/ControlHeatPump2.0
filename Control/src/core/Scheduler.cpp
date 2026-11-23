@@ -137,6 +137,14 @@ void Scheduler::web_get_param(char *param, char *result)
 	}
 }
 
+// Фиксирует смену календаря одинаково для ручного и автоматического выбора.
+void Scheduler::selectCalendar(uint8_t calendar)
+{
+	if(sch_data.Active == calendar) return;
+	sch_data.Active = calendar;
+	journal.event(Journal::Stamp::Time, "SCHED", "SELECT", "Выбран календарь %d", (int)calendar + 1);
+}
+
 // Установить параметр из веба, set_SCHDLR(param=val)
 // Возврат: 0 - ok, 1 - неверный номер расписания, 2 - не хватает места для календаря
 uint8_t Scheduler::web_set_param(char *param, char *val)
@@ -152,7 +160,7 @@ uint8_t Scheduler::web_set_param(char *param, char *val)
 	} else ifparam(WEB_SCH_Active) {
 		cnum = atoi(val);
 		if(cnum >= MAX_CALENDARS) return 1;
-		sch_data.Active = cnum;
+		selectCalendar(cnum);
 	} else ifparam(WEB_SCH_AutoSelectMonth) {
 		if((cnum = param[sizeof(WEB_SCH_AutoSelectMonth)-1]) == '\0') cnum = sch_data.Active; else cnum -= '0';
 		if(cnum >= MAX_CALENDARS) return 1;

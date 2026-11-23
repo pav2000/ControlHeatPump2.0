@@ -28,6 +28,12 @@ enum class EventLevel : uint8_t {
 	Event    // Запись только в журнал, с кодом каталога или без него.
 };
 
+// Возвращает метку записи независимо от способа её вывода в журнал.
+inline const char *EventMarker(EventLevel level)
+{
+	return level == EventLevel::Error ? "$ERROR" : level == EventLevel::Warning ? "$WARN" : "$EVENT";
+}
+
 enum class ErrorDetailKind : uint8_t {
 	None, // Дополнительных данных нет
 	Fault, // Собственный код отказа привода

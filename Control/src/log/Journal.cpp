@@ -201,15 +201,29 @@ void Journal::jprintf(const char *format, ...)
 	_unlock();
 }
 
+// Дописывает пробел после времени. Вызывается под L1, который защищает pbuf.
+uint8_t Journal::_stamp(Stamp stamp)
+{
+	uint8_t offset = 0;
+	if(stamp == Stamp::DateTime) {
+		NowDateToStr(pbuf);
+		offset = NOW_DATE_LEN;
+		pbuf[offset - 1] = ' ';
+	}
+	NowTimeToStr(pbuf + offset);
+	offset += NOW_TIME_LEN;
+	pbuf[offset - 1] = ' ';
+	return offset;
+}
+
 // +Time, далее печать в консоль и журнал
 void Journal::jprintf_time(const char *format, ...)
 {
 	if(!_lock()) return;
-	NowTimeToStr(pbuf);
-	pbuf[8] = ' ';
+	const uint8_t offset = _stamp(Stamp::Time);
 	va_list ap;
 	va_start(ap, format);
-	m_vsnprintf(pbuf + 9, PRINTF_BUF - 9, format, ap);
+	m_vsnprintf(pbuf + offset, PRINTF_BUF - offset, format, ap);
 	va_end(ap);
 	if(Is_otg_vbus_high()) SerialDbg.print(pbuf);
 	_post(pbuf);
@@ -220,14 +234,31 @@ void Journal::jprintf_time(const char *format, ...)
 void Journal::jprintf_date(const char *format, ...)
 {
 	if(!_lock()) return;
-	NowDateToStr(pbuf);
-	pbuf[10] = ' ';
-	NowTimeToStr(pbuf + 11);
-	pbuf[19] = ' ';
+	const uint8_t offset = _stamp(Stamp::DateTime);
 	va_list ap;
 	va_start(ap, format);
-	m_vsnprintf(pbuf + 20, PRINTF_BUF - 20, format, ap);
+	m_vsnprintf(pbuf + offset, PRINTF_BUF - offset, format, ap);
 	va_end(ap);
+	if(Is_otg_vbus_high()) SerialDbg.print(pbuf);
+	_post(pbuf);
+	_unlock();
+}
+
+// Собирает одну запись в общем буфере. Оба этапа форматирования оставляют место для перевода строки.
+void Journal::event(Stamp stamp, const char *source, const char *action, const char *format, ...)
+{
+	if(!_lock()) return;
+	size_t offset = _stamp(stamp);
+	offset += m_snprintf(pbuf + offset, PRINTF_BUF - offset - 1, "%s %s %s  — ",
+	                     EventMarker(EventLevel::Event), source, action);
+	va_list ap;
+	va_start(ap, format);
+	m_vsnprintf(pbuf + offset, PRINTF_BUF - offset - 1, format, ap);
+	va_end(ap);
+	ErrorTrimUtf8(pbuf);
+	const size_t len = m_strlen(pbuf);
+	pbuf[len] = '\n';
+	pbuf[len + 1] = '\0';
 	if(Is_otg_vbus_high()) SerialDbg.print(pbuf);
 	_post(pbuf);
 	_unlock();

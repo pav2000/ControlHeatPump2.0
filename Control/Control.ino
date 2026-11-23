@@ -845,8 +845,7 @@ x_I2C_init_std_message:
 
 	int8_t _profile = HP.Schdlr.calc_active_profile();
 	if(Scheduler_NeedProfileSwitch(_profile, HP.Prof.get_idProfile())) {
-		if(HP.switch_profile(_profile) >= 0) journal.jprintf("Profile changed to #%d\n", _profile);
-		else journal.jprintf("Error load profile #%d\n", _profile);
+		if(HP.switch_profile(_profile) < 0) journal.jprintf("Error load profile #%d\n", _profile);
 	}
 
 	if(HP.get_SaveON()==0)  HP.set_HP_OFF();    // Сбросить флаг включение ТН если стоит соответсвующий флаг в опциях
@@ -1530,7 +1529,7 @@ void vReadSensor_delay1ms(int32_t ms)
 				HP.save_motoHour();
 				Stats.SaveStats(0);
 				Stats.SaveHistory(0);
-				journal.jprintf_date( "POWER LOST!\n");
+				journal.event(Journal::Stamp::DateTime, "POWER", "LOST", "Внешнее питание пропало");
 				if(HP.get_State() == pSTARTING_HP || HP.get_State() == pWORK_HP) {
 					HP.sendCommand(pWAIT);
 					HP.NO_Power = 2;
@@ -1541,11 +1540,11 @@ void vReadSensor_delay1ms(int32_t ms)
 			if(HP.NO_Power_delay) {
 				if(--HP.NO_Power_delay == 0) HP.sendCommand(pNETWORK);
 			} else {
-				journal.jprintf_date( "POWER RESTORED!\n");
+				// Питание восстановлено. Возобновление ТН фиксируется при обработке пуска.
+				journal.event(Journal::Stamp::DateTime, "POWER", "RESTORED", "Внешнее питание восстановлено");
 				if(!HP.Schdlr.IsSchedulerOn()) {  // Расписание не активно, иначе включаемся через расписание
 					if(HP.NO_Power == 2 && HP.get_State() == pWAIT_HP) {
 						HP.NO_Power = 0;
-						journal.jprintf("Resuming work...\n");
 						HP.sendCommand(pRESUME);
 					}
 				}
@@ -1627,9 +1626,11 @@ static void relayAct(devRelay &r, uint8_t act)
 				uint8_t d = rtcSAM3X8.get_days();
 				if(Scheduler_check_day != d) {
 					Scheduler_check_day = d;
-					uint8_t was = HP.Schdlr.sch_data.Active;
-					if(Scheduler_AutoSelect(HP.Schdlr.sch_data.AutoSelectMonthWeek, MAX_CALENDARS, &HP.Schdlr.sch_data.Active, rtcSAM3X8.get_months(), d)) {
-						if(HP.Schdlr.sch_data.Active != was) journal.jprintf_time("Schedule %d selected\n", HP.Schdlr.sch_data.Active + 1);
+					const uint8_t previous = HP.Schdlr.sch_data.Active;
+					uint8_t selected = previous;
+					if(Scheduler_AutoSelect(HP.Schdlr.sch_data.AutoSelectMonthWeek, MAX_CALENDARS, &selected, rtcSAM3X8.get_months(), d)) {
+						// Сброс отметки автовыбора требует записи, даже если номер не сменился.
+						if(selected != previous) HP.Schdlr.selectCalendar(selected);
 						schedulerSavePending = true;
 					}
 				}
@@ -1657,8 +1658,7 @@ static void relayAct(devRelay &r, uint8_t act)
 						while(HP.isCommand()) { Watchdog_Sleep(WDT_UpdateHP, 1000); if(!--i) break; }
 						if(!Tasks.Task_vUpdate_run) continue;
 					}
-					HP.switch_profile(_profile);   // слот копируется одним блоком внутри, журнал - после него
-					journal.jprintf_time("Profile changed to #%d\n", _profile);
+					if(HP.switch_profile(_profile) < 0) journal.jprintf("Error load profile #%d\n", _profile);
 					if(frestart) HP.sendCommand(pRESUME);
 				}
 				break;
