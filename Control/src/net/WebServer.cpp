@@ -202,27 +202,14 @@ void web_server(uint8_t thread)
 					// Ищем в запросе полезную информацию (имя файла или запрос ajax)
 					// пройти авторизацию и разобрать заголовок -  получить имя файла, тип, тип запроса, и признак меню пользователя
 					Socket[thread].http_req_type = GetRequestedHttpResource(thread);
-					if(DBG_ON(DBG_HTTP)) {
-						journal.jprintf("$QUERY: %s\n",Socket[thread].inPtr);
-						journal.jprintf("$INPUT: %s\n",(char*)Socket[thread].inBuf);
-					}
-					switch(Socket[thread].http_req_type)  // По типу запроса
+					// Отладка показывает метаданные. Заголовки и данные запроса могут содержать пароли.
+					if(DBG_ON(DBG_HTTP))
+						journal.jprintf_time("WEB: запрос типа %d, принято байт %d\n", (int)Socket[thread].http_req_type, (int)len);
+					switch(Socket[thread].http_req_type)
 					{
-					case HTTP_invalid: {
-						if(DBG_ON(DBG_WERR | DBG_WFULL)) {
-							uint8_t ip[4];
-							W5100.readSnDIPR(sock, ip);
-							journal.jprintf("WEB:Wrong request %d.%d.%d.%d (%d): ", ip[0], ip[1], ip[2], ip[3], (int)(len));
-							if(DBG_ON(DBG_WFULL)) {
-								if(len > 256) len = 256;
-								for(uint16_t i = 0; i < len; i++) journal.jprintf("%c(%d) ", (char)Socket[thread].inBuf[i], Socket[thread].inBuf[i]);
-							} else {
-								for(len = 0; len < 4; len++) journal.jprintf("%d ", Socket[thread].inBuf[len]);
-							}
-							journal.jprintf("...\n");
-						}
+					case HTTP_invalid:
+						if(DBG_ON(DBG_HTTP)) journal.jprintf_time("WEB: неверный запрос, байт %d\n", (int)len);
 						break;
-					}
 					case HTTP_GET:     // чтение файла
 					{
 						// Имя декодируем ДО проверки доступа: "lan%2Ehtml" иначе проходил белый список и отдавал lan.html
@@ -241,39 +228,25 @@ void web_server(uint8_t thread)
 						// Из прежнего API "GET /&команда&&" жива только узкая ветка удалённых датчиков IP (WiFi), остальное - 404
 						strcpy(Socket[thread].outBuf, HEADER_ANSWER);   // Начало ответа
 						if(!sensorIpRequest(thread, sock)) { sendConstRTOS(thread, HEADER_FILE_NOT_FOUND); break; }
-						if(DBG_ON(DBG_HTTP)) { journal.jprintf("$RETURN: %s\n",Socket[thread].outBuf); }
-						if(sendBufferRTOS(thread, (byte*) (Socket[thread].outBuf), strlen(Socket[thread].outBuf)) == 0) {
-							if(DBG_ON(DBG_WERR)) {
-								uint8_t ip[4];
-								W5100.readSnDIPR(sock, ip);
-								journal.jprintf_time("Error send AJAX(%d.%d.%d.%d): %s\n", ip[0], ip[1], ip[2], ip[3], (char*) Socket[thread].inBuf);
-							}
-						}
+						const size_t replySize = strlen(Socket[thread].outBuf);
+						const bool sent = sendBufferRTOS(thread, (byte*)Socket[thread].outBuf, replySize) != 0;
+						if(DBG_ON(DBG_HTTP)) journal.jprintf_time("WEB: ответ датчику IP, байт %u, отправлен %d\n", (unsigned)replySize, (int)sent);
 						break;
 					}
-					case HTTP_API:     // Запрос нового API
+					case HTTP_API:
 					{
-						if(api_dispatch(thread) == 0 && DBG_ON(DBG_WERR)) {
-							uint8_t ip[4];
-							W5100.readSnDIPR(sock, ip);
-							journal.jprintf_time("Error send API(%d.%d.%d.%d): %s\n", ip[0], ip[1], ip[2], ip[3], Socket[thread].inPtr);
-						}
-						if(DBG_ON(DBG_HTTP)) { journal.jprintf("$RETURN: %s\n", Socket[thread].outBuf); }
+						const bool sent = api_dispatch(thread) != 0;
+						if(DBG_ON(DBG_HTTP)) journal.jprintf_time("WEB: ответ API, отправлен %d\n", (int)sent);
 						break;
 					}
-					case HTTP_POST:    // загрузка настроек
+					case HTTP_POST:
 					{
-						if(GETBIT(Socket[thread].flags, fUser)) goto xUNAUTHORIZED;   // запись файлов, веба и настроек - только администратору
-                        uint8_t ret= parserPOST(thread, len);         // разобрать и получить тип ответа
-                        strcpy(Socket[thread].outBuf, HEADER_ANSWER);
-						strcat(Socket[thread].outBuf, postRet[ret]);   // вернуть текстовый ответ, который надо вывести
-			if(sendBufferRTOS(thread, (byte*) (Socket[thread].outBuf), strlen(Socket[thread].outBuf)) == 0) {
-							if(DBG_ON(DBG_WERR)) {
-								uint8_t ip[4];
-								W5100.readSnDIPR(sock, ip);
-								journal.jprintf_time("Error send POST(%d.%d.%d.%d): %s\n", ip[0], ip[1], ip[2], ip[3], (char*) Socket[thread].inBuf);
-							}
-			}
+						if(GETBIT(Socket[thread].flags, fUser)) goto xUNAUTHORIZED;   // запись файлов только для администратора
+						const uint8_t ret = parserPOST(thread, len);
+						strcpy(Socket[thread].outBuf, HEADER_ANSWER);
+						strcat(Socket[thread].outBuf, postRet[ret]);
+						const bool sent = sendBufferRTOS(thread, (byte*)Socket[thread].outBuf, strlen(Socket[thread].outBuf)) != 0;
+						if(DBG_ON(DBG_HTTP)) journal.jprintf_time("WEB: ответ POST, результат %d, отправлен %d\n", (int)ret, (int)sent);
 						break;
 					}
 					case HTTP_POST_: // предварительный запрос post
@@ -284,26 +257,26 @@ void web_server(uint8_t thread)
 					}
 					case UNAUTHORIZED: {
 xUNAUTHORIZED:
-						if(DBG_ON(DBG_WERR)) {
+						if(DBG_ON(DBG_HTTP)) {
 							uint8_t ip[4];
 							W5100.readSnDIPR(sock, ip);
-							journal.jprintf("$UNAUTHORIZED (%d.%d.%d.%d)\n", ip[0], ip[1], ip[2], ip[3]);
+							journal.jprintf("WEB: доступ запрещён (%d.%d.%d.%d)\n", ip[0], ip[1], ip[2], ip[3]);
 						}
 						sendUnauthorized(thread);
 						break;
 					}
 					case BAD_LOGIN_PASS: {
-						if(DBG_ON(DBG_WERR)) {
+						if(DBG_ON(DBG_HTTP)) {
 							uint8_t ip[4];
 							W5100.readSnDIPR(sock, ip);
-							journal.jprintf("$Wrong login or password (%d.%d.%d.%d)\n", ip[0], ip[1], ip[2], ip[3]);
+							journal.jprintf("WEB: неверный логин или пароль (%d.%d.%d.%d)\n", ip[0], ip[1], ip[2], ip[3]);
 						}
 						sendUnauthorized(thread);
 						break;
 					}
 
 					default:
-						journal.jprintf("$Unknow  %s\n", (char*) Socket[thread].inBuf);
+						if(DBG_ON(DBG_HTTP)) journal.jprintf_time("WEB: неизвестный тип запроса %d\n", (int)Socket[thread].http_req_type);
 					}
 
 					// Обработчик потерял замок сети (отпустил на время ожидания и не взял обратно): шина SPI сейчас у другой
@@ -360,15 +333,14 @@ template<class F> static void readMeasure(F &file, uint8_t *buf, uint16_t chunk,
 }
 
 // TEST.SD:<файл> и TEST.FLASH:<файл>: в журнал - байты, время, скорость и CRC16 (calc_crc16, MODBUS) для сверки с исходным файлом.
-// Результат - одной строкой журнала вместе с именем: журнал сжимает повторы целых строк, и начало строки, напечатанное отдельно,
-// склеивалось со следующей (результат SD выходил под именем флеш). Возвращает res замера: -1 - ошибка чтения (у SdFat).
-template<class F> static int webTestRead(uint8_t thread, F &file, const char *dev, const char *name)
+// Результат и носитель пишутся одной строкой. Возвращает res замера: -1 при ошибке SdFat.
+template<class F> static int webTestRead(uint8_t thread, F &file, const char *dev)
 {
 	SpiReadStat r;
 	readMeasure(file, (uint8_t *) Socket[thread].outBuf, sizeof(Socket[thread].outBuf), &r);
 	// Скорость в 64 битах, печать как 32: mini-printf берёт из va_list unsigned int, а 64-битный аргумент по ABI
 	// лежит с выравниванием на 8 байт - выводилось бы не то число. В байты в секунду 32 бит хватает.
-	journal.jprintf("%s test: %s - read %u bytes, %u us, %u b/sec, crc16 %04X\n", dev, name, (unsigned int) r.size, (unsigned int) r.us,
+	journal.jprintf("%s test: read %u bytes, %u us, %u b/sec, CRC16=%04X\n", dev, (unsigned int) r.size, (unsigned int) r.us,
 	                (unsigned int) ((uint64_t) r.size * 1000000 / r.us), (unsigned int) r.crc);
 	return r.res;
 }
@@ -434,7 +406,7 @@ void readFileSD(char *filename, uint8_t thread)
 				size_t tail_len = strlen(tail) + 1;
 				itoa(HP_SCHEME, str, 10); // вставить номер схемы
 				memmove(str + strlen(str), tail, tail_len);                         // области перекрываются: strcat тут - неопределённое поведение
-			} else journal.jprintf("Not found ] in: %s", filename); // нет закрывающейся скобки
+			} else if(DBG_ON(DBG_HTTP)) journal.jprintf_time("HTTP API: нет закрывающей скобки\n"); // нет закрывающейся скобки
 		}
 	}
 
@@ -444,11 +416,11 @@ void readFileSD(char *filename, uint8_t thread)
 		filename += 8;
 		if(strcmp(filename, ".txt") == 0) {	get_txtSettings(thread); return; }
 		else if(strcmp(filename, ".bin") == 0) {
-			if(!get_binSettings(thread)) journal.jprintf("Error download %s%s\n", "settings", filename);
+			get_binSettings(thread);
 			return;
 		}
 		else if(strcmp(filename, "_eeprom.bin") == 0) {   // кнопка "Прочитать всю EEPROM"
-			if(!get_binEEPROM(thread)) journal.jprintf("Error download %s%s\n", "settings", filename);
+			get_binEEPROM(thread);
 			return;
 		}
 		filename -= 8;
@@ -521,7 +493,7 @@ void readFileSD(char *filename, uint8_t thread)
 			sendConstRTOS(thread, HEADER_FILE_WEB);
 			spiBusDeselectAll();
 			if(webFile.open(filename, O_READ)) {
-				if(webTestRead(thread, webFile, "SD card", filename) == -1) journal.jprintf("Read SD error (%d,%d)!\n", card.cardErrorCode(), (int)(card.cardErrorData()));
+				if(webTestRead(thread, webFile, "SD card") == -1) journal.jprintf("Read SD error (%d,%d)!\n", card.cardErrorCode(), (int)(card.cardErrorData()));
 				webFile.close();
 				/*/ check write!
 				if(!webFile.open(filename, O_RDWR)) journal.jprintf("Error open for writing!\n");
@@ -533,16 +505,16 @@ void readFileSD(char *filename, uint8_t thread)
 				}
 				//*/
 			} else {
-				journal.jprintf("SD card test: %s - not found (%d,%d)!\n", filename, card.cardErrorCode(), (int)(card.cardErrorData()));
+				journal.jprintf("SD card test: file not found (%d,%d)\n", card.cardErrorCode(), (int)(card.cardErrorData()));
 			}
 		} else if(strncmp(filename, "FLASH:", 6) == 0) {  // TEST.FLASH:<filename> - Тестирует скорость чтения файла с SPI флеш
 			filename += 6;
 			sendConstRTOS(thread, HEADER_FILE_WEB);
 			spiBusDeselectAll();
 			SerialFlashFile ff;
-			if(!HP.get_fSPIFlash()) journal.jprintf("SPI flash test: %s - no SPI flash!\n", filename);
-			else if((ff = SerialFlash.open(filename))) webTestRead(thread, ff, "SPI flash", filename);
-			else journal.jprintf("SPI flash test: %s - not found!\n", filename);
+			if(!HP.get_fSPIFlash()) journal.jprintf("SPI flash test: no SPI flash\n");
+			else if((ff = SerialFlash.open(filename))) webTestRead(thread, ff, "SPI flash");
+			else journal.jprintf("SPI flash test: file not found\n");
 		} else if(strcmp(filename, "SPI") == 0) {  // TEST.SPI - микрозамеры шины SPI (решения по мелким правкам делаются по ним)
 			sendConstRTOS(thread, HEADER_FILE_WEB);
 			webTestSpi(thread);
@@ -571,14 +543,12 @@ void readFileSD(char *filename, uint8_t thread)
 					}
 				}
 				sendConstRTOS(thread, HEADER_FILE_NOT_FOUND);
-				uint8_t ip[4];
-				W5100.readSnDIPR(Socket[thread].sock, ip);
-				journal.jprintf((char*) "WEB: %d.%d.%d.%d - File not found: %s\n", ip[0], ip[1], ip[2], ip[3], filename);
+				if(DBG_ON(DBG_HTTP)) journal.jprintf_time("HTTP GET: SD, статус 404\n");
 				return;
 			} // файл не найден
 xFileFound:
 			// Файл открыт читаем данные и кидаем в сеть
-			if(DBG_ON(DBG_HTTP)) { journal.jprintf("$Thread: %d socket: %d read file: %s\n",thread,Socket[thread].sock,filename); }
+			if(DBG_ON(DBG_HTTP)) { journal.jprintf_time("WEB: чтение файла, поток %d, сокет %d\n", (int)thread, (int)Socket[thread].sock); }
 			// Заголовок кладётся в начало буфера, файл читается следом, первый кусок уходит вместе с заголовком (экономит RTT на ACK заголовка)
 			uint16_t hl = Web_HeaderToBuf(Socket[thread].outBuf, sizeof(Socket[thread].outBuf), webFileHeader(filename));
 			if(hl == 0) sendConstRTOS(thread, webFileHeader(filename));   // заголовок не поместился - отдельным пакетом, как раньше
@@ -608,7 +578,7 @@ xFileFound:
 			SerialFlashStatus status;
 			SerialFlashFile ff = SerialFlash.open(filename, &status);
 			if(ff) {
-				if(DBG_ON(DBG_HTTP)) { journal.jprintf("$Thread: %d socket: %d read file: %s\n",thread,Socket[thread].sock,filename); }
+				if(DBG_ON(DBG_HTTP)) { journal.jprintf_time("WEB: чтение файла, поток %d, сокет %d\n", (int)thread, (int)Socket[thread].sock); }
 				char *buffer = Socket[thread].outBuf;
 				const uint16_t capacity = sizeof(Socket[thread].outBuf);
 				uint16_t hl = Web_HeaderToBuf(buffer, capacity, webFileHeader(filename));
@@ -625,7 +595,7 @@ xFileFound:
 					n = ff.read(Socket[thread].outBuf + hl, sizeof(Socket[thread].outBuf) - hl);
 					StatAcc_Add(&webStat.fileRead, micros() - t1);
 					if(n == 0 && ff.available()) {
-						journal.jprintf("SPI flash: read error in %s\n", filename);
+						journal.jprintf("SPI flash: file read error\n");
 						if(hl) sendConstRTOS(thread, flashError);
 						break;
 					}
@@ -639,16 +609,13 @@ xFileFound:
 				} // for
 			} else {
 				if(status != SerialFlashStatus::NotFound) {
-					journal.jprintf("SPI flash: %s (%d) opening %s\n",
-					                status == SerialFlashStatus::Corrupt ? "corrupt directory" : "open error",
-					                (int)status, filename);
+					journal.jprintf("SPI flash: %s (%d)\n",
+					                status == SerialFlashStatus::Corrupt ? "corrupt directory" : "open error", (int)status);
 					sendConstRTOS(thread, flashError);
 					return;
 				}
 				sendConstRTOS(thread, HEADER_FILE_NOT_FOUND);
-				uint8_t ip[4];
-				W5100.readSnDIPR(Socket[thread].sock, ip);
-				journal.jprintf((char*) "WEB GET(%d.%d.%d.%d) - Not found: %s\n", ip[0], ip[1], ip[2], ip[3], filename);
+				if(DBG_ON(DBG_HTTP)) journal.jprintf_time("HTTP GET: SPI Flash, статус 404\n");
 				return;
 			}
 		}
@@ -744,15 +711,16 @@ static int32_t uploadWriteSD(void *file, const uint8_t *p, int32_t n)
 {
 	for(uint16_t _timeout = 0; _timeout < 2000 && card.card()->isBusy(); _timeout++) _delay(1);
 	int32_t w = ((SdFile*) file)->write(p, n);
-	if(w != n) journal.jprintf("Error write (%d,%d) ", card.cardErrorCode(), (int)(card.cardErrorData()));
+	if(w != n) journal.jprintf("SD: ошибка записи (%d,%d)\n", card.cardErrorCode(), (int)(card.cardErrorData()));
 	return w;
 }
 
 // Принимает lenFile байтов в потоке thread. Первые buf_len байтов уже в ptr.
-// wr пишет данные в file, trackWebUpload включает отметки активности загрузки морды.
+// wr пишет данные в file, trackWebUpload отмечает активность загрузки морды.
+// trace включает точки прогресса после успешно записанных порций.
 // Возвращает true только после записи ровно lenFile байтов.
 static bool uploadReceive(uint8_t thread, const uint8_t *ptr, int32_t buf_len, int32_t lenFile,
-                          UploadWrite wr, void *file, bool trackWebUpload = true)
+                          UploadWrite wr, void *file, bool trackWebUpload = true, bool trace = false)
 {
 	if(buf_len < 0 || buf_len > lenFile) {
 		journal.jprintf("Upload: invalid initial length %d of %d\n", (int)buf_len, (int)lenFile);
@@ -760,12 +728,12 @@ static bool uploadReceive(uint8_t thread, const uint8_t *ptr, int32_t buf_len, i
 	}
 	if(buf_len > 0 && wr(file, ptr, buf_len) != buf_len) return false;
 	int32_t got = buf_len;
-	uint16_t numPoint = 0;
+	uint8_t parts = 0;
 	uint32_t tIdle = millis();
 	while(got < lenFile) {
 		_delay(2);
 		if((uint32_t)(millis() - tIdle) > WEB_UPLOAD_IDLE_MS) {
-			journal.jprintf("idle timeout ");
+			journal.jprintf_time("Upload: таймаут, получено %d из %d байт\n", (int)got, (int)lenFile);
 			break;
 		}
 		const int32_t available = Socket[thread].client.get_ReceivedSizeRX();
@@ -789,9 +757,11 @@ static bool uploadReceive(uint8_t thread, const uint8_t *ptr, int32_t buf_len, i
 		tIdle = millis();
 		if(trackWebUpload) WebUpload_Alive(&webUpload, tIdle);
 		Watchdog_AliveHere();
-		if(++numPoint >= 20) { numPoint = 0; journal.jprintf("."); }
+		if(trace && ++parts == 20) {
+			journal.jprintf(".");
+			parts = 0;
+		}
 	}
-	if(got != lenFile) journal.jprintf("%db of %d, ", (int)got, (int)lenFile);
 	return got == lenFile;
 }
 
@@ -807,7 +777,7 @@ static int32_t uploadWriteBuffer(void *file, const uint8_t *p, int32_t n)
 
 // Загружает nameFile длиной lenFile в SPI Flash из потока thread. Первые buf_len байтов в ptr.
 // Возвращает true после полной записи, при отказе пытается удалить недописанный файл.
-static bool uploadFileFlash(uint8_t thread, const char *nameFile, const uint8_t *ptr, int32_t buf_len, int32_t lenFile)
+static bool uploadFileFlash(uint8_t thread, const char *nameFile, const uint8_t *ptr, int32_t buf_len, int32_t lenFile, bool trace)
 {
 	spiBusDeselectAll();
 	const int8_t e = SerialFlash.create(nameFile, lenFile);
@@ -818,17 +788,16 @@ static bool uploadFileFlash(uint8_t thread, const char *nameFile, const uint8_t 
 	SerialFlashStatus status;
 	SerialFlashFile ff = SerialFlash.open(nameFile, &status);
 	if(!ff) { journal.jprintf("SPI flash: open error (%d)\n", (int)status); return false; }
-	bool ok = uploadReceive(thread, ptr, buf_len, lenFile, uploadWriteFlash, &ff);
+	bool ok = uploadReceive(thread, ptr, buf_len, lenFile, uploadWriteFlash, &ff, true, trace);
 	// nameFile лежит в inBuf, а приём пишет туда пакеты: после uploadReceive имя затёрто, удалять - по дескриптору
 	spiBusDeselectAll();
-	if(ok) journal.jprintf("Ok\n");
-	else journal.jprintf(SerialFlash.remove(ff) ? "Error, removed\n" : "Error, NOT removed\n");
+	if(!ok) journal.jprintf(SerialFlash.remove(ff) ? "SPI flash: недописанный файл удалён\n" : "SPI flash: не удалось удалить недописанный файл\n");
 	ff.close();
 	return ok;
 }
 
 // Файл заливки на SD; недописанный удаляется
-static bool uploadFileSD(uint8_t thread, const char *nameFile, const uint8_t *ptr, int32_t buf_len, int32_t lenFile)
+static bool uploadFileSD(uint8_t thread, const char *nameFile, const uint8_t *ptr, int32_t buf_len, int32_t lenFile, bool trace)
 {
 	for(uint16_t _timeout = 0; _timeout < 2000 && card.card()->isBusy(); _timeout++) _delay(1);
 	if(!wFile.opens(nameFile, O_CREAT | O_TRUNC | O_RDWR, &wfname)) {
@@ -836,17 +805,16 @@ static bool uploadFileSD(uint8_t thread, const char *nameFile, const uint8_t *pt
 		return false;
 	}
 	wFile.timestamp(T_CREATE | T_ACCESS | T_WRITE, rtcSAM3X8.get_years(), rtcSAM3X8.get_months(), rtcSAM3X8.get_days(), rtcSAM3X8.get_hours(), rtcSAM3X8.get_minutes(), rtcSAM3X8.get_seconds());
-	bool ok = uploadReceive(thread, ptr, buf_len, lenFile, uploadWriteSD, &wFile);
+	bool ok = uploadReceive(thread, ptr, buf_len, lenFile, uploadWriteSD, &wFile, true, trace);
 	WEB_STORE_DEBUG_INFO(58);
-	if(ok && !wFile.close()) { journal.jprintf("Error close file (%d,%d)! ", card.cardErrorCode(), (int)(card.cardErrorData())); ok = false; }
-	if(ok) journal.jprintf("Ok\n");
-	else journal.jprintf(wFile.isOpen() && wFile.remove() ? "Error, removed\n" : "Error, NOT removed\n");
+	if(ok && !wFile.close()) { journal.jprintf("SD: ошибка закрытия файла (%d,%d)\n", card.cardErrorCode(), (int)(card.cardErrorData())); ok = false; }
+	if(!ok) journal.jprintf(wFile.isOpen() && wFile.remove() ? "SD: недописанный файл удалён\n" : "SD: не удалось удалить недописанный файл\n");
 	return ok;
 }
 
 // Проверяет секцию профилей между ptr и file_end. version задаёт раскладку старых слотов.
 // Возвращает длину секции с END и CRC либо -1 при отказе.
-static int32_t fileProfilesLen(const uint8_t *ptr, const uint8_t *file_end, uint8_t version)
+static int32_t fileProfilesLen(const uint8_t *ptr, const uint8_t *file_end, uint8_t version, bool trace)
 {
 	int32_t len;
 	const int32_t available = file_end - ptr;
@@ -857,8 +825,8 @@ static int32_t fileProfilesLen(const uint8_t *ptr, const uint8_t *file_end, uint
 		profile_scan(ptr, file_end, NTAG_Profile, NTAG_END, 1 + sizeof(ProfileSlot), I2C_PROFIL_NUM, &ps);
 		len = ps.bytes + sizeof(uint16_t);               // плюс END (уже в bytes) и контрольная сумма
 		if(ps.bad_len || ps.bad_slot || ps.bad_tag || ps.truncated || !ps.end_seen || len > available) {
-			journal.jprintf("Profiles in file rejected: len %d, slot %d, tag %d, cut %d, end %d (code %d)\n",
-			                ps.bad_len, ps.bad_slot, ps.bad_tag, ps.truncated, ps.end_seen, ps.bad_len ? ErrorNumber(ErrorCatalog::Code::kPROFILE_DATA) : ErrorNumber(ErrorCatalog::Code::kPROFILE_READ));
+			if(trace) journal.jprintf_time("CFG: профили файла, неверная длина %d, слот %d, тег %d, обрыв %d, END %d\n",
+			                              ps.bad_len, ps.bad_slot, ps.bad_tag, ps.truncated, ps.end_seen);
 			return -1;
 		}
 		// Контрольная сумма области: по всем байтам записей и заголовку END, как при записи в save_region
@@ -866,7 +834,7 @@ static int32_t fileProfilesLen(const uint8_t *ptr, const uint8_t *file_end, uint
 		memcpy(&crc_stored, ptr + ps.bytes, sizeof(crc_stored));
 		uint16_t crc_file = calc_crc16((unsigned char*) ptr, ps.bytes, 0xFFFF);
 		if(crc_file != crc_stored) {
-			journal.jprintf("Profiles in file rejected: crc %04x != %04x\n", crc_file, crc_stored);
+			if(trace) journal.jprintf_time("CFG: CRC профилей рассчитана %04x, ожидалась %04x\n", crc_file, crc_stored);
 			return -1;
 		}
 	} else {
@@ -874,10 +842,86 @@ static int32_t fileProfilesLen(const uint8_t *ptr, const uint8_t *file_end, uint
 		const int32_t stride = legacy_profile_sizes(version, &sz, sizeof(uint8_t) + sizeof(uint16_t))
 		                       ? sz.total : HP.Prof.get_sizeProfile();
 		len = stride * I2C_PROFIL_NUM_LEGACY;
-		if(len > available) { journal.jprintf("Profiles in file rejected: file too short\n"); return -1; }
+		if(len > available) return -1;
 	}
 	if(len > I2C_SCHEDULER_EEPROM - I2C_PROFILE_EEPROM) return -1;
 	return len;
+}
+
+// Файл отклонён до применения, проверенной CRC основного блока ещё нет.
+static TYPE_RET_POST rejectSettingsFile(const char *reason, TYPE_RET_POST response = pSETTINGS_ERR)
+{
+	journal.event(Journal::Stamp::Time, "CFG", "RESTORE", "Файл отклонён: %s, CRC16=н/д", reason);
+	return response;
+}
+
+// Проверяет формат и границы всех секций перед применением. Основные настройки и расписание
+// загружает в ОЗУ, профили записывает в EEPROM. trace передан до загрузки новой маски.
+static TYPE_RET_POST restoreSettingsFile(uint8_t *ptr, int32_t buf_len, bool trace)
+{
+	// Ищем HEADER_BIN в собранных бинарных данных без завершающего нуля.
+	const int32_t ml = sizeof(HEADER_BIN) - 1;
+	int32_t k = -1;
+	for(int32_t n = 0; n + ml <= buf_len; n++)
+		if(memcmp(ptr + n, HEADER_BIN, ml) == 0) { k = n + ml; break; }
+	if(k < 0) return rejectSettingsFile("нет заголовка настроек");
+	buf_len -= k;                                                        // дальше идут бинарные данные, без текстового заголовка
+	memmove(ptr, ptr + k, buf_len);
+	// Версия должна находиться в теле настроек перед CRC, а весь блок — в принятом файле.
+	const uint32_t block = settings_file_block_size(ptr, buf_len);
+	if(block < NEW_OFS_VER + 1 + sizeof(uint16_t)) return rejectSettingsFile("неверная длина блока настроек");
+	const bool newFormat = ptr[NEW_OFS_VER] >= SETTINGS_VER_NEW;
+	const uint8_t *file_end = ptr + buf_len;
+	const int32_t profilesLen = fileProfilesLen(ptr + block, file_end, ptr[NEW_OFS_VER], trace);
+	if(profilesLen < 0) return rejectSettingsFile("неверная секция профилей");
+	uint8_t *schedule = ptr + block + profilesLen;
+	uint16_t hint = 0;
+	if(file_end - schedule >= REC_HDR_SIZE && rec_hdr_tag(schedule) == NTAG_Scheduler) {
+		hint = rec_hdr_len(schedule);
+		if(!hint) return rejectSettingsFile("пустая секция расписания");
+		schedule += REC_HDR_SIZE;
+	}
+	if(!HP.Schdlr.file_data_len(schedule, file_end - schedule, hint))
+		return rejectSettingsFile("неверная длина или CRC секции расписания");
+	SettingsLock lock(HP.saving);
+	if(!lock) return rejectSettingsFile("идёт другая операция с настройками", pSETTINGS_BUSY);
+#ifdef EEV_DEF
+	// Загрузка вызывает InitStepper; проверка раннего снимка IsWorkingNow недостаточна.
+	if(!HP.beginEEVService()) return rejectSettingsFile("ТН или ЭРВ заняты", pSETTINGS_BUSY);
+	struct SettingsEEVGuard { ~SettingsEEVGuard() { HP.endEEVService(); } } eevGuard;
+#endif
+	const int32_t len = newFormat ? HP.load_new(ptr, block, 1) : HP.load(ptr, block, 1);
+	if(len <= 0) return pSETTINGS_ERR;
+	const unsigned crc = rec_hdr_tag(ptr + block - sizeof(uint16_t));
+	ptr += block;
+	if(writeEEPROM_I2C(I2C_PROFILE_EEPROM, ptr, profilesLen)) {
+		HP.Prof.invalidate_cache(ErrorNumber(ErrorCatalog::Code::kPROFILE_WRITE));
+		HP.Prof.update_list(HP.Prof.get_idProfile());
+		HP.set_Warning(ErrorCatalog::Code::kPROFILE_WRITE, "profiles", 0,
+		               "Сбой записи профилей. Настройки в ОЗУ, расписание прежнее");
+		return pSETTINGS_ERR;
+	}
+	int32_t profiles = HP.Prof.cache_load_all(trace);
+	if(profiles == OK) profiles = HP.Prof.load(HP.Option.numProf);
+	HP.Prof.update_list(HP.Prof.get_idProfile());
+	if(profiles < 0) {
+		HP.log_Event(static_cast<ErrorCatalog::Code>(profiles), "profiles", {},
+		             "Профиль не загружен. Профили в EEPROM, настройки в ОЗУ");
+		return pSETTINGS_ERR;
+	}
+	if(HP.Schdlr.loadFromBuf(schedule, file_end - schedule, hint, trace) != OK) {
+		HP.log_Event(ErrorCatalog::Code::kSETTINGS_DATA, "SCHED", {},
+		             "Сбой расписания. Настройки в ОЗУ, профили в EEPROM");
+		return pSETTINGS_ERR;
+	}
+#ifdef LOAD_VERIFICATION
+	const char *verification = "";
+#else
+	const char *verification = " (проверка CRC отключена)";
+#endif
+	journal.event(Journal::Stamp::Time, "CFG", "RESTORE",
+	              "Настройки и расписание в ОЗУ, профили в EEPROM%s, CRC16=%04X", verification, crc);
+	return pSETTINGS_OK;
 }
 
 // Разбирает size байтов POST из inPtr потока thread. При импорте настроек использует outBuf.
@@ -902,12 +946,12 @@ TYPE_RET_POST parserPOST(uint8_t thread, uint16_t size)
 		if(p) *p = '\0'; else nameFile = NULL;
 	}
 	if(!nameFile) { // Имя файла не найдено, запрос не верен, выходим
-		journal.jprintf("Upload: Name not found!\n");
+		if(DBG_ON(DBG_HTTP)) journal.jprintf_time("HTTP POST: нет имени файла\n");
 		return pLOAD_ERR;
 	}
 	urldecode(nameFile, nameFile, MAX_FILE_LEN + 10);
 	if(strlen(nameFile) > MAX_FILE_LEN) {
-		journal.jprintf("Upload: %s name length > %d bytes!\n", nameFile, MAX_FILE_LEN - 1);
+		if(DBG_ON(DBG_HTTP)) journal.jprintf_time("HTTP POST: имя файла длиннее %d байт\n", MAX_FILE_LEN);
 		return pLOAD_ERR;
 	}
 	if(pStart) {
@@ -916,7 +960,7 @@ TYPE_RET_POST parserPOST(uint8_t thread, uint16_t size)
 	}
 	if(!pStart) { // Размер файла не найден, запрос не верен, выходим
 xLenErr:
-		journal.jprintf("Upload: %s - length not found!\n", nameFile);
+		if(DBG_ON(DBG_HTTP)) journal.jprintf_time("HTTP POST: неверная длина файла\n");
 		return pLOAD_ERR;
 	}
 	while(*pStart == ' ' || *pStart == '\t') ++pStart;
@@ -929,81 +973,18 @@ xLenErr:
 	buf_len = size - (ptr - (byte *) Socket[thread].inBuf);                  // длина (остаток) данных (файла) в буфере
 	// В зависимости от имени файла (Title)
 	if(strcmp(nameFile, SETTINGS) == 0) {  // Чтение настроек
-		if(lenFile <= 0) goto xLenErr;
+		if(lenFile <= 0) return rejectSettingsFile("пустой файл");
 		// Файл заменяет настройки, профили и расписание целиком: на пускающемся, работающем или останавливающемся ТН
 		// это меняло бы предел частоты инвертора, параметры ЭРВ и профиль посреди процесса. Кнопка в морде тоже заблокирована.
-		if(HP.IsWorkingNow()) {
-			journal.jprintf("Upload: settings refused, HP is working\n");
-			return pSETTINGS_BUSY;
-		}
+		if(HP.IsWorkingNow()) return rejectSettingsFile("ТН запущен", pSETTINGS_BUSY);
 		WEB_STORE_DEBUG_INFO(52);
-		if(lenFile > (int32_t)sizeof(Socket[thread].outBuf)) return pSETTINGS_MEM;
+		if(lenFile > (int32_t)sizeof(Socket[thread].outBuf)) return rejectSettingsFile("файл не помещается в буфер", pSETTINGS_MEM);
+		// Используем исходный флаг CFG для всех секций, даже если настройки из файла его изменят.
+		const bool trace = DBG_ON(DBG_CFG);
 		uint8_t *out = (uint8_t*)Socket[thread].outBuf;
 		if(!uploadReceive(thread, ptr, buf_len, lenFile, uploadWriteBuffer, &out, false))
-			return pSETTINGS_ERR;
-		buf_len = lenFile;
-		{   // Поиск маркера HEADER_BIN в собранных данных (бинарно-безопасный, строка не завершена нулём)
-			const int32_t ml = sizeof(HEADER_BIN) - 1;
-			int32_t k = -1;
-			for(int32_t n = 0; n + ml <= buf_len; n++)
-				if(memcmp(Socket[thread].outBuf + n, HEADER_BIN, ml) == 0) { k = n + ml; break; }
-			if(k < 0) {                                                          // заголовок не найден
-				journal.jprintf("Upload: Wrong save format: %s! (received %d bytes)\n", SETTINGS, (int) buf_len);
-				return pSETTINGS_ERR;
-			}
-			buf_len -= k;                                                        // дальше идут бинарные данные, без текстового заголовка
-			memmove(Socket[thread].outBuf, Socket[thread].outBuf + k, buf_len);
-		}
-	    ptr = (byte*) Socket[thread].outBuf;     
-		journal.jprintf("Loading %s, length data %d bytes:\n", SETTINGS, (int)(buf_len));
-		// Версия должна находиться в теле настроек перед CRC, а весь блок — в принятом файле.
-		const uint32_t block = settings_file_block_size(ptr, buf_len);
-		if(block < NEW_OFS_VER + 1 + sizeof(uint16_t)) {
-			journal.jprintf("Upload: bad settings block (%d bytes received)\n", (int)buf_len);
-			return pSETTINGS_ERR;
-		}
-		const bool newFormat = ptr[NEW_OFS_VER] >= SETTINGS_VER_NEW;
-		const uint8_t *file_end = ptr + buf_len;
-		const int32_t profilesLen = fileProfilesLen(ptr + block, file_end, ptr[NEW_OFS_VER]);
-		if(profilesLen < 0) {
-			journal.jprintf("Upload: file rejected before applying\n");
-			return pSETTINGS_ERR;
-		}
-		uint8_t *schedule = ptr + block + profilesLen;
-		uint16_t hint = 0;
-		if(file_end - schedule >= REC_HDR_SIZE && rec_hdr_tag(schedule) == NTAG_Scheduler) {
-			hint = rec_hdr_len(schedule);
-			if(!hint) return pSETTINGS_ERR;
-			schedule += REC_HDR_SIZE;
-		}
-		if(!HP.Schdlr.file_data_len(schedule, file_end - schedule, hint)) {
-			journal.jprintf("Upload: invalid schedule length or CRC\n");
-			return pSETTINGS_ERR;
-		}
-		SettingsLock lock(HP.saving);
-		if(!lock) return pSETTINGS_BUSY;
-#ifdef EEV_DEF
-		// Загрузка вызывает InitStepper; проверка раннего снимка IsWorkingNow недостаточна.
-		if(!HP.beginEEVService()) return pSETTINGS_BUSY;
-		struct SettingsEEVGuard { ~SettingsEEVGuard() { HP.endEEVService(); } } eevGuard;
-#endif
-		const int32_t len = newFormat ? HP.load_new(ptr, block, 1) : HP.load(ptr, block, 1);
-		if(len <= 0) return pSETTINGS_ERR;
-		ptr += block;
-		if(writeEEPROM_I2C(I2C_PROFILE_EEPROM, ptr, profilesLen)) {
-			HP.Prof.invalidate_cache(ErrorNumber(ErrorCatalog::Code::kPROFILE_WRITE));
-			HP.Prof.update_list(HP.Prof.get_idProfile());
-			HP.set_Warning(ErrorCatalog::Code::kPROFILE_WRITE, "profiles");
-			return pSETTINGS_ERR;
-		}
-		const int8_t profiles = HP.Prof.cache_load_all();
-		if(profiles != OK || HP.Prof.load(HP.Option.numProf) < 0) {
-			HP.Prof.update_list(HP.Prof.get_idProfile());
-			return pSETTINGS_ERR;
-		}
-		HP.Prof.update_list(HP.Prof.get_idProfile());
-
-		return HP.Schdlr.loadFromBuf(schedule, file_end - schedule, hint) == OK ? pSETTINGS_OK : pSETTINGS_ERR;
+			return rejectSettingsFile("файл получен не полностью");
+		return restoreSettingsFile((uint8_t*)Socket[thread].outBuf, lenFile, trace);
 	} //if (strcmp(nameFile,"*SETTINGS*")==0)
 
 	// загрузка вебморды
@@ -1059,22 +1040,32 @@ xLenErr:
 			return pLOAD_OK;
 		} else { // загрузка отдельных файлов веб морды
 			if(!WebUpload_File(&webUpload, millis())) {
-				uint8_t ip[4];
-				W5100.readSnDIPR(Socket[thread].sock, ip);
-				journal.jprintf("Unable to upload file %s (%d.%d.%d.%d)!\n", nameFile, ip[0], ip[1], ip[2], ip[3]);
+				if(DBG_ON(DBG_HTTP)) journal.jprintf_time("HTTP POST: загрузка веб-файла отклонена\n");
 				return pLOAD_ERR;
 			}
 			if(lenFile <= 0) {
-				journal.jprintf("Upload: %s length = %s!\n", nameFile, pStart);
+				if(DBG_ON(DBG_HTTP)) journal.jprintf_time("HTTP POST: получен пустой веб-файл\n");
 				WebUpload_FileDone(&webUpload, false);
 				return pLOAD_ERR;
 			}
 			// buf_len - сколько файла уже лежит в буфере после заголовков, остальное (lenFile - buf_len) дочитывается из сети
 			WEB_STORE_DEBUG_INFO(54);
-			journal.jprintf("%s (%d) ", nameFile, (int)(lenFile));
-			bool ok = webUpload.media == UPL_FLASH ? uploadFileFlash(thread, nameFile, ptr, buf_len, lenFile)
-			                                       : uploadFileSD(thread, nameFile, ptr, buf_len, lenFile);
+			const bool trace = DBG_ON(DBG_CFG);
+			if(trace) {
+				// Заменяем служебные символы только для журнала. Приём файла перезапишет inBuf.
+				char *logName = Socket[thread].outBuf;
+				for(const char *p = nameFile; *p; ++p) {
+					const unsigned char c = *p;
+					*logName++ = c < ' ' || c == 0x7F || c == '$' || c == '^' ? '?' : c;
+				}
+				*logName = '\0';
+				journal.jprintf("%s (%d) ", Socket[thread].outBuf, (int)lenFile);
+			}
+			const bool ok = webUpload.media == UPL_FLASH ? uploadFileFlash(thread, nameFile, ptr, buf_len, lenFile, trace)
+			                                            : uploadFileSD(thread, nameFile, ptr, buf_len, lenFile, trace);
 			WebUpload_FileDone(&webUpload, ok);
+			// При отказе путь записи уже сообщил причину или результат удаления недописанного файла.
+			if(trace && ok) journal.jprintf("Ok\n");
 			return ok ? pNULL : pLOAD_ERR;
 		}
 	} else {

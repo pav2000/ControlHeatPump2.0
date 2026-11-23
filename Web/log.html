@@ -13,6 +13,7 @@
 .logbox div:hover{background:rgba(255,255,255,.05)}
 .logbox div.sel{background:rgba(15,139,141,.35);color:#fff}
 .logbox div.v{color:#91a5b6}.logbox div.w{color:#ffe066}.logbox div.e{color:#ff8a8a}.logbox div.c{color:#7fa6c4}
+.log-filter{display:flex;gap:8px;align-items:center;margin-bottom:10px;font-size:13px}
 .refx p{margin:0 0 8px;font-size:13px;line-height:1.5}
 .refx ul{margin:0;padding-left:18px;font-size:13px;line-height:1.5}.refx li{margin-bottom:6px}
 .refx code{background:var(--bg);border-radius:5px;padding:1px 5px;font-size:12px}
@@ -50,10 +51,9 @@ function decode(line) {
 	return out.length ? out.join('<br>') : 'В этой строке нет кода режима или точки возврата.';
 }
 // Добавляет расшифровку кода ошибки из кэша или точечного запроса каталога.
-function decodeError(line, selected) {
-	var m = /\$(?:ERROR|WARN)\s+(-\d+)\b/.exec(line);
-	if(!m) return;
-	var code = parseInt(m[1]), cached = ERROR_INFO[code];
+function decodeError(code, selected) {
+	if(!code) return;
+	var cached = ERROR_INFO[code];
 	function show(item) {
 		if(!item || selected != $('log').querySelector('.sel')) return;
 		$('explain').innerHTML += '<br><b>' + code + '</b> — ' + esc(item.description) +
@@ -69,19 +69,35 @@ function refToggle() {
 	b.hidden = !b.hidden;
 	$('ref-a').innerHTML = b.hidden ? 'показать ▾' : 'скрыть ▴';
 }
-// Возвращает класс цвета строки по явному маркеру события или служебной отметке.
-function logLineClass(line) {
-	var marker = /(?:^|\s)\$(ERROR|WARN|EVENT)\b/.exec(line);
-	if(marker) return ({ERROR:'e', WARN:'w', EVENT:'v'})[marker[1]];
-	return /^\s*\^/.test(line) ? 'c' : '';
+// Служебной считается только начальная метка после даты и времени.
+function parseLogLine(line) {
+	var m = /^\s*(?:\d{2}\.\d{2}\.\d{4}\s+)?(?:\d{2}:\d{2}:\d{2}\s+)?(?:\$(ERROR|WARN|EVENT)(?=\s|$)(?:\s+(-\d+)(?=\s|$))?|(\^))/.exec(line);
+	if(!m) return {kind: 'd', code: ''};
+	if(m[3]) return {kind: 'c', code: ''};
+	return {kind: ({ERROR: 'e', WARN: 'w', EVENT: 'v'})[m[1]], code: m[1] === 'EVENT' ? '' : m[2] || ''};
+}
+function filterLog() {
+	var kind = $('log-kind').value, box = $('log');
+	Array.prototype.forEach.call(box.children, function(row) {
+		row.hidden = !!kind && row.dataset.kind !== kind && !(kind === 'd' && row.dataset.kind === 'c');
+		if(row.hidden && row.classList.contains('sel')) {
+			row.classList.remove('sel');
+			$('explain').textContent = 'Выберите строку журнала.';
+		}
+	});
+	box.scrollTop = box.scrollHeight;
 }
 function load() {
 	$('state').innerHTML = 'Загрузка…';
 	gFetchLog(function(t) {
-		var h = '', a = t.split('\n');
-		a.forEach(function(l) { if(l === '') return; h += '<div class="' + logLineClass(l) + '">' + esc(l) + '</div>'; });
+		var h = '', a = t.split(/\r?\n/).filter(Boolean);
+		a.forEach(function(l) {
+			var row = parseLogLine(l);
+			h += '<div class="' + row.kind + '" data-kind="' + row.kind + '" data-code="' + row.code + '">' + esc(l) + '</div>';
+		});
 		$('log').innerHTML = h;
-		$('log').scrollTop = $('log').scrollHeight;
+		$('explain').textContent = 'Выберите строку журнала.';
+		filterLog();
 		$('state').innerHTML = a.length + ' строк · ' + Math.round(t.length / 1024) + ' КБ';
 	}, function(c) { $('state').innerHTML = 'Не удалось загрузить журнал (' + (c || 'нет связи') + ').'; });
 }
@@ -101,7 +117,7 @@ window.onload = function() {
 		if(s) s.classList.remove('sel');
 		d.classList.add('sel');
 		$('explain').innerHTML = decode(d.textContent);
-		decodeError(d.textContent, d);
+		decodeError(d.dataset.code, d);
 	});
 	load();
 };
@@ -112,9 +128,10 @@ window.onload = function() {
 <div class="content">
 <div class="grid">
 	<section class="card c8"><h3>Журнал контроллера <span class="r row" style="gap:8px"><button class="btn2" style="padding:6px 12px" onclick="load()">Обновить</button><a class="btn2" style="padding:6px 12px;text-decoration:none" id="dl-log" href="/journal.txt" download>Скачать</a><button class="btn2 bad" style="padding:6px 12px" onclick="clearLog()">Очистить…</button></span></h3>
+		<label class="log-filter" for="log-kind">Показать <select id="log-kind" onchange="filterLog()"><option value="">Все строки</option><option value="e">Аварии</option><option value="w">Предупреждения</option><option value="v">События</option><option value="d">Диагностика</option></select></label>
 		<div class="logbox" id="log"></div>
 		<div class="fnote" id="state"></div>
-		<div class="fnote">Показывается весь журнал; обновляется кнопкой (автообновления нет, как раньше). Нажатие на строку подсвечивает её и расшифровывает справа.</div></section>
+		<div class="fnote">Скачивается полный журнал. Нажмите на строку для расшифровки.</div></section>
 	<section class="card c4 refx"><h3>Расшифровка строк журнала</h3><p><b>Код режима</b> (<code>ret=</code> и <code>modWork:</code>, шестнадцатеричное число): биты складываются.
 <b>01</b> - отопление, <b>02</b> - охлаждение, <b>04</b> - ГВС, <b>08</b> - разморозка, <b>80</b> - «продолжение» (режим уже идёт, без нового пуска),
 <b>00</b> - выключено. Примеры: <b>1</b> - отопление (старт), <b>81</b> - отопление, продолжение, <b>84</b> - ГВС, продолжение.</p>
@@ -129,9 +146,9 @@ window.onload = function() {
 <ul>
 <li><code>EvaluateWorkMode: Hp11, ret=81</code> (флаг MODW): решение алгоритма на этом проходе. <b>Hp11</b> - точка возврата (отопление, ПИД, «время ПИДа не пришло»); <b>ret=81</b> - код режима (отопление, продолжение).</li>
 <li><code>EvaluateWorkMode-Boiler: none(Hp11), ret=0, onBoiler=0, flagRBOILER=1</code> (флаг MODW): решение для ГВС. Формат <b>&lt;текущая точка&gt;(&lt;предыдущая&gt;)</b>; <b>ret</b> - код режима (0 - ГВС не нужен); <b>onBoiler</b> - 1, если ТН сейчас греет бойлер (не ТЭНом); <b>flagRBOILER</b> - 1, если идёт или скоро может пойти цикл догрева бойлера ТЭНом (бойлер ниже гистерезиса).</li>
-<li><code>Start modWork:1[Hp2]</code>: начало режима работы. <b>1</b> - код режима (отопление), в скобках точка возврата (<b>Hp2</b> - включение по гистерезису).</li>
+<li><code>$EVENT HP WORK</code> отмечает пуск компрессора. <code>$EVENT HP MODE</code> отмечает переключение ГВС или четырёхходового клапана.</li>
 <li><code>modWork:81[Hp11] RCOMP:1 RPUMPI:1 … freqFC:55.00 Power:1.250 EEV:480 …</code> (флаг DUMP): строка состояния ТН. После кода режима и точки возврата идут <b>реле</b> (имя:1 - включено, 0 - выключено), <b>freqFC</b> - частота инвертора, Гц, <b>Power</b> - мощность инвертора, кВт, <b>EEV</b> - положение ЭРВ, затем <b>входы</b> (имя:состояние контакта). Вторая строка - температуры, °C, и датчики давления.</li>
-<li><code>Pumps(1), modWork: 1</code>, <code>compressorON &gt; modWork:…</code>: переключение насосов и включение компрессора, после них показан текущий код режима.</li>
+<li><code>Pumps(1), modWork: 1</code> (флаг MODW) показывает переключение насосов и текущий код режима.</li>
 </ul></div><div><p><b>Номер алгоритма</b> (последнее число в точке возврата)</p>
 <table>
 <thead><tr><th>Номер</th><th>Что означает</th></tr></thead>

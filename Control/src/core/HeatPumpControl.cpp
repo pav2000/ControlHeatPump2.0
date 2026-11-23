@@ -27,7 +27,7 @@
  * единице трансляции. Проверено сверкой размеров методов.
  */
 #include "HeatPump.h"     // HeatPump, HP, Status, dRelay, dFC, dEEV, sTemp, sADC, sInput, rtcSAM3X8, NO_Power
-#include "../net/Network.h"      // initW5200
+#include "../net/Network.h"      // netChipReinit
 #include "Rtos.h"         // Tasks, _delay, SemaphoreTake/Give
 #include "../log/Statistics.h"   // Stats
 #include "../net/WebShared.h"    // Socket[], fABORT_SOCK
@@ -38,6 +38,9 @@ const boolean _stop =  true;   // Команда останов ТН
 const boolean _wait =  false;  // Команда перевода в режим ожидания ТН
 const boolean _start = true;   // Команда запуска ТН
 const boolean _resume = false; // Команда возобновления работы ТН
+
+// Младшие биты используются очередью, выше хранится причина pNETWORK.
+static constexpr unsigned networkCauseShift = 2;
 
 // Флаги команды для очереди: останов не теряется при переполнении, а длинный пуск смотрит, нет ли его в очереди
 static uint8_t commandFlags(TYPE_COMMAND c)
@@ -91,18 +94,21 @@ bool HeatPump::waitEEVService()
 // Поставить команду в очередь и разбудить CommandHP. Выбор "выполняется / в очереди" и постановка идут
 // под одним запретом прерываний: иначе две команды, пришедшие вместе, затирали друг друга. Пробуждение -
 // уведомление задачи: оно не теряется, даже если CommandHP ещё не дошла до ожидания.
-void HeatPump::sendCommand(TYPE_COMMAND c)
+void HeatPump::sendCommand(TYPE_COMMAND c, NetworkResetCause cause)
 {
 	uint32_t pm = irqSave();
 	TYPE_COMMAND running = command;
 	bool idle = (running == pEMPTY && cmdq.count == 0);
 	CqResult r = CQ_DUPLICATE;
-	// Пришла команда на старт, а насос останавливается и ничего не выполняется: игнорируем
-	if(!(idle && c == pSTART && get_State() == pSTOPING_HP)) r = CommandQueue_Push(&cmdq, running, c, commandFlags(c));
+	const bool stopping = idle && c == pSTART && get_State() == pSTOPING_HP;
+	if(!stopping)
+		r = CommandQueue_Push(&cmdq, running, c, commandFlags(c) | (static_cast<uint8_t>(cause) << networkCauseShift));
 	irqRestore(pm);
+	if(stopping) journal.event(Journal::Stamp::Time, "CMD", "REJECTED", "Пуск отклонён, ТН останавливается");
 	if(r == CQ_DUPLICATE) return;
 	if(!idle) {
-		if(r == CQ_FULL) journal.jprintf("Command queue FULL, dropped: %s\n", get_command_name(c));
+		if(r == CQ_FULL)
+			journal.event(Journal::Stamp::Time, "CMD", "REJECTED", "Очередь полна, отклонена команда %s", get_command_name(c));
 		else journal.jprintf("Active command: %s, queued: %s\n", get_command_name(running), get_command_name(c));
 	}
 	if(Tasks.xHandleUpdateCommand != NULL) xTaskNotifyGive(Tasks.xHandleUpdateCommand);
@@ -122,8 +128,9 @@ boolean HeatPump::is_next_command_stop()
 boolean HeatPump::takeCommand()
 {
 	uint32_t pm = irqSave();
-	uint8_t c = pEMPTY;
-	command = CommandQueue_Pop(&cmdq, &c) ? (TYPE_COMMAND) c : pEMPTY;
+	uint8_t c = pEMPTY, flags = 0;
+	command = CommandQueue_Pop(&cmdq, &c, &flags) ? (TYPE_COMMAND) c : pEMPTY;
+	networkResetCause = static_cast<NetworkResetCause>(flags >> networkCauseShift);
 	irqRestore(pm);
 	return command != pEMPTY;
 }
@@ -170,17 +177,21 @@ int8_t HeatPump::runCommand()
 			}
 			StopWait(_stop);                            // Попытка запустит ТН (по числу пусков)
 			num_repeat++;                               // увеличить счетчик повторов пуска ТН
-			journal.jprintf("Repeat start %s (attempts remaining %d) . . .\n",(char*)nameHeatPump,get_nStart()-num_repeat);
 			PauseStart = 1;   							// Запустить выполнение отложенного старта
+			journal.event(Journal::Stamp::Time, "CMD", "REPEAT", "Запланирован повторный пуск, осталось попыток: %d",
+			              get_nStart() - num_repeat);
 			break;
 		case pRESTART:
-			journal.jprintf("Restart %s . . .\n",(char*)nameHeatPump);
 			PauseStart = 1;									// Запустить выполнение отложенного старта
+			journal.event(Journal::Stamp::Time, "CMD", "RESTART", "Запланирован перезапуск ТН");
 			break;
-		case pNETWORK:
-			_delay(1000);               						// задержка что бы вывести сообщение в консоль и на веб морду
-			netChipReinit(true);                              // Инициализация сети с выводом инфы в консоль; замок сети берёт сама (Network.cpp)
+		case pNETWORK: {
+			// Даём веб-серверу закончить ответ перед сбросом соединений.
+			_delay(1000);
+			static const char *const reasons[] = {"применение настроек сети", "таймер", "возврат питания", "нет ответа на пинг"};
+			netChipReinit(true, reasons[static_cast<uint8_t>(networkResetCause)]);
 			break;
+		}
 		case pPROG_FC:                                             // Программировать инвертор первоначальными данными (настройка инвертора)
 		    #ifndef FC_VACON  // Omron , если в Vacon будет определен метод progFC этот дефайн убрать
             dFC.progFC();
@@ -213,7 +224,7 @@ xWait:
 			break;
 
 		default:                                                         // Не известная команда
-			journal.jprintf("Unknown command: %d !!!", command);
+			journal.event(Journal::Stamp::Time, "CMD", "REJECTED", "Неизвестная команда %d", (int)command);
 			break;
 		}
 		if(command != pSAVE && command != pNETWORK) command_completed = Uptime_s();

@@ -1163,20 +1163,20 @@ static int apiAct_reset_settings(ApiOut *o, const char *)
 	if(HP.get_State() != pOFF_HP) return AE_BUSY;       // при работающем ТН команда не выполняется
 	SettingsLock lock(HP.saving);
 	if(!lock) return AE_BUSY;
-	journal.jprintf("$RESET All HP settings . . .\n");
 	uint16_t d = 0;
 	const uint8_t status = writeEEPROM_I2C(I2C_SETTING_EEPROM, (byte*)&d, sizeof(d));
 	if(status) {
 		HP.set_Warning(ErrorCatalog::Code::kSETTINGS_WRITE, "settings", status, "Не удалось сбросить настройки");
 		return AE_FAIL;
 	}
-	HP.sendCommand(pRESET);                             // контроллер перезагрузится с заводскими настройками
+	// Сначала фиксируем успешную запись заголовка, затем разрешаем перезагрузку.
+	journal.event(Journal::Stamp::Time, "API", "RESET", "Заголовок настроек сброшен, CRC16=н/д");
+	HP.sendCommand(pRESET);
 	api_put(o, "\"ok\"");
 	return AE_OK;
 }
 static int apiAct_net_apply(ApiOut *o, const char *)
 {
-	journal.jprintf("Update network setting . . .\r\n");
 	HP.sendCommand(pNETWORK);         // применить сетевые настройки: сброс чипа Wiznet, связь пропадёт на несколько секунд
 	api_put(o, "\"ok\"");
 	return AE_OK;
@@ -1422,10 +1422,16 @@ static int apiAct_spi_test(ApiOut *o, const char *)
 	api_putc(o, '}');
 	return AE_OK;
 }
-// Сбрасывает сезонные счётчики и подтверждает результат в o. Возвращает статус веб-API.
-static int apiAct_reset_counters(ApiOut *o, const char *) { journal.jprintf("$RESET Season Counters. . .\n"); if(HP.resetCount(false) != OK) return AE_FAIL; api_put(o, "\"ok\""); return AE_OK; }
-// Сбрасывает все счётчики и подтверждает результат в o. Возвращает статус веб-API.
-static int apiAct_reset_counters_all(ApiOut *o, const char *) { journal.jprintf("$RESET All Counters. . .\n"); if(HP.resetCount(true) != OK) return AE_FAIL; api_put(o, "\"ok\""); return AE_OK; }
+// Подтверждает сброс счётчиков после записи в EEPROM.
+static int resetCounters(ApiOut *o, bool full)
+{
+	if(HP.resetCount(full) != OK) return AE_FAIL;
+	journal.event(Journal::Stamp::Time, "API", "RESET", "%s", full ? "Сброшены все счётчики" : "Сброшены сезонные счётчики");
+	api_put(o, "\"ok\"");
+	return AE_OK;
+}
+static int apiAct_reset_counters(ApiOut *o, const char *) { return resetCounters(o, false); }
+static int apiAct_reset_counters_all(ApiOut *o, const char *) { return resetCounters(o, true); }
 static int apiAct_wdt_reset(ApiOut *o, const char *)       // обнулить замеры наблюдателя; таблицу замеров читают отдельно (sys.wdt)
 {
 	if(o->cap - o->len < 1024) return AE_TOO_BIG;

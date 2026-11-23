@@ -74,7 +74,7 @@ class Profile                         // Класс профиль
     int8_t  loadFromBuf(int32_t adr,byte *buf);             // Считать настройки из буфера на входе адрес с какого, на выходе код ошибки (меньше нуля)
     // convert_to_new_version удалена: чтение старых эпох теперь в cache_load_legacy
     // ---- кеш всех профилей в ОЗУ, см. ProfileSlot выше ----
-    int8_t   cache_load_all(void);                          // прочитать все слоты из EEPROM в кеш
+    int8_t   cache_load_all(bool trace);                          // прочитать все слоты из EEPROM в кеш
     void     cache_store(int8_t num);                       // обновить слот кеша из активных членов
     uint8_t  cache_verify(void);                            // пересчитать CRC слотов, вернуть число расхождений
     uint16_t cache_crc_of(const ProfileSlot &s);            // контрольная сумма слота кеша
@@ -112,9 +112,9 @@ class Profile                         // Класс профиль
   uint16_t    cache_crc[I2C_PROFIL_NUM];
   int8_t      cache_load_error = OK;
   int8_t      region_format(void);
-  int32_t     scan_region(uint8_t *loaded);                 // при loaded != NULL читает данные и проверяет CRC
-  int8_t      cache_load_fixed(uint8_t *loaded);
-  int8_t      cache_load_legacy(const LegacyProfileSizes &sz, uint8_t *loaded);
+  int32_t     scan_region(uint8_t *loaded, bool trace = false);                 // при loaded != NULL читает данные и проверяет CRC
+  int8_t      cache_load_fixed(uint8_t *loaded, bool trace);
+  int8_t      cache_load_legacy(const LegacyProfileSizes &sz, uint8_t *loaded, bool trace);
   uint8_t     cache_magic[I2C_PROFIL_NUM];                  // 0xaa - записан, иначе слот не использован
    uint16_t get_crc16_mem();                                 // Расчитать контрольную сумму
    int8_t   check_crc16_eeprom(int8_t num);   // Проверить контрольную сумму ПРОФИЛЯ в EEPROM для данных на выходе ошибка, длина определяется из заголовка

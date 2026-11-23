@@ -125,6 +125,15 @@ char* get_NTP_result(char *ret)
 	return strcat(ret, ntpResultTime);
 }
 
+// Общая запись для двух способов синхронизации времени.
+static void logNtpJump(uint32_t current, uint32_t proposed)
+{
+	const bool forward = proposed > current;
+	journal.event(Journal::Stamp::Time, "NTP", "JUMP",
+	              "Поправка %s%u с отклонена (предел %u с). Установите часы вручную",
+	              forward ? "+" : "-", (unsigned)(forward ? proposed - current : current - proposed), (unsigned)NTP_MAX_JUMP_S);
+}
+
 #ifdef HTTP_TIME_REQUEST
 // Формат HTTP 1.0 GET запроса: "http://server:port/curr_time.csv"
 // Ответ: "UTC time sec;"
@@ -156,7 +165,6 @@ boolean set_time_NTP(void)
 	for(uint8_t i = 0; i < NTP_REPEAT; i++)                                       // Делам 5 попыток получить время
 	{
 		Watchdog_AliveHere();                                            // Сбросить вачдог
-		journal.jprintf(" Send request, wait...");
 		flag = tTCP.connect(ip, port, W5200_SOCK_SYS);
 		if(!flag) {
 			journal.jprintf(" connect fail\n");
@@ -211,8 +219,9 @@ boolean set_time_NTP(void)
 			if(flag > 0) break; else journal.jprintf(" Error %d\n", flag);
 		}
 	}
-	if(flag > 0 && !Ntp_JumpOk(rtcSAM3X8.unixtime(), secs + TIME_ZONE * 3600UL)) {   // как у NTP: скачок больше суток от случайного ответа календарь не трогает
-		journal.jprintf("$NTP: time jump %d s rejected (limit %d s), set the clock manually\n", (int)(secs + TIME_ZONE * 3600UL - rtcSAM3X8.unixtime()), (int) NTP_MAX_JUMP_S);
+	const uint32_t current = rtcSAM3X8.unixtime(), secsLocal = secs + TIME_ZONE * 3600UL;
+	if(flag > 0 && !Ntp_JumpOk(current, secsLocal)) {   // Недопустимый скачок оставляет календарь без изменений.
+		logNtpJump(current, secsLocal);
 		flag = -8;
 	}
 	if(flag > 0) {  // Обновление времени если оно получено
@@ -319,9 +328,9 @@ boolean set_time_NTP(void)
 	} // for
 	Udp.stop();
 	// Внутренние часы хранят МЕСТНОЕ время (set_clock добавляет пояс), а secs - UTC: сравниваем в одной шкале.
-	const uint32_t secsLocal = secs + TIME_ZONE * 3600UL;
-	if(flag && !Ntp_JumpOk(rtcSAM3X8.unixtime(), secsLocal)) {   // правдоподобный пакет, но скачок часов слишком велик: календарь ТН не трогаем
-		journal.jprintf("$NTP: time jump %d s rejected (limit %d s), set the clock manually\n", (int)(secsLocal - rtcSAM3X8.unixtime()), (int) NTP_MAX_JUMP_S);
+	const uint32_t current = rtcSAM3X8.unixtime(), secsLocal = secs + TIME_ZONE * 3600UL;
+	if(flag && !Ntp_JumpOk(current, secsLocal)) {   // Правдоподобный ответ с недопустимым скачком.
+		logNtpJump(current, secsLocal);
 		flag = false;
 		bad = NTP_PKT_RANGE;
 	}

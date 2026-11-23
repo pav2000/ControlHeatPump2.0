@@ -28,7 +28,7 @@ function render(list, info, on) {
 	});
 	var cards = groups.map(function(g) {
 		return '<h3 style="margin-top:' + (g == groups[0] ? 0 : 18) + 'px">' + esc(g) + '</h3>' + by[g].map(function(x) {
-			return '<div class="fl"><span class="nm">' + esc(x.n) + '</span><div class="l">' + esc(x.d) + (x.k ? '<small>[' + esc(x.k) + ']</small>' : '') + '</div><input type="checkbox" class="sw" id="dbg-' + x.n + '"' + (x.on ? ' checked' : '') + ' onchange="setFlag(\'' + x.n + '\', this)"></div>';
+			return '<div class="fl"><span class="nm">' + esc(x.n) + '</span><div class="l">' + esc(x.d) + (x.k ? '<small>[' + esc(x.k) + ']</small>' : '') + '</div><input type="checkbox" class="sw" id="dbg-' + x.n + '" aria-label="' + esc(x.n + ' · ' + x.d) + '"' + (x.on ? ' checked' : '') + ' onchange="setFlag(\'' + x.n + '\', this)"></div>';
 		}).join('');
 	});
 	// группы раскладываем в две колонки по очереди: короткие группы идут вторыми
@@ -53,7 +53,7 @@ function setFlag(n, el) {
 }
 function resetFlags() {
 	if(!confirm('Сбросить все флаги отладки в значения по умолчанию?')) return;
-	api['do']('dbg.default', function(v, e) { if(e) stFail('Не выполнено', e); else { load(); stToast('Флаги возвращены к рабочему набору.'); } });
+	api['do']('dbg.default', function(v, e) { if(e) stFail('Не выполнено', e); else { stUnsaved(true); stRefresh(); load(); stToast('Включён только FRED. Для сохранения запишите настройки в EEPROM.'); } });
 }
 window.onload = function() {
 	stPanel({apply: false, note: 'Переключатель действует сразу; в EEPROM флаги записываются этой кнопкой.'});
@@ -64,7 +64,7 @@ window.onload = function() {
 <body class="dbg">
 <div id="menu" class="menu"><script src="menu.js"></script></div>
 <div class="content">
-<div class="card" style="margin-top:16px;display:flex;gap:16px;align-items:center;flex-wrap:wrap"><span style="flex:1;min-width:280px;color:var(--mute)">Флаги включают и выключают сообщения в журнал и консоль. Изменение действует сразу, в память контроллера флаги записываются кнопкой «Записать в EEPROM». Забытый включённый флаг заполняет журнал: «Сбросить по умолчанию» возвращает рабочий набор. В скобках — ключевые слова, по которым строки ищутся в журнале.</span>
+<div class="card" style="margin-top:16px;display:flex;gap:16px;align-items:center;flex-wrap:wrap"><span style="flex:1;min-width:280px;color:var(--mute)">12 флагов управляют техническими сообщениями. <code>$ERROR</code>, <code>$WARN</code> и <code>$EVENT</code> от них не зависят. По умолчанию включён только <b>FRED</b>. После перехода со старой прошивки выберите нужные флаги заново.</span>
 	<button class="btn2" onclick="resetFlags()">Сбросить по умолчанию…</button><a class="btn2" style="text-decoration:none" href="debug-help.html">Справка по флагам ↗</a></div>
 <div class="grid">
 	<section class="card c6" id="c1"></section>

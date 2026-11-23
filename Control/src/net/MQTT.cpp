@@ -223,7 +223,6 @@ void clientMQTT::finishCycle(MqttResult result)
 void clientMQTT::recoverNARMON()
 {
  IPAddress zeroIP(0,0,0,0), tempIP;
- uint8_t i;
  switch (stateNARMON)
  {
   case pMQTT_OK:                                     // Предыдущая отправка была удачна, реанимировать нечего
@@ -248,8 +247,7 @@ void clientMQTT::recoverNARMON()
        break;
   case pMQTT_RES:                                    // Ничего не помогло - сброс сетевого чипа
        Diag.num_resMQTT++;
-       if(initW5200(false)) HP.log_Event("NET", "W5500", "Сетевой чип переинициализирован");
-       for(i=0;i<W5200_THREAD;i++) SETBIT1(Socket[i].flags,fABORT_SOCK); // Признак инициализации сокета, надо прерывать передачу в сервере
+       netChipReinitLocked(false, "сбои обмена с NarodMon");
        _delay(50);
        break;
  }
@@ -268,13 +266,12 @@ void clientMQTT::nextStateNARMON()
 }
 
 
-// Публикует один топик, NM выбирает сервер, debug включает диагностику.
+// Публикует один топик, NM выбирает сервер.
 // link_close закрывает связь, payload заменяет рабочий буфер. Возвращает итог отправки.
-MqttResult clientMQTT::sendTopic(boolean NM, boolean debug, boolean link_close, const char *payload)
+MqttResult clientMQTT::sendTopic(boolean NM, boolean link_close, const char *payload)
 {
   TYPE_STATE_MQTT state;
   IPAddress tempIP;
-  uint8_t i;
   if(SemaphoreTake(xWebThreadSemaphore,(W5200_TIME_WAIT/portTICK_PERIOD_MS))==pdFALSE) {journal.jprintf((char*)cErrorMutex,__FUNCTION__,MutexWebThreadBusy);return MqttResult::Skipped;} // Захват семафора потока или ОЖИДАНИЕ W5200_TIME_WAIT, если семафор не получен то выходим
  if (NM) state=stateNARMON; else state=stateMQTT;
 
@@ -302,8 +299,7 @@ MqttResult clientMQTT::sendTopic(boolean NM, boolean debug, boolean link_close, 
                           break;
           case pMQTT_RES: // Предыдущая отправка - был сброс ДНС адреса теперь НАДО ЧИП СБРОСИТЬ
                          Diag.num_resMQTT++;
-                         if(initW5200(false)) HP.log_Event("NET", "W5500", "Сетевой чип переинициализирован");
-                         for (i=0;i<W5200_THREAD;i++) SETBIT1(Socket[i].flags,fABORT_SOCK);  // Признак инициализации сокета, надо прерывать передачу в сервере
+                         netChipReinitLocked(false, NM ? "сбои обмена с NarodMon" : "сбои обмена с MQTT");
                           _delay(50);
                          break;
      }
@@ -313,7 +309,7 @@ MqttResult clientMQTT::sendTopic(boolean NM, boolean debug, boolean link_close, 
           {
            const bool published = w5200_MQTT.publish(topic, payload ? payload : temp);
            if(link_close || !published) w5200_MQTT.disconnect();
-           if(debug) ShowSockRegisters(W5200_SOCK_SYS);
+           if(DBG_ON(DBG_PHY)) ShowSockRegisters(W5200_SOCK_SYS);
            SemaphoreGive(xWebThreadSemaphore);
            updateState(NM, published ? pMQTT_OK : pMQTT_SOCK);
            if(NM) {
@@ -324,7 +320,7 @@ MqttResult clientMQTT::sendTopic(boolean NM, boolean debug, boolean link_close, 
           }
           else                                  // соединение не установлено
           {
-          ShowSockRegisters(W5200_SOCK_SYS);    // выводим состояние регистров ВСЕГДА
+          if(DBG_ON(DBG_PHY)) ShowSockRegisters(W5200_SOCK_SYS);
           closeSockSys(true);
           SemaphoreGive(xWebThreadSemaphore);
           journal.jprintf(" %s\n",get_stateMQTT());
@@ -349,7 +345,7 @@ if (NM) // В зависимости от того с кем надо соеди
          w5200_MQTT.setServer(mqttSettintg.narodMon_serverIP,mqttSettintg.narodMon_port);                       // установить параметры Народного мониторинга
          w5200_MQTT.connect(HP.get_netMAC(), mqttSettintg.narodMon_login,mqttSettintg.narodMon_password);       // Соедиенение с народным мониторингом
          #ifdef MQTT_REPEAT            // разрешен повтор соединения
-         if (!w5200_MQTT.connected()) { _delay(20); ShowSockRegisters(W5200_SOCK_SYS); w5200_MQTT.connect(HP.get_netMAC(), mqttSettintg.narodMon_login,mqttSettintg.narodMon_password); } // вторая попытка
+         if (!w5200_MQTT.connected()) { _delay(20); if(DBG_ON(DBG_PHY)) ShowSockRegisters(W5200_SOCK_SYS); w5200_MQTT.connect(HP.get_netMAC(), mqttSettintg.narodMon_login,mqttSettintg.narodMon_password); } // вторая попытка
          #endif
          }
          else
@@ -359,7 +355,7 @@ if (NM) // В зависимости от того с кем надо соеди
                 w5200_MQTT.setServer(mqttSettintg.mqtt_serverIP,mqttSettintg.mqtt_port);
                 w5200_MQTT.connect(mqttSettintg.mqtt_id);   //  установить параметры сервера (используется обращение через ДНС) Соедиенение с ThingSpeak
                 #ifdef MQTT_REPEAT            // разрешен повтор соединения
-                if (!w5200_MQTT.connected()) { _delay(20); ShowSockRegisters(W5200_SOCK_SYS); w5200_MQTT.connect(mqttSettintg.mqtt_id); }  // вторая попытка
+                if (!w5200_MQTT.connected()) { _delay(20); if(DBG_ON(DBG_PHY)) ShowSockRegisters(W5200_SOCK_SYS); w5200_MQTT.connect(mqttSettintg.mqtt_id); }  // вторая попытка
                 #endif
                }
                else
@@ -367,7 +363,7 @@ if (NM) // В зависимости от того с кем надо соеди
                 w5200_MQTT.setServer(mqttSettintg.mqtt_serverIP,mqttSettintg.mqtt_port);
                 w5200_MQTT.connect(mqttSettintg.mqtt_id,mqttSettintg.mqtt_login,mqttSettintg.mqtt_password); //  установить параметры сервера Соедиенение с сервером MQTT
                 #ifdef MQTT_REPEAT            // разрешен повтор соединения
-                if (!w5200_MQTT.connected()) { _delay(20); ShowSockRegisters(W5200_SOCK_SYS); w5200_MQTT.connect(mqttSettintg.mqtt_id,mqttSettintg.mqtt_login,mqttSettintg.mqtt_password);}   // вторая попытка
+                if (!w5200_MQTT.connected()) { _delay(20); if(DBG_ON(DBG_PHY)) ShowSockRegisters(W5200_SOCK_SYS); w5200_MQTT.connect(mqttSettintg.mqtt_id,mqttSettintg.mqtt_login,mqttSettintg.mqtt_password);}   // вторая попытка
                 #endif
                }
          }

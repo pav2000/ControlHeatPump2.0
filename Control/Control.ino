@@ -935,7 +935,6 @@ x_I2C_init_std_message:
 
 	if(HP.get_HP_ON()>0) {                           // если надо запустить ТН - отложенный старт
 		if(Boot_NoAutoStart(boot)) {
-			journal.jprintf("$Delayed start canceled: %d abnormal resets in a row\n", boot.resets);
 			// Состояние активной аварии занимает первая причина, а при старте его часто уже заняла ошибка инициализации
 			// (на стенде -39 «инвертор не найден»): причину отмены не было бы видно в морде. Она важнее - вытесняем.
 			// Планировщик ещё не запущен, прямая запись безопасна; прежняя ошибка осталась в журнале.
@@ -1133,8 +1132,7 @@ void vWeb0(void *)
 				resW5200 = xTaskGetTickCount();
 				if(timeResetW5200 == 0) timeResetW5200 = resW5200;      // Первая итерация не должна быть сразу
 				if(resW5200 - timeResetW5200 > HP.time_resW5200() * 1000UL) {
-					journal.jprintf_time("Reset %s by timer . . .\n", nameWiznet);
-					HP.sendCommand(pNETWORK);                          // Послать команду сброса и применения сетевых настроек
+					HP.sendCommand(pNETWORK, NetworkResetCause::Timer); // Периодическая переинициализация чипа
 					timeResetW5200 = resW5200;                         // Запомить время сброса
 					active = false;
 				}
@@ -1507,7 +1505,7 @@ void vReadSensor_delay1ms(int32_t ms)
 		if(!digitalReadDirect(PIN_KEY1)) {                            // нажата
 			if(keyOnOffReady && GetTickCount() - keyReleasedAt > KEY_RELEASE_IGNORE) {
 				keyOnOffReady = false;                                // одно действие на нажатие
-				journal.jprintf("ON/OFF Key pressed!\n");
+				journal.event(Journal::Stamp::Time, "PANEL", "KEY", "Нажата кнопка ON/OFF");
 				if(HP.get_errcode() && !Error_Beep_confirmed) {
 					Error_Beep_confirmed = true;
 				} else if(HP.get_State() == pOFF_HP) {
@@ -1538,7 +1536,7 @@ void vReadSensor_delay1ms(int32_t ms)
 			HP.NO_Power_delay = NO_POWER_ON_DELAY_CNT;
 		} else if(HP.NO_Power) { // Включаемся
 			if(HP.NO_Power_delay) {
-				if(--HP.NO_Power_delay == 0) HP.sendCommand(pNETWORK);
+				if(--HP.NO_Power_delay == 0) HP.sendCommand(pNETWORK, NetworkResetCause::Power);
 			} else {
 				// Питание восстановлено. Возобновление ТН фиксируется при обработке пуска.
 				journal.event(Journal::Stamp::DateTime, "POWER", "RESTORED", "Внешнее питание восстановлено");

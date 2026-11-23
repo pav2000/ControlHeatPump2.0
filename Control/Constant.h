@@ -1016,6 +1016,9 @@ enum TYPE_COMMAND
   pEND14                         // Обязательно должен быть последним, добавляем ПЕРЕД!!!
 };
 
+// Причина pNETWORK хранится в метаданных команды, чтобы не терялась в очереди.
+enum class NetworkResetCause : uint8_t { Settings, Timer, Power, Ping };
+
 static const char * const hp_commands_names[] = {"EMPTY", "START", "AUTOSTART", "STOP", "RESET", "RESTART", "REPEAT", "NETWORK", "SAVE", "WAIT", "RESUME", "PROG_FC", "UNKNOWN"};
 static_assert(sizeof(hp_commands_names) / sizeof(hp_commands_names[0]) == pEND14 + 1, "имя на каждую команду и UNKNOWN последним");
 

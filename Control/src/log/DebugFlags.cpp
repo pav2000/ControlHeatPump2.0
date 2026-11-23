@@ -22,34 +22,29 @@
 #include <string.h>
 
 // Группы страницы "Отладка".
-#define G_ALG  "Алгоритм"
-#define G_HW   "Оборудование"
-#define G_NET  "Сеть"
-#define G_RED  "Сокращение вывода"
+#define G_ALG "Автоматика"
+#define G_HW  "Оборудование"
+#define G_NET "Сеть и обмен"
+#define G_CFG "Настройки"
 
 const DbgFlagInfo DbgTable[] = {
-	{ "MODW",  G_ALG, "Ход алгоритма [EvaluateWorkMode]",                              DBG_MODW,  1 },
-	{ "FRED",  G_ALG, "Причины снижения частоты [Reduced FC]",                         DBG_FRED,  1 },
-	{ "DUMP",  G_ALG, "Строка состояния ТН [modWork]",                                 DBG_DUMP,  0 },
-	{ "FSTEP", G_ALG, "Целевая частота по шагам [FC>]",                                DBG_FSTEP, 0 },
-	{ "PID",   G_ALG, "Разбор ПИД частоты [PID(]",                                     DBG_PID,   0 },
-	{ "EEV",   G_ALG, "Шаги ЭРВ и коррекция перегрева [EEV:, OHCor]",                  DBG_EEV,   0 },
-	{ "FCW",   G_HW,  "Параметры инвертора и попытки обмена",                     DBG_FCW,   0 },
-	{ "SDM",   G_HW,  "Попытки обмена со счётчиком SDM",                        DBG_SDM,   0 },
-	{ "NXT",   G_HW,  "Обмен с дисплеем Nextion [NXTTX:]",                             DBG_NXT,   0 },
-	{ "WERR",  G_NET, "Ошибки веб-запросов [WEB:Wrong request, Error send]",                       DBG_WERR,  0 },
-	{ "WFULL", G_NET, "Детальный лог сетевых сервисов [Send request, Response]",       DBG_WFULL, 0 },
-	{ "HTTP",  G_NET, "Тела запросов и ответов веб-сервера [$QUERY, $INPUT, $RETURN]", DBG_HTTP,  0 },
-	{ "PHY",   G_NET, "Подробности сетевого чипа [Speed Status, DHCP use]",            DBG_PHY,   0 },
-	{ "PING",  G_RED, "Успешные пинги [Ping]",                                         DBG_PING,  0 },
-	{ "MON",   G_RED, "Успешные отправки на мониторинг и в MQTT [>> сервер OK]",       DBG_MON,   0 },
-	{ "RELP",  G_RED, "Плановые переключения насосов [Relay RPUMPB, RPUMPO]",          DBG_RELP,  0 },
+	{ "MODW",  G_ALG, "Выбор режима и насосы [EvaluateWorkMode, Relay]", DBG_MODW, 0 },
+	{ "FRED",  G_ALG, "Ограничения частоты [Reduced FC]",               DBG_FRED, 1 },
+	{ "PID",   G_ALG, "Расчёт ПИД и задание частоты [PID, FC>]",        DBG_PID,  0 },
+	{ "DUMP",  G_ALG, "Снимок ТН на каждом проходе [modWork]",           DBG_DUMP, 0 },
+	{ "EEV",   G_HW,  "Положение ЭРВ и перегрев [EEV hyb, OHCor]",       DBG_EEV,  0 },
+	{ "FCW",   G_HW,  "Обмен с инвертором",                             DBG_FCW,  0 },
+	{ "SDM",   G_HW,  "Обмен со счётчиком",                             DBG_SDM,  0 },
+	{ "NXT",   G_HW,  "Обмен с дисплеем Nextion [NXTTX]",                 DBG_NXT,  0 },
+	{ "PHY",   G_NET, "Ethernet, SPI и пинг [W5500, SPI DMA, Ping]",     DBG_PHY,  0 },
+	{ "HTTP",  G_NET, "Запросы к контроллеру и ошибки веб-сервера",      DBG_HTTP, 0 },
+	{ "WFULL", G_NET, "Внешние сетевые сервисы и телеметрия",            DBG_WFULL, 0 },
+	{ "CFG",   G_CFG, "Чтение и запись разделов настроек и файлов",      DBG_CFG,  0 },
 };
 const uint8_t DbgCount = sizeof(DbgTable) / sizeof(DbgTable[0]);
 
 // Значение до первой загрузки настроек: те же, что по умолчанию.
-#define DBG_DEFAULT_MASK  (DBG_MODW | DBG_FRED)
-volatile uint32_t dbgFlags = DBG_DEFAULT_MASK;
+volatile uint32_t dbgFlags = DBG_FRED;
 
 uint32_t Dbg_Defaults(void)
 {

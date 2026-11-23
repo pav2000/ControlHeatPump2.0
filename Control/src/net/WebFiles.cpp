@@ -784,18 +784,24 @@ bool get_binEEPROM(uint8_t thread)
 	strcat(Socket[thread].outBuf, WEB_HEADER_BIN_ATTACH);
 	strcat(Socket[thread].outBuf, "settings_eeprom.bin\"\r\n\r\n");
 	len = strlen(Socket[thread].outBuf);
-	if(sendPacketRTOS(thread, (byte*)Socket[thread].outBuf, len) != len) return 0;
+	if(sendPacketRTOS(thread, (byte*)Socket[thread].outBuf, len) != len) {
+		journal.jprintf_time("CFG: не удалось начать скачивание EEPROM\n");
+		return false;
+	}
 
 	const uint32_t total = I2C_JOURNAL_EEPROM_NEXT;   // размер чипа в байтах
 	for(uint32_t adr = 0; adr < total; adr += W5200_MAX_LEN) {
 		uint16_t n = total - adr > W5200_MAX_LEN ? W5200_MAX_LEN : (uint16_t)(total - adr);
 		if(readEEPROM_I2C(adr, (byte*)Socket[thread].outBuf, n)) {
-			journal.jprintf("Error read EEPROM at 0x%X\n", (unsigned int)(adr));
-			return 0;
+			journal.jprintf_time("CFG: ошибка чтения EEPROM по адресу 0x%X\n", (unsigned)adr);
+			return false;
 		}
-		if(sendBufferRTOS(thread, (uint8_t*)Socket[thread].outBuf, n) != n) return 0;
+		if(sendBufferRTOS(thread, (uint8_t*)Socket[thread].outBuf, n) != n) {
+			journal.jprintf_time("CFG: скачивание EEPROM прервано на смещении %u\n", (unsigned)adr);
+			return false;
+		}
 	}
-	journal.jprintf("Read all EEPROM: %d bytes\n", (int)total);
+	if(DBG_ON(DBG_CFG)) journal.jprintf_time("CFG: выгружено %u байт EEPROM\n", (unsigned)total);
 	return true;
 }
 
@@ -834,6 +840,8 @@ static int32_t read_binSettings(uint8_t *buffer, uint16_t capacity)
 	const int16_t scheduleSize = HP.Schdlr.load(buffer + scheduleOffset, version);
 	if(scheduleSize < 0) return scheduleSize;
 	if(scheduleSize != scheduleCapacity) return ErrorNumber(ErrorCatalog::Code::kSETTINGS_DATA);
+	if(DBG_ON(DBG_CFG)) journal.jprintf_time("CFG: экспорт, настройки %u, профили %u, расписание %u байт\n",
+	                                        (unsigned)settingsSize, (unsigned)profilesSize, (unsigned)scheduleSize);
 	return scheduleOffset + scheduleSize;
 }
 
@@ -851,14 +859,16 @@ bool get_binSettings(uint8_t thread)
 	const int32_t dataSize = read_binSettings((uint8_t*)buffer + headerSize,
 	                                         sizeof(Socket[thread].outBuf) - headerSize);
 	if(dataSize < 0) {
-		journal.jprintf(" Settings export failed (%d)\n", (int)dataSize);
+		journal.jprintf_time("CFG: выгрузка настроек не удалась (%d)\n", (int)dataSize);
 		static const char busy[] = "HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
 		static const char failed[] = "HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
 		sendConstRTOS(thread, dataSize == ErrorNumber(ErrorCatalog::Code::kI2C_BUSY) ? busy : failed);
 		return false;
 	}
 	const uint16_t total = headerSize + dataSize;
-	return sendBufferRTOS(thread, (uint8_t*)buffer, total) == total;
+	if(sendBufferRTOS(thread, (uint8_t*)buffer, total) == total) return true;
+	journal.jprintf_time("CFG: скачивание настроек прервано\n");
+	return false;
 }
 
 // Получить файл со графиками возвращает число отправленных байт
@@ -927,7 +937,7 @@ void get_csvChart(uint8_t thread)
 int16_t get_indexNoSD(uint8_t thread)
 {
     uint16_t n,i=0;
-       if(DBG_ON(DBG_HTTP)) { journal.jprintf("$Read: indexNoSD from memory\n"); }
+       if(DBG_ON(DBG_HTTP)) { journal.jprintf("WEB: встроенная страница из памяти\n"); }
    	strcpy(Socket[thread].outBuf, WEB_HEADER_OK_CT);
    	strcat(Socket[thread].outBuf, WEB_HEADER_TXT_KEEP);
    	strcat(Socket[thread].outBuf, WEB_HEADER_END);

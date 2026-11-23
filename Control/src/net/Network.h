@@ -77,7 +77,8 @@ char     *IPAddress2String(IPAddress &ip);
 void     ShowSockRegisters(uint8_t s);
 void     checkSockStatus();               // сторож зависших сокетов, зовётся из Control.ino
 // ---- Сторож сетевого чипа (решения NetChip_* находятся в ControlPolicy) ----
-boolean  netChipReinit(boolean verbose);  // аппаратный и программный сброс чипа и инициализация; замок сети берёт сама. Её зовёт и команда pNETWORK
+boolean  netChipReinit(boolean verbose, const char *reason);
+boolean  netChipReinitLocked(boolean verbose, const char *reason); // Замок сети принадлежит вызывающему
 void     netChipBaseline();               // снимок регистров после успешной инициализации; замок сети держит вызывающий
 bool     netChipSelfTest();               // самотест чипа из vWeb0 раз в NETCHIP_TEST_S секунд; true - чип сброшен
 void     netChipPingFailed();             // ping внешнего хоста не прошёл: подтверждённая неисправность

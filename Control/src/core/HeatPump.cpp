@@ -922,22 +922,24 @@ int8_t HeatPump::ResetFC()
 	if(dFC.get_err() == OK && !dFC.get_blockFC()) return OK;
 #endif
 // 2. Собственно сброс
+	int8_t result = OK;
 #ifdef RRESET                                                               // Если есть вход от инвертора об ошибке
 	dRelay[RRESET].set_ON(); _delay(100); dRelay[RRESET].set_OFF();         // Подать импульс сброса
-	journal.jprintf_time(" Reset %s by RRESET\n",dFC.get_name());
 #else
-	if(!dFC.reset_FC()) return dFC.get_err() == OK ? ErrorNumber(ErrorCatalog::Code::kFC_RESET) : dFC.get_err();
-
+	if(!dFC.reset_FC()) result = dFC.get_err() == OK ? ErrorNumber(ErrorCatalog::Code::kFC_RESET) : dFC.get_err();
 #endif
-// 3. Проверка результатов сброса
+	// Об исходе сброса сообщаем после проверки привода или сигнала его ошибки.
+	if(result == OK) {
 #ifdef SERRFC
-    _delay(100);
-    sInput[SERRFC].Read();
-    if(sInput[SERRFC].get_lastErr() != OK) return ErrorNumber(ErrorCatalog::Code::kFC_RESET);
+		_delay(100);
+		sInput[SERRFC].Read();
+		if(sInput[SERRFC].get_lastErr() != OK) result = ErrorNumber(ErrorCatalog::Code::kFC_RESET);
 #else
-    if(dFC.get_blockFC()) return ErrorNumber(ErrorCatalog::Code::kFC_RESET);
+		if(dFC.get_blockFC()) result = ErrorNumber(ErrorCatalog::Code::kFC_RESET);
 #endif
-	return OK;
+	}
+	journal.event(Journal::Stamp::Time, "FC", "RESET", "%s: результат сброса %d", dFC.get_name(), (int)result);
+	return result;
 }
            
 // проверить, Если есть ли работа для ТН - true.
@@ -1269,7 +1271,7 @@ boolean HeatPump::boilerAddHeat()
 				onSalmonella, doneSalmonella, Uptime_s())) { // Надо начитать процесс обеззараживания
 			startSalmonella = Uptime_s();
 			onSalmonella = true;
-			journal.jprintf(" Cycle start salmonella, %.2dC°\n", sTemp[TBOILER].get_Temp());
+			journal.event(Journal::Stamp::Time, "BOILER", "SALMONELLA", "Начато обеззараживание, %.2d °C", (int)sTemp[TBOILER].get_Temp());
 		}
 		if(onSalmonella) {   // Обеззараживание нужно
 			if(startSalmonella + SALMONELLA_TIME > Uptime_s()) { // Время цикла еще не исчерпано
@@ -1279,20 +1281,20 @@ boolean HeatPump::boilerAddHeat()
 					onSalmonella = false;
 					startSalmonella = 0;
 					doneSalmonella = Uptime_s();
-					journal.jprintf(" Salmonella cycle finished, %.2dC°\n", sTemp[TBOILER].get_Temp());
+					journal.event(Journal::Stamp::Time, "BOILER", "SALMONELLA", "Достигнута целевая температура, %.2d °C", (int)sTemp[TBOILER].get_Temp());
 					return false;
 				}
 			} else {  // Время вышло, выключаем, и идем дальше по алгоритму
 				onSalmonella = false;
 				startSalmonella = 0;
 				doneSalmonella = Uptime_s();
-				journal.jprintf(" Salmonella cycle end, %.2dC°\n", sTemp[TBOILER].get_Temp());
+				journal.event(Journal::Stamp::Time, "BOILER", "SALMONELLA", "Время цикла истекло, %.2d °C", (int)sTemp[TBOILER].get_Temp());
 			}
 		}
 	} else if(onSalmonella) { // если сальмонеллу отключили на ходу выключаем и идем дальше по алгоритму
 		onSalmonella = false;
 		startSalmonella = 0;
-		journal.jprintf(" Off salmonella\n");
+		journal.event(Journal::Stamp::Time, "BOILER", "SALMONELLA", "Обеззараживание отключено");
 	}
 
 	// Выход из режима «бойлер греет только ТЭН» (выключили флаг или включили генератор): обычная логика догрева видит включённое реле как
@@ -1409,8 +1411,8 @@ MODE_COMP  HeatPump::UpdateBoiler()
 	{
 		if(Status.prev == pBdis) {
 			if(offBoiler + Prof.Boiler.Reset_Time < Uptime_s()) {
-				journal.jprintf(" Boiler: Discharged Ok\n");
 				switchBoiler(true);    // Переключиться на ходу на ГВС
+				journal.event(Journal::Stamp::Time, "BOILER", "DISCHARGE", "Время сброса тепла истекло");
 			} else {
 				Status.ret = pBdis;
 				return pCOMP_NONE;
@@ -1420,9 +1422,9 @@ MODE_COMP  HeatPump::UpdateBoiler()
 		   > Prof.Boiler.tempInLim - Prof.Boiler.DischargeDelta * 10
 		   || (sTemp[TCOMP].get_Temp() > sTemp[TCOMP].get_maxTemp() - BOILER_TEMP_COMP_RESET)) // температура нагнетания компрессора больше максимальной -5 градусов
 		{
-			journal.jprintf(" Boiler: Discharging %ds...\n", Prof.Boiler.Reset_Time);
 			switchBoiler(false);       // Переключиться на ходу на отопление
 			Status.ret = pBdis;
+			journal.event(Journal::Stamp::Time, "BOILER", "DISCHARGE", "Начат сброс тепла на %d с", (int)Prof.Boiler.Reset_Time);
 			return pCOMP_NONE;
 		}
 	}
@@ -1525,7 +1527,7 @@ MODE_COMP  HeatPump::UpdateBoiler()
 	if(out.clear_urgent) set_HeatBoilerUrgently(false);
 	if(out.set_target) {
 		if(!out.target_immediate) {
-			if(DBG_ON(DBG_FSTEP)) { journal.jprintf((char*)STR_FREQUENCY, out.target/100.0); }
+			if(DBG_ON(DBG_PID)) { journal.jprintf((char*)STR_FREQUENCY, out.target/100.0); }
 		}
 		dFC.set_target(out.target, out.target_immediate, in.fc_min, in.fc_max);
 	}
@@ -1638,7 +1640,7 @@ MODE_COMP HeatPump::UpdateHeat()
 	if(out.set_ret) Status.ret = out.ret;
 	if(out.set_target) {
 		if(!out.target_immediate) {
-			if(DBG_ON(DBG_FSTEP)) { journal.jprintf((char*)STR_FREQUENCY, out.target/100.0); }
+			if(DBG_ON(DBG_PID)) { journal.jprintf((char*)STR_FREQUENCY, out.target/100.0); }
 		}
 		dFC.set_target(out.target, out.target_immediate, in.fc_min, in.fc_max);
 	}
@@ -1739,7 +1741,7 @@ MODE_COMP HeatPump::UpdateCool()
 	if(out.set_ret) Status.ret = out.ret;
 	if(out.set_target) {
 		if(!out.target_immediate) {
-			if(DBG_ON(DBG_FSTEP)) { journal.jprintf((char*)STR_FREQUENCY, out.target/100.0); }
+			if(DBG_ON(DBG_PID)) { journal.jprintf((char*)STR_FREQUENCY, out.target/100.0); }
 		}
 		dFC.set_target(out.target, out.target_immediate, in.fc_min, in.fc_max);
 	}
@@ -2548,7 +2550,8 @@ return 0; // Мощность не определилась
 void HeatPump::set_HeatBoilerUrgently(boolean onoff)
 {
 	if(HeatBoilerUrgently != onoff) {
-		journal.jprintf("Boiler Urgent = %s\n", (HeatBoilerUrgently = onoff) ? "ON" : "OFF");
+		HeatBoilerUrgently = onoff;
+		journal.event(Journal::Stamp::Time, "BOILER", "URGENT", "%s", onoff ? "Включён срочный нагрев ГВС" : "Выключен срочный нагрев ГВС");
 	}
 }
 

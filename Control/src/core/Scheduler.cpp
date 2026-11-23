@@ -221,7 +221,8 @@ int8_t Scheduler::save_locked(void)
         }
     }
     if(err == OK) {
-        journal.jprintf("Save scheduler to I2C OK, write: %d bytes, crc: %04x\n", sizeof(sch_data) + sizeof(crc16), crc16);
+        if(DBG_ON(DBG_CFG)) journal.jprintf_time("CFG: расписание записано, %u байт, CRC16=%04X\n",
+                                               (unsigned)(sizeof(sch_data) + sizeof(crc16)), (unsigned)crc16);
     } else {
         HP.set_Warning(ErrorCatalog::Code::kSETTINGS_WRITE, "schedule", -err,
                        err == ErrorNumber(ErrorCatalog::Code::kSETTINGS_WRITE) ? "Не удалось записать расписание" :
@@ -265,19 +266,18 @@ static bool unpack_old(Scheduler_Data *d, const uint8_t *src)
 // version задаёт эпоху старого формата, 0 использует текущую. Возвращает длину либо код отказа.
 int16_t Scheduler::load(uint8_t *data, uint8_t version)
 {
-	journal.jprintf(" Scheduler ");
 	uint32_t base;
 	uint16_t len;
 	int16_t ret = read_region(base, len);
 	if(ret != OK) {
-		journal.jprintf(" region error (%d)\n", (int)ret);
+		if(!data && DBG_ON(DBG_CFG)) journal.jprintf_time("CFG: ошибка области расписания (%d)\n", (int)ret);
 		return ret;
 	}
 #ifdef LOAD_VERIFICATION
 	if(base != I2C_SCHEDULER_EEPROM || legacy_scheduler_has_crc(version ? version : HP.Option.ver)) {
 		ret = check_crc16_eeprom(base, len);
 		if(ret != OK) {
-			journal.jprintf(" verification error (%d)\n", (int)ret);
+			if(!data && DBG_ON(DBG_CFG)) journal.jprintf_time("CFG: ошибка проверки расписания (%d)\n", (int)ret);
 			return ret;
 		}
 	}
@@ -288,7 +288,6 @@ int16_t Scheduler::load(uint8_t *data, uint8_t version)
 	// чтения действующее расписание сохраняется целиком.
 	static Scheduler_Data candidate;
 	Scheduler_Data *d = data ? (Scheduler_Data *) data : &candidate;
-	journal.jprintf(data ? "save" : "load");
 	bool lost = false, fail;
 	if(len == SCHEDULER_LEN_NEW) {
 		fail = readEEPROM_I2C(base, (uint8_t *) d, sizeof(*d));
@@ -304,7 +303,7 @@ int16_t Scheduler::load(uint8_t *data, uint8_t version)
 		}
 	}
 	if(fail) {
-		journal.jprintf(" - read error!\n");
+		if(!data && DBG_ON(DBG_CFG)) journal.jprintf_time("CFG: чтение расписания не удалось\n");
 		return ErrorNumber(ErrorCatalog::Code::kSETTINGS_READ);
 	}
 	fix_loaded(d, lost);
@@ -312,15 +311,13 @@ int16_t Scheduler::load(uint8_t *data, uint8_t version)
 	if(data) {                                            // экспорт: за данными контрольная сумма уже обработанных данных
 		uint16_t crc = get_crc16((uint8_t *) d);
 		memcpy(data + sizeof(*d), &crc, sizeof(crc));
-		journal.jprintf(" - crc: %04x, ", crc);
 		ret += sizeof(crc);
 	} else {
 		uint8_t suspended = TaskSuspendAll();
 		memcpy(&sch_data, d, sizeof(sch_data));
 		if(suspended) xTaskResumeAll();
 	}
-	if(len != SCHEDULER_LEN_NEW) journal.jprintf(" (old record, %d bytes)", len);
-	journal.jprintf(" %d bytes Ok.\n", ret);
+	if(!data && DBG_ON(DBG_CFG)) journal.jprintf_time("CFG: расписание прочитано, %u байт из EEPROM\n", (unsigned)len);
 	return ret;
 }
 
@@ -348,19 +345,19 @@ uint16_t Scheduler::file_data_len(const uint8_t *buf, uint16_t avail, uint16_t h
 
 // Загружает расписание из buf длиной avail, hint задаёт ожидаемую длину или 0.
 // Возвращает OK либо код ошибки формата или CRC.
-int8_t Scheduler::loadFromBuf(byte *buf, uint16_t avail, uint16_t hint)
+int8_t Scheduler::loadFromBuf(byte *buf, uint16_t avail, uint16_t hint, bool trace)
 {
 	const uint16_t len = file_data_len(buf, avail, hint);
 	if(!len) {
-		journal.jprintf(" Load scheduler: unknown length or CRC error (%d bytes available, hint %d)\n", avail, hint);
+		if(trace) journal.jprintf_time("CFG: неверная длина или CRC расписания (%u байт, ожидается %u)\n", (unsigned)avail, (unsigned)hint);
 		return ErrorNumber(ErrorCatalog::Code::kSETTINGS_DATA);
 	}
-	journal.jprintf(" Load scheduler %d bytes, ", len + 2);
 	bool lost = false;
 	if(len == SCHEDULER_LEN_NEW) memcpy((byte *) &sch_data, buf, sizeof(sch_data));
 	else lost = unpack_old(&sch_data, buf);
 	fix_loaded(&sch_data, lost);
-	journal.jprintf("OK\n");
+	if(trace) journal.jprintf_time("CFG: расписание из файла, %u байт, CRC16=%04X\n",
+	                              (unsigned)(len + 2), (unsigned)rec_hdr_tag(buf + len));
 	return OK;
 }
 
@@ -382,7 +379,6 @@ int8_t Scheduler::read_region(uint32_t &base, uint16_t &len)
 	if(rec_hdr_tag(hdr) == NTAG_Scheduler) {
 		len = rec_hdr_len(hdr);
 		if(len != SCHEDULER_LEN_NEW && len != SCHEDULER_LEN_OLD) {
-			journal.jprintf(" Invalid scheduler length %u\n", (unsigned)len);
 			return ErrorNumber(ErrorCatalog::Code::kSETTINGS_DATA);
 		}
 		base += REC_HDR_SIZE;
@@ -408,7 +404,6 @@ int8_t Scheduler::check_crc16_eeprom(uint32_t base, uint16_t len)
 	}
 	if(readEEPROM_I2C(base + i, (byte*)&crc2, sizeof(crc2))) return ErrorNumber(ErrorCatalog::Code::kSETTINGS_READ);
 	if(crc == crc2) return OK;
-	journal.jprintf(" Scheduler CRC mismatch: %04x != %04x\n", crc, crc2);
 	return ErrorNumber(ErrorCatalog::Code::kSETTINGS_DATA);
 }
 

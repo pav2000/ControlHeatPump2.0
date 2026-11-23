@@ -64,7 +64,6 @@ static ErrorCatalog::Code read_settings_block(uint8_t *&buffer, uint16_t capacit
                                   bool newFormat, uint16_t &size, uint16_t &cause)
 {
 	if(from_RAM) {
-		journal.jprintf("FILE");
 		const uint32_t block = settings_file_block_size(buffer, capacity);
 		if(!block) {
 			cause = static_cast<uint16_t>(SettingsDataCause::Length);
@@ -73,7 +72,6 @@ static ErrorCatalog::Code read_settings_block(uint8_t *&buffer, uint16_t capacit
 		size = block - sizeof(size);
 		buffer += sizeof(size);
 	} else {
-		journal.jprintf("I2C");
 		if(!buffer || (cause = readEEPROM_I2C(I2C_SETTING_EEPROM, (byte*)&size, sizeof(size))))
 			return ErrorCatalog::Code::kSETTINGS_READ;
 	}
@@ -96,41 +94,37 @@ static ErrorCatalog::Code read_settings_block(uint8_t *&buffer, uint16_t capacit
 int32_t HeatPump::load(uint8_t *buffer, uint16_t capacity, uint8_t from_RAM)
 {
 	uint16_t size, cause = 0;
-	journal.jprintf(" Load settings from ");
+	// Файл может заменить маску отладки при применении настроек.
+	const bool trace = DBG_ON(DBG_CFG);
 	const auto status = read_settings_block(buffer, capacity, from_RAM, false, size, cause);
 	if(status != ErrorCatalog::Code::kOK) {
-		journal.jprintf(" - settings block rejected (%d), cause %u\n", (int)status, (unsigned)cause);
+		if(trace) journal.jprintf_time("CFG: блок настроек отклонён (%d), причина %u\n", (int)status, (unsigned)cause);
 		return load_fail(status, from_RAM, cause);
 	}
-	journal.jprintf(", size %d, crc: ", size + 2);
 	size -= sizeof(uint16_t);
 	const uint8_t *buffer_max = buffer + size;
 #ifdef LOAD_VERIFICATION
 	const uint16_t crc = calc_crc16(buffer, size);
 	const uint16_t stored = rec_hdr_tag(buffer_max);
 	if(crc != stored) {
-		journal.jprintf("Error: %04x != %04x!\n", crc, stored);
+		if(trace) journal.jprintf_time("CFG: CRC настроек рассчитана %04x, ожидалась %04x\n", (unsigned)crc, (unsigned)stored);
 		return load_fail(ErrorCatalog::Code::kSETTINGS_DATA, from_RAM, static_cast<uint16_t>(SettingsDataCause::Crc));
 	}
-	journal.jprintf("%04x", crc);
-#else
-	journal.jprintf("*No verification");
 #endif
 	if(!settings_legacy_valid(buffer, buffer_max, SAVE_TYPE_LIMIT, SAVE_TYPE_sIP)) {
-		journal.jprintf(" - invalid legacy record structure!\n");
+		if(trace) journal.jprintf_time("CFG: неверная структура старого блока настроек\n");
 		return load_fail(ErrorCatalog::Code::kSETTINGS_DATA, from_RAM, static_cast<uint16_t>(SettingsDataCause::Structure));
 	}
 #ifdef EEV_DEF
 	const type_settingsEEV *currentEEV = (const type_settingsEEV*)dEEV.get_save_addr();
 	if(!eev_bounds_scan(buffer, buffer_max, true, SAVE_TYPE_dEEV, offsetof(type_settingsEEV, minSteps),
 	                    offsetof(type_settingsEEV, maxSteps), currentEEV->minSteps, currentEEV->maxSteps, EEV_CLOSE_STEP)) {
-		journal.jprintf(" - invalid EEV settings!\n");
+		if(trace) journal.jprintf_time("CFG: неверные настройки ЭРВ\n");
 		return load_fail(ErrorCatalog::Code::kCONFIG, from_RAM);
 	}
 #endif
 	const uint8_t *p = buffer;
 	load_struct(&Option, &p, buffer_max, sizeof(Option));
-	journal.jprintf(", v.%d ", Option.ver);
 	load_struct(&DateTime, &p, buffer_max, sizeof(DateTime));
 	load_struct(&Network, &p, buffer_max, sizeof(Network));
 	load_struct(message.get_save_addr(), &p, buffer_max, message.get_save_size());
@@ -176,7 +170,9 @@ int32_t HeatPump::load(uint8_t *buffer, uint16_t capacity, uint8_t from_RAM)
 #endif
 	for(uint8_t i = 0; i < FNUMBER; i++) sFrequency[i].after_load();
 	dbg_after_load();
-	journal.jprintf("OK\n");
+	if(trace) journal.jprintf_time("CFG: настройки из %s, версия %d, %d байт, CRC16=%04x\n",
+	                              from_RAM ? "файла" : "EEPROM", (int)Option.ver, size + 4,
+	                              (unsigned)rec_hdr_tag(buffer + size));
 	return size + 2 * sizeof(uint16_t);
 }
 
@@ -205,19 +201,11 @@ int32_t HeatPump::load(uint8_t *buffer, uint16_t capacity, uint8_t from_RAM)
 static_assert(VER_SAVE >= SETTINGS_VER_NEW,
               "VER_SAVE ниже SETTINGS_VER_NEW: записанные настройки уйдут в старый читатель");
 
-// Флаги отладки: хранятся все (DebugFlags.h). Нет сигнатуры - значения по умолчанию.
+// При старой сигнатуре выбирается новый набор по умолчанию.
 void HeatPump::dbg_after_load()
 {
 	uint32_t m;
-	// Настройки записаны до появления флагов (нет сигнатуры): значения берутся
-	// из прежних мест хранения. Сами эти биты после загрузки больше не
-	// используются и очищаются, при следующем сохранении запишутся нулями.
-	if(!Dbg_Unpack(Option.dbg, Option.dbg2, &m)) {
-		if(Network.flags & (1 << fWebLogError)) m |= DBG_WERR;
-		if(Network.flags & (1 << fWebFullLog))  m |= DBG_WFULL;
-		if(GETBIT(Option.flags, fSDMLogErrors)) m |= DBG_SDM;
-		if(dFC.get_legacy_logwork())            m |= DBG_FCW;
-	}
+	Dbg_Unpack(Option.dbg, Option.dbg2, &m);
 	Network.rtr = Rtr_Eff(Network.rtr);            // старый файл: на месте rtr лежали байты выравнивания (нули) - по умолчанию
 	Network.flags &= ~((1 << fWebLogError) | (1 << fWebFullLog) | (1 << fNoAck));   // fNoAck: опция удалена, бит 4 в старых файлах сбрасывается, чтобы им никогда не заняли новый смысл
 	Option.flags  &= ~(1 << fSDMLogErrors);
@@ -236,22 +224,23 @@ int32_t HeatPump::save_all(bool saveCounters)
 {
 	// Условие - ПОРОГ: конверсия нужна, только если данные старого каркаса.
 	// Сообщаем версию, которой пишем, то есть VER_SAVE.
-	if(Option.ver < SETTINGS_VER_NEW) {
+	if(DBG_ON(DBG_CFG) && Option.ver < SETTINGS_VER_NEW) {
 		journal.jprintf(" Converting settings to v.%d (was %d)\n", VER_SAVE, Option.ver);
 	}
 	// Профили, расписание и настройки пишутся по частям. Общий замок
 	// защищает их от пересечения с другими операциями и экспортом.
 	SettingsLock lock(saving);
 	if(!lock) {
-		journal.jprintf(" Save settings: busy, another save is in progress\n");
+		if(DBG_ON(DBG_CFG)) journal.jprintf_time("CFG: сохранение отложено, запись уже идёт\n");
 		return ErrorNumber(ErrorCatalog::Code::kI2C_BUSY);
 	}
 	Prof.cache_store(Prof.get_idProfile());        // текущий профиль - в кеш, оттуда пишется область
+	uint16_t crc = 0;
 	int32_t ret = Prof.save_region();
 	if(ret >= 0) {
 		ret = Schdlr.save_locked();
 		if(ret == OK) {
-			ret = save_new();                     // настройки последними
+			ret = save_new(crc);                     // настройки последними
 			if(ret < 0) {
 				const char *detail = ret == ErrorNumber(ErrorCatalog::Code::kSETTINGS_DATA) ? "Проверка записи настроек не прошла" :
 				                     ret == ErrorNumber(ErrorCatalog::Code::kSETTINGS_READ) ? "Контрольное чтение настроек не удалось" : nullptr;
@@ -264,17 +253,19 @@ int32_t HeatPump::save_all(bool saveCounters)
 		const int8_t counters = save_motoHour();
 		if(counters != OK) return counters;
 	}
+	// CRC относится к основному блоку. Профили, расписание и моточасы записаны отдельными операциями.
+	if(ret >= 0) journal.event(Journal::Stamp::Time, "CFG", "SAVE",
+	                           "Настройки, профили и расписание сохранены в EEPROM, CRC16=%04X", (unsigned)crc);
 	return ret;
 }
 
-int32_t HeatPump::save_new(void)
+int32_t HeatPump::save_new(uint16_t &crc)
 {
-	uint16_t crc = 0xFFFF;
+	crc = 0xFFFF;
 	uint32_t addr = I2C_SETTING_EEPROM + 2;     // впереди общая длина
 	Option.numProf = Prof.get_idProfile();      // нужно для восстановления настроек
 	// Планировщик НЕ останавливается: он замораживал держателей замка I2C посреди транзакции (замок при остановке
 	// фиктивный), а нужен был для согласованности CRC с записанными байтами - её теперь даёт save_rec (Record_WriteStable).
-	journal.jprintf(" Save settings v.%d\n", VER_SAVE);
 	DateTime.saveTime = rtcSAM3X8.unixtime();
 
 	// Пролог. Версия ложится на смещение 3 от начала блока - туда же,
@@ -328,7 +319,8 @@ int32_t HeatPump::save_new(void)
 	result = check_crc16_eeprom(I2C_SETTING_EEPROM + 2, addr - 2);
 	if(result != OK) return result;
 	addr += 2;
-	journal.jprintf("OK, wrote: %d bytes, crc: %04x\n", (int)addr, crc);
+	if(DBG_ON(DBG_CFG)) journal.jprintf_time("CFG: настройки EEPROM записаны, версия %d, %d байт, CRC16=%04x\n",
+	                                       VER_SAVE, (int)addr, (unsigned)crc);
 	return addr;
 }
 
@@ -338,6 +330,10 @@ int32_t HeatPump::load_fail(ErrorCatalog::Code code, uint8_t from_RAM, uint16_t 
 {
 	if(!from_RAM) {
 		raise_Error(code, nameHeatPump, {ErrorDetailKind::Local, cause, 0});
+	} else {
+		const char *description = cause == static_cast<uint16_t>(SettingsDataCause::Crc)
+			? "не совпадает CRC блока настроек" : ErrorCatalog::DescriptionOr(code, "неверный блок настроек");
+		journal.event(Journal::Stamp::Time, "CFG", "RESTORE", "Файл отклонён: %s, CRC16=н/д", description);
 	}
 	return ErrorNumber(code);
 }
@@ -354,7 +350,7 @@ void HeatPump::load_warn(SettingsDataCause cause, uint8_t from_RAM)
 int8_t HeatPump::load_parts(void)
 {
 	const int16_t schedule = Schdlr.load();
-	int32_t profile = Prof.cache_load_all();
+	int32_t profile = Prof.cache_load_all(DBG_ON(DBG_CFG));
 	if(profile == OK) profile = Prof.load(Option.numProf);
 	if(schedule >= 0 && profile >= 0) return OK;
 
@@ -371,34 +367,30 @@ int8_t HeatPump::load_parts(void)
 int32_t HeatPump::load_new(uint8_t *buffer, uint16_t capacity, uint8_t from_RAM)
 {
 	uint16_t size, cause = 0;
-	journal.jprintf(" Load settings from ");
+	// Файл может заменить маску отладки при применении настроек.
+	const bool trace = DBG_ON(DBG_CFG);
 	const auto status = read_settings_block(buffer, capacity, from_RAM, true, size, cause);
 	if(status != ErrorCatalog::Code::kOK) {
-		journal.jprintf(" - settings block rejected (%d), cause %u\n", (int)status, (unsigned)cause);
+		if(trace) journal.jprintf_time("CFG: блок настроек отклонён (%d), причина %u\n", (int)status, (unsigned)cause);
 		return load_fail(status, from_RAM, cause);
 	}
-	journal.jprintf(", size %d, crc: ", size + 2);
 	size -= sizeof(uint16_t);
 #ifdef LOAD_VERIFICATION
 	uint16_t crc = calc_crc16(buffer, size, 0xFFFF);
 	const uint16_t stored = rec_hdr_tag(buffer + size);
 	if(crc != stored) {
-		journal.jprintf("Error: %04x != %04x!\n", crc, stored);
+		if(trace) journal.jprintf_time("CFG: CRC настроек рассчитана %04x, ожидалась %04x\n", (unsigned)crc, (unsigned)stored);
 		return load_fail(ErrorCatalog::Code::kSETTINGS_DATA, from_RAM, static_cast<uint16_t>(SettingsDataCause::Crc));
 	}
-	journal.jprintf("%04x", crc);
-#else
-	journal.jprintf("*No verification");
 #endif
 	uint8_t ver = buffer[NEW_OFS_VER - 2];
-	journal.jprintf(", v.%d ", ver);
 	SettingsHead head = settings_head_check(size + 2, ver, VER_SAVE, NEW_HDR_SIZE);
 	if(head == SETHEAD_EMPTY) {                  // версия 0 или 0xFF - блок не наш
-		journal.jprintf("- unknown version!\n");
+		if(trace) journal.jprintf_time("CFG: неизвестная версия блока %d\n", (int)ver);
 		return load_fail(ErrorCatalog::Code::kSETTINGS_DATA, from_RAM, static_cast<uint16_t>(SettingsDataCause::Header));
 	}
 	if(head == SETHEAD_NEWER) {                  // записано более новой прошивкой: читаем что знаем
-		journal.jprintf("(newer than firmware v.%d!) ", VER_SAVE);
+		if(trace) journal.jprintf_time("CFG: версия блока %d новее поддерживаемой %d\n", (int)ver, VER_SAVE);
 		if(from_RAM) return load_fail(ErrorCatalog::Code::kSETTINGS_DATA, from_RAM, static_cast<uint16_t>(SettingsDataCause::Header));
 		load_warn(SettingsDataCause::Header, from_RAM);
 	}
@@ -424,14 +416,15 @@ int32_t HeatPump::load_new(uint8_t *buffer, uint16_t capacity, uint8_t from_RAM)
 	settings_scan(p, p_max, NTAG_END, NTAG_clMQTT, &sc);
 	bool bad_struct = sc.truncated || !sc.end_seen || (sc.unknown && head == SETHEAD_OK);
 	if(bad_struct) {
-		journal.jprintf("structure: records %d, truncated %d, unknown %d, end %d! ", sc.records, sc.truncated, sc.unknown, sc.end_seen);
+		if(trace) journal.jprintf_time("CFG: структура блока: записей %d, обрезано %d, неизвестных %d, конец %d\n",
+		                            sc.records, sc.truncated, sc.unknown, sc.end_seen);
 		if(from_RAM) return load_fail(ErrorCatalog::Code::kSETTINGS_DATA, from_RAM, static_cast<uint16_t>(SettingsDataCause::Structure));
 	}
 #ifdef EEV_DEF
 	const type_settingsEEV *currentEEV = (const type_settingsEEV*)dEEV.get_save_addr();
 	if(!eev_bounds_scan(p, p_max, false, NTAG_dEEV, offsetof(type_settingsEEV, minSteps),
 	                    offsetof(type_settingsEEV, maxSteps), currentEEV->minSteps, currentEEV->maxSteps, EEV_CLOSE_STEP)) {
-		journal.jprintf(" - invalid EEV settings!\n");
+		if(trace) journal.jprintf_time("CFG: неверные настройки ЭРВ\n");
 		return load_fail(ErrorCatalog::Code::kCONFIG, from_RAM);
 	}
 #endif
@@ -497,7 +490,9 @@ int32_t HeatPump::load_new(uint8_t *buffer, uint16_t capacity, uint8_t from_RAM)
 #endif
 	for(uint8_t i = 0; i < FNUMBER; i++) sFrequency[i].after_load();
 	dbg_after_load();
-	journal.jprintf(bad_struct ? "WARNING\n" : "OK\n");
+	if(trace) journal.jprintf_time("CFG: настройки из %s, версия %d, %d байт, CRC16=%04x\n",
+	                              from_RAM ? "файла" : "EEPROM", (int)Option.ver, size + 4,
+	                              (unsigned)rec_hdr_tag(buffer + size));
 	if(bad_struct) load_warn(SettingsDataCause::Structure, from_RAM);
 	return size + 4;                             // длина всего блока: size без CRC, плюс CRC и поле длины. По ней веб ищет профили в файле
 }

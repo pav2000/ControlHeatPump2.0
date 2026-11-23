@@ -767,7 +767,11 @@ static void api_after_eev(uint8_t hook)
 	switch(hook) {
 	case E_SPEED: HP.dEEV.stepperEEV.setSpeed(api_eev()->speedEEV); break;
 	case E_RULE: case E_POM: HP.dEEV.resetPID(); break;
-	case E_HYB: HP.dEEV.resetPID(); journal.jprintf("EEV algorithm: %s\n", GETBIT(api_eev()->flags, fEEV_Hybrid) ? "Hybrid" : "PID"); break;
+	case E_HYB:
+		HP.dEEV.resetPID();
+		journal.event(Journal::Stamp::Time, "EEV", "ALGORITHM", "Выбран алгоритм %s",
+		              GETBIT(api_eev()->flags, fEEV_Hybrid) ? "Hybrid" : "PID");
+		break;
 	}
 }
 static const ApiOps apiOpsEev = { api_base_eev, api_get_eev, api_set_eev, api_after_eev, 0 };

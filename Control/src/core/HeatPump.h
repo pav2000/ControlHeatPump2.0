@@ -90,7 +90,7 @@ extern boolean  Charts_when_comp_on; // графики в памяти толь�
 #define fWebStoreOnSPIFlash		12				// флаг, что веб морда лежит на SPI Flash, иначе на SD карте
 #define fReserved13				13				// РЕЗЕРВ: раньше "логировать обмен беспроводных датчиков" (радио удалено)
 #define fBackupPower			14				// Использование резервного питания от генератора (ограничение мощности)
-#define fSDMLogErrors			15              // УСТАРЕЛО: перенесён в флаг отладки SDM (DebugFlags.h), читается только при переносе настроек
+#define fSDMLogErrors			15              // РЕЗЕРВ: старый флаг журнала SDM, при загрузке очищается
 //  type_optionHP.flags2:
 #define f2BackupPowerAuto		0               // Автоматически определять работу от генератора (через датчик SGENERATOR)
 #define f2HistoryDetail		1               // Детализация истории ВКЛ/ВЫКЛ компрессора: запись раз в HISTORY_DETAIL_PERIOD с вокруг пуска и останова
@@ -154,8 +154,7 @@ struct type_DateTimeHP
 #define fNoAck        4                  // не используется (опция «Не ждать ACK» удалена), бит зарезервирован: при загрузке настроек сбрасывается
 #define fSockFast     8                  // быстрый сокет 0: раскладка буферов 4,2,2,2,2,2,0,2 КБ и 6 веб-сокетов (NetLayout.h), применяется через net.apply
 #define fNoPing       5                  // флаг Запрет пинга контроллера
-// Устаревшие биты, значения переехали в флаги отладки (DebugFlags.h: WERR, WFULL).
-// Читаются только при переносе настроек, после загрузки очищаются.
+// Старые биты сетевой отладки очищаются при загрузке. Новая маска находится в Option.
 #define fWebLogError  6					// было: логировать ошибки
 #define fWebFullLog   7					// было: полный лог
 
@@ -318,7 +317,7 @@ class HeatPump
     void endEEVService();
     bool waitEEVService();
 #endif
-    void     sendCommand(TYPE_COMMAND c);   // Послать команду на управление ТН
+    void     sendCommand(TYPE_COMMAND c, NetworkResetCause cause = NetworkResetCause::Settings);   // Послать команду на управление ТН
     inline TYPE_COMMAND isCommand()  {return command;}  // Получить текущую команду выполняемую ТН
     int8_t   runCommand();               // Выполнить команду по управлению ТН
     char *get_command_name(TYPE_COMMAND c) { return (char*)hp_commands_names[c < pEND14 ? c : pEND14]; }
@@ -353,7 +352,7 @@ class HeatPump
     // ---- НОВЫЙ формат, версия 150. Каркас записи описан в Util.h ----
     int32_t save_all(bool saveCounters = false);                          // записать ВСЕ настройки новым форматом; занято — I2C_BUSY
     volatile uint8_t saving;                         // занята операция с областями настроек
-    int32_t save_new(void);                          // записать настройки новым форматом
+    int32_t save_new(uint16_t &crc);                          // записать настройки новым форматом
     int32_t load_new(uint8_t *buffer, uint16_t capacity, uint8_t from_RAM); // прочитать новый формат
     int32_t load_fail(ErrorCatalog::Code code, uint8_t from_RAM, uint16_t cause = 0);       // ошибка загрузки настроек: в журнал ошибок (старт) или кодом возврата (файл)
     void    load_warn(SettingsDataCause cause, uint8_t from_RAM);       // замечание о загрузке без отказа
@@ -643,6 +642,7 @@ class HeatPump
 #ifdef EEV_DEF
     volatile bool eevServiceIssuing;
 #endif
+    NetworkResetCause networkResetCause;   // Причина выполняемой pNETWORK, извлечённая из очереди
     CommandQueue cmdq;                    // Очередь команд, см. CommandQueue.h; все обращения под запретом прерываний
     type_status Status;                   // Описание состояния ТН
 

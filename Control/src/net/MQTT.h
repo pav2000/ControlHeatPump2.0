@@ -98,7 +98,7 @@ class clientMQTT                              // Класс клиент MQTT
     uint16_t get_crc16(uint16_t crc);           // Рассчитать контрольную сумму для данных на входе входная сумма на выходе новая
 
     boolean dnsUpdate();                        // Обновление IP адресов MQTT через dns
-    MqttResult sendTopic(boolean NM, boolean debug, boolean link_close, const char *payload = nullptr); // Публикует payload либо рабочий буфер temp
+    MqttResult sendTopic(boolean NM, boolean link_close, const char *payload = nullptr); // Публикует payload либо рабочий буфер temp
     void    recoverNARMON();                    // Реанимация связи с народным мониторингом. МЮТЕКС xWebThreadSemaphore ДОЛЖЕН быть захвачен!
 
     // Учитывает результат одного полного цикла MQTT или ThingSpeak.

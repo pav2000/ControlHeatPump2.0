@@ -109,10 +109,6 @@ boolean resetWiznet(boolean show)
     }
   return false;                                                                                                     // линка нет
 }
-// Инициализация сети
-// flag true - полный вывод на консоль false - сокращённый вывод на консоль
-// Проверят сетевой кабель, возврат true - OK false - проблемы, сеть не работает
-const char* NetworkChipOK={" Network library setting: %s, ID chip: 0x%x\n"};
 // Таймаут повтора пакета и число повторов в чип (настройка net.rtr). Регистры общие на все сокеты и пишутся на ходу, без сброса чипа и сокетов.
 void netApplyRtr()
 {
@@ -124,7 +120,8 @@ void netApplyRtr()
 
 uint8_t netLayoutMode = NL_MODE_OLD;   // действующая раскладка буферов сокетов; в аварийном режиме сети (safeNetwork) всегда прежняя
 
-boolean initW5200(boolean flag)
+// Настраивает чип и сокеты. При переинициализации итог пишет вызывающий.
+static boolean initNetwork(boolean verbose, bool recovery)
 {
 	// SEM-BORROW: xWebThreadSemaphore - обращение к чипу под замком сети, который держит вызывающий
 	uint8_t i;
@@ -137,19 +134,14 @@ boolean initW5200(boolean flag)
 #endif
 	netLayoutMode = (HP.safeNetwork || !HP.get_SockFast()) ? NL_MODE_OLD : NL_MODE_FAST0;
 	W5100.setLayoutMode(netLayoutMode);            // раскладка запоминается, в чип её пишет init() после каждого сброса
-	if(flag) journal.jprintf("Network setup:\n");
-	static bool linkMissing = false; // Инициализация уже сообщила об отсутствии Ethernet-связи.
-	if(!resetWiznet(false))  // 1. Сброс и проверка провода (молча)
-	{
-		if(!linkMissing) HP.log_Event("NET", nameWiznet, "нет Ethernet-связи, проверьте кабель");
-		linkMissing = true;
-		return false; // дальше ехать бесполезно
-	} else if(flag && DBG_ON(DBG_PHY)) journal.jprintf(" SUCCESS: %s link OK\n", nameWiznet);
-	if(linkMissing) HP.log_Event("NET", nameWiznet, "Ethernet-связь восстановлена");
-	linkMissing = false;
-	linkStatusWiznet(flag);  // вывести полученные настройки чипа
+	if(verbose) journal.jprintf("Network setup:\n");
+	if(!resetWiznet(false)) {
+		if(!recovery) HP.log_Event("NET", nameWiznet, "нет Ethernet-связи, проверьте кабель");
+		return false;
+	}
+	if(verbose && DBG_ON(DBG_PHY)) linkStatusWiznet(true);
 
-	if(flag)  // 2. Печать настроек соответствия либы и чипа (правильная настройка либы)
+	if(verbose)  // 2. Печать настроек соответствия либы и чипа (правильная настройка либы)
 	{
 #ifdef DEMO
 		journal.jprintf(" DEMO mode!");
@@ -165,10 +157,12 @@ boolean initW5200(boolean flag)
 		if(version != expectedVersion) {
 			char reason[80];
 			m_snprintf(reason, sizeof(reason), "версия чипа 0x%02X, ожидалась 0x%02X", version, expectedVersion);
-			HP.log_Event("NET", nameWiznet, reason);
+			if(recovery) {
+				if(DBG_ON(DBG_PHY)) journal.jprintf_time("Ethernet: %s\n", reason);
+			} else HP.log_Event("NET", nameWiznet, reason);
 			return false;
 		}
-		if(DBG_ON(DBG_PHY)) journal.jprintf((char*)NetworkChipOK, nameWiznet, version);
+		if(DBG_ON(DBG_PHY)) journal.jprintf(" Network library setting: %s, ID chip: 0x%x\n", nameWiznet, version);
 	}
 
 	//  3. Подготовить структура для потоков
@@ -224,14 +218,12 @@ x_TryStaticIP:
 	netApplyRtr();               // таймаут и число повторов (настройка RTR, по умолчанию 400 мс и 4 повтора)
 
 	if(!EthernetOK) {
-		if(flag && !DBG_ON(DBG_PHY)) journal.jprintf("\n"); // Краткий вывод PHY оставил строку открытой.
-		HP.log_Event("NET", nameWiznet, "чип не подтвердил установку IP-адреса");
+		if(!recovery) HP.log_Event("NET", nameWiznet, "чип не подтвердил установку IP-адреса");
 		return false;
 	}
 
 	const bool verbosePhy = DBG_ON(DBG_PHY);
-	if(!flag) journal.jprintf_time(verbosePhy ? "Reset %s . . . \n" : "Reset %s Ok.\n", nameWiznet);
-	else {
+	if(verbose) {
 		IPAddress ip = Ethernet.localIP(), subnet = Ethernet.subnetMask();
 		IPAddress dns = Ethernet.dnsServerIP(), gateway = Ethernet.gatewayIP();
 		if(verbosePhy) {
@@ -249,6 +241,12 @@ x_TryStaticIP:
 	netChipBaseline(); // Снимок регистров для самотеста после beginWeb и pingW5200.
 	return true;
 }
+// Первичная инициализация при загрузке. Восстановление идёт через netChipReinit.
+boolean initW5200(boolean verbose)
+{
+	return initNetwork(verbose, false);
+}
+
 // ---- DNS ----
 // Используется системный сокет!! W5200_SOCK_SYS
 // Определить IP адрес через DNS, если на входе не IP адрес.
@@ -274,7 +272,7 @@ uint8_t check_address(char *adr, IPAddress &ip)
 		ip = tempIP;
 		return 2;
 	} else {
-		if((DBG_ON(DBG_WERR)) || xTaskGetSchedulerState() != taskSCHEDULER_RUNNING)
+		if(DBG_ON(DBG_WFULL) || xTaskGetSchedulerState() != taskSCHEDULER_RUNNING)
 			journal.jprintf(" DNS lookup %s using %s failed! Code: %d\n", adr, dns.get_protocol() ? "TCP" : "UDP", ret);
 		ip = tempIP;
 		return 0;
@@ -366,7 +364,7 @@ void netChipBaseline()
 // Две строки в журнал: что прочитано и что ожидалось. Каждая короче буфера строки журнала.
 static void netChipDump(const char *tag, const NetChipRegs &r)
 {
-	journal.jprintf("$W5500 %s: ver=%d MR=%02X PHY=%02X MAC=%02X:%02X:%02X:%02X:%02X:%02X IP=%d.%d.%d.%d GW=%d.%d.%d.%d MASK=%d.%d.%d.%d\n",
+	journal.jprintf("W5500 %s: ver=%d MR=%02X PHY=%02X MAC=%02X:%02X:%02X:%02X:%02X:%02X IP=%d.%d.%d.%d GW=%d.%d.%d.%d MASK=%d.%d.%d.%d\n",
 			tag, r.version, r.mode, r.phy, r.mac[0], r.mac[1], r.mac[2], r.mac[3], r.mac[4], r.mac[5],
 			r.ip[0], r.ip[1], r.ip[2], r.ip[3], r.gw[0], r.gw[1], r.gw[2], r.gw[3], r.mask[0], r.mask[1], r.mask[2], r.mask[3]);
 }
@@ -374,9 +372,8 @@ static void netChipDump(const char *tag, const NetChipRegs &r)
 // Сброс по решению сторожа. Вызывается из vWeb0 БЕЗ замка: netChipReinit берёт его сама.
 static void netChipRecover(NETCHIP_FAULT f, NETCHIP_ACTION a)
 {
-	journal.jprintf_time("$W5500 fault: %s, resetting . . .\n", netFaultName[f]);
 	Diag.num_resW5200++;
-	netChipReinit(false);
+	netChipReinit(false, netFaultName[f]);
 	if(a == NCA_RECOVER_NOTIFY) {
 		HP.set_Warning(ErrorCatalog::Code::kNET, "W5500", f, nullptr, true);
 	}
@@ -386,7 +383,7 @@ bool netChipSelfTest()
 {
 	NetChipRegs r;
 	if(SemaphoreTake(xWebThreadSemaphore, 200 / portTICK_PERIOD_MS) == pdFALSE) {   // шина занята отдачей страницы: пропускаем, повторим через период
-		if(++netSkips == 30) { journal.jprintf_time("$W5500 self-test skipped 30 times: network lock is busy\n"); }
+		if(++netSkips == 30) journal.jprintf_time("W5500: самотест пропущен 30 раз из-за занятого сетевого замка\n");
 		return false;
 	}
 	netSkips = 0;
@@ -396,12 +393,14 @@ bool netChipSelfTest()
 	SemaphoreGive(xWebThreadSemaphore);
 	const uint8_t anom = Spi0_Check(spiMr, spiCsr3);
 	if(anom != netSpiAnom) {                                              // писать только смену состояния
-		journal.jprintf_time("$SPI0 config %s: MR=%08X CSR3=%08X anomalies=%02X\n", anom ? "differs from shared" : "back to shared", (unsigned) spiMr, (unsigned) spiCsr3, anom);
+		if(DBG_ON(DBG_PHY))
+			journal.jprintf_time("SPI0 config %s: MR=%08X CSR3=%08X anomalies=%02X\n", anom ? "differs from shared" : "back to shared", (unsigned) spiMr, (unsigned) spiCsr3, anom);
 		netSpiAnom = anom;
 	}
 	static uint32_t dmaLateShown = 0;                                     // «поздние» завершения - не ошибка, но в журнал: так видна гонка с таймаутом
 	if(dmaT != Diag.num_dmaTimeout || dmaO != Diag.num_dmaOverrun || dmaL != dmaLateShown) {
-		journal.jprintf_time("$SPI DMA: timeouts %u, overruns %u, late %u\n", (unsigned) dmaT, (unsigned) dmaO, (unsigned) dmaL);
+		if(DBG_ON(DBG_PHY))
+			journal.jprintf_time("SPI DMA: timeouts %u, overruns %u, late %u\n", (unsigned) dmaT, (unsigned) dmaO, (unsigned) dmaL);
 		Diag.num_dmaTimeout = dmaT; Diag.num_dmaOverrun = dmaO; dmaLateShown = dmaL;
 	}
 #ifdef TEST_NETCHIP_FAULT
@@ -414,11 +413,15 @@ bool netChipSelfTest()
 	if(link && !netLastLink) NetChip_Init(&netWatch);      // кабель вернулся: пауза между сбросами не должна задерживать восстановление
 	netLastLink = link;
 	const NETCHIP_FAULT f = netBaseOk ? NetChip_Check(r, netBase) : NCF_NOINIT;
-	if(f != NCF_NONE) {
-		journal.jprintf_time("$W5500 mismatch: %s\n", netFaultName[f]);
-		netChipDump("now ", r);
-		if(netBaseOk) netChipDump("base", netBase);
-	} else if(DBG_ON(DBG_PHY)) netChipDump("ok  ", r);
+	// Расхождение описывает наблюдение. Исход переинициализации пишется отдельно.
+	static NETCHIP_FAULT lastMismatch = NCF_NONE;
+	if(f != NCF_NONE && f != lastMismatch)
+		journal.jprintf_time("W5500: расхождение %s\n", netFaultName[f]);
+	lastMismatch = f;
+	if(DBG_ON(DBG_PHY)) {
+		netChipDump(f == NCF_NONE ? "ok" : "now", r);
+		if(f != NCF_NONE && netBaseOk) netChipDump("base", netBase);
+	}
 	const NETCHIP_ACTION a = NetChip_Decide(&netWatch, f, xTaskGetTickCount() / 1000);
 	if(a == NCA_NONE) return false;
 	netChipRecover(f, a);
@@ -433,19 +436,30 @@ void netChipPingFailed()
 #else   // не W5500: регистров для сверки нет, остаются прежние проверки
 void netChipBaseline() {}
 bool netChipSelfTest() { return false; }
-void netChipPingFailed() { HP.sendCommand(pNETWORK); }
+void netChipPingFailed() { HP.sendCommand(pNETWORK, NetworkResetCause::Ping); }
 #endif
 
-// Сброс чипа и инициализация под замком сети. Тело прежней команды pNETWORK (HeatPumpControl.cpp), вынесено, чтобы сторож лечил чип сам, а не через очередь команд.
-boolean netChipReinit(boolean verbose)
+// Переинициализация из очереди команд и сетевого самотеста берёт замок сама.
+boolean netChipReinit(boolean verbose, const char *reason)
 {
-	if(SemaphoreTake(xWebThreadSemaphore, (W5200_TIME_WAIT / portTICK_PERIOD_MS)) == pdFALSE) { journal.jprintf((char*) cErrorMutex, __FUNCTION__, MutexWebThreadBusy); return false; }
-	// Инвалидируем все операции, которые могли отпустить замок до сброса
-	// чипа. Проверка поколения защищает новый сеанс с тем же номером сокета.
-	networkGeneration++;
-	boolean ok = initW5200(verbose);
-	for(uint8_t i = 0; i < W5200_THREAD; i++) SETBIT1(Socket[i].flags, fABORT_SOCK);   // признак инициализации сокета, надо прерывать передачу в сервере
+	if(SemaphoreTake(xWebThreadSemaphore, (W5200_TIME_WAIT / portTICK_PERIOD_MS)) == pdFALSE) {
+		journal.event(Journal::Stamp::Time, "NET", "RECOVERY", "%s: сетевой замок занят (%s)", nameWiznet, reason);
+		return false;
+	}
+	const boolean ok = netChipReinitLocked(verbose, reason);
 	SemaphoreGive(xWebThreadSemaphore);
+	return ok;
+}
+
+// SEM-BORROW: xWebThreadSemaphore — MQTT вызывает эту версию со своим замком.
+boolean netChipReinitLocked(boolean verbose, const char *reason)
+{
+	// Операции, которые отпускали замок, не должны продолжить работу с новым сокетом.
+	networkGeneration++;
+	const boolean ok = initNetwork(verbose, true);
+	for(uint8_t i = 0; i < W5200_THREAD; i++) SETBIT1(Socket[i].flags, fABORT_SOCK);
+	journal.event(Journal::Stamp::Time, "NET", "RECOVERY", "%s: %s (%s)", nameWiznet,
+	              ok ? "переинициализирован" : "переинициализация не удалась", reason);
 	return ok;
 }
 
@@ -612,32 +626,21 @@ boolean pingServer()
 	Watchdog_AliveHere();                                   // Сбросить вачдог
 	ICMPEchoReply echoReply = ping(ip,W5200_NUM_PING);  // адрес и число попыток
 	SemaphoreGive(xWebThreadSemaphore);                 // отдать семафор
-	if(DBG_ON(DBG_PING)) journal.jprintf_time("Ping[%d] ", echoReply.data.seq);
 	if(echoReply.status == SUCCESS) {
-		if(DBG_ON(DBG_PING)) {
-			if(ping.attempts()) {
-				journal.jprintf("%dms, lost: %d.\n", (int)(GetTickCount() - echoReply.data.time), ping.attempts());
-			} else {
-				journal.jprintf("%dms\n", (int)(GetTickCount() - echoReply.data.time));
-			}
-		}
+		if(DBG_ON(DBG_PHY)) journal.jprintf_time("Ping[%d]: %d мс, потеряно %d\n",
+		                                        echoReply.data.seq, (int)(GetTickCount() - echoReply.data.time), ping.attempts());
 		return true;
-	} else {
-		if(DBG_ON(DBG_PING)) journal.jprintf("%d.%d.%d.%d: FAILED - ", ip[0], ip[1], ip[2], ip[3]);   // отметка времени уже выведена выше
-		else journal.jprintf_time("Ping[%d] %d.%d.%d.%d: FAILED - ", echoReply.data.seq, ip[0], ip[1], ip[2], ip[3]);
-		switch (echoReply.status)
-		{
-		case SEND_TIMEOUT: journal.jprintf( "send timed out");  break;
-		case NO_RESPONSE:  journal.jprintf( "no response");    break;
-		case BAD_RESPONSE: journal.jprintf( "bad reponse");        break;
-		default:           journal.jprintf( "error: %d", echoReply.status); break;
-		}
-		if(!HP.NO_Power) {
-			journal.jprintf(", Resetting %s...\n", nameWiznet);
-			Diag.num_resPing++;
-			netChipPingFailed();                                                     // Связь потеряна: сторож решает о сбросе чипа сам (пауза между сбросами, счёт за час)
-		}
-		return false;
+	}
+	if(DBG_ON(DBG_PHY)) {
+		const char *detail = echoReply.status == SEND_TIMEOUT ? "нет подтверждения отправки" :
+		                     echoReply.status == NO_RESPONSE ? "нет ответа" :
+		                     echoReply.status == BAD_RESPONSE ? "неверный ответ" : "ошибка";
+		journal.jprintf_time("Ping[%d] %d.%d.%d.%d: %s (%d)\n", echoReply.data.seq, ip[0], ip[1], ip[2], ip[3],
+		                     detail, echoReply.status);
+	}
+	if(!HP.NO_Power) {
+		Diag.num_resPing++;
+		netChipPingFailed(); // Сторож учитывает паузу между переинициализациями.
 	}
 	return false;
 }
@@ -676,7 +679,7 @@ int Send_HTTP_Request(const char *server, const char *request, uint8_t fget_valu
 	int ret = 0;
 	bool locked = true;    // замок сети у нас в руках; в цикле ожидания он отпускается и может не вернуться
 	const uint16_t port = 80;
-	if(DBG_ON(DBG_WFULL)) journal.jprintf_time("Send request: %s%s\n", server, request);
+	if(DBG_ON(DBG_WFULL)) journal.jprintf_time("HTTP: GET, длина пути %u\n", (unsigned)strlen(request));
 	uint8_t *buffer = (uint8_t *) Socket[MAIN_WEB_TASK].outBuf + sizeof(Socket[MAIN_WEB_TASK].outBuf)/2;
 	IPAddress ip(0, 0, 0, 0);
 	if(check_address((char*)server, ip) == 0) {
@@ -724,7 +727,6 @@ int Send_HTTP_Request(const char *server, const char *request, uint8_t fget_valu
 												if(fget_value == 1)	{
 													memmove((uint8_t*)Socket[MAIN_WEB_TASK].outBuf, buffer, datasize - (buffer - (uint8_t*)Socket[MAIN_WEB_TASK].outBuf));   // buffer лежит внутри outBuf: области перекрываются
 													ret = 0;
-													if(DBG_ON(DBG_WFULL)) journal.jprintf_time("Response: %s", Socket[MAIN_WEB_TASK].outBuf);
 												} else {
 													if(fget_value == 2) {
 														char *p = strchr((char*)buffer, '=');
@@ -733,18 +735,12 @@ int Send_HTTP_Request(const char *server, const char *request, uint8_t fget_valu
 														} else ret = -2000000009;
 													} else { // 3
 														ret = (buffer[0] & ~0x20) == 'O' && (buffer[1] & ~0x20) == 'K'; // 'Ok'?
-														if(ret == 0 && (DBG_ON(DBG_WERR) && !DBG_ON(DBG_WFULL))) journal.jprintf_time("Response: %s", buffer);
 													}
-													if(DBG_ON(DBG_WFULL)) journal.jprintf_time("Response: %s", buffer);
 												}
 											} else ret = -2000000010;
 										} else ret = -2000000012;
 									}
 								} else {
-									buffer[sizeof(http_key_ok2) + 3] = '\0';
-									if(DBG_ON(DBG_WERR | DBG_WFULL)) {
-										journal.jprintf(" ERR %s", buffer);
-									}
 									ret = -2000000008;
 								}
 							} else ret = -2000000007;
@@ -756,32 +752,7 @@ int Send_HTTP_Request(const char *server, const char *request, uint8_t fget_valu
 		}
 	}
 	if(locked) SemaphoreGive(xWebThreadSemaphore);   // отдавать чужой замок нельзя: assert ядра остановит контроллер
-	if(DBG_ON(DBG_WFULL)) journal.jprintf(" Ret = %d\n", ret);
-	else if(ret < 0 && (DBG_ON(DBG_WERR))) {
-		journal.jprintf_time("Error %d send request to %s!", ret + 2000000000, server);
-		switch (ret)
-		{
-		case -2000000002:
-			journal.jprintf(" Address wrong");
-			break;
-		case -2000000003:
-			journal.jprintf(" Connect fail");
-			break;
-		case -2000000011:
-			journal.jprintf(" Send error");
-			break;
-		case -2000000010:
-			journal.jprintf(" Empty response");
-			break;
-		case -2000000009:
-			journal.jprintf(" Response: %s", buffer);
-			break;
-		case -2000000008:
-			journal.jprintf(" ERR %s", buffer);
-			break;
-		}
-		journal.jprintf("\n");
-	}
+	if(DBG_ON(DBG_WFULL)) journal.jprintf_time("HTTP: результат GET %d\n", ret);
 	return ret;
 }
 

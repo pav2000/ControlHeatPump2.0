@@ -262,7 +262,6 @@ public:
   char *	get_note(){return  note;}                // Получить описание
   char *	get_name(){return  name;}                // Получить имя
   uint8_t  *get_save_addr(void) { return (uint8_t *)&_data; } // Адрес структуры сохранения
-  bool get_legacy_logwork(void) { return GETBIT(_data.setup_flags, fLogWork); }   // прежний флаг LOGW, только для переноса настроек
   void clear_legacy_logwork(void) { SETBIT0(_data.setup_flags, fLogWork); }
   uint16_t  get_save_size(void) { return sizeof(_data); } // Размер структуры сохранения
 

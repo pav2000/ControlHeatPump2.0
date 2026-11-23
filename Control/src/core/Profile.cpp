@@ -235,7 +235,7 @@ int16_t Profile::save_region(void)
 	addr += REC_HDR_SIZE;
 	if(writeEEPROM_I2C(addr, (uint8_t*)&crc, sizeof(crc))) goto xErr;
 	addr += sizeof(crc);
-	journal.jprintf(" Save profiles OK: %d of %d, %d bytes, crc: %04x\n",
+	if(DBG_ON(DBG_CFG)) journal.jprintf_time("CFG: профили записаны: %d of %d, %d bytes, crc: %04x\n",
 	                written, (int)I2C_PROFIL_NUM, (int)(addr - I2C_PROFILE_EEPROM), crc);
 	return addr - I2C_PROFILE_EEPROM;
 xErr:
@@ -245,7 +245,7 @@ xErr:
 
 // Проверяет каркас области профилей. Если loaded передан, читает слоты и проверяет CRC,
 // отмечая прочитанные слоты в loaded. Возвращает длину области либо отрицательный код.
-int32_t Profile::scan_region(uint8_t *loaded)
+int32_t Profile::scan_region(uint8_t *loaded, bool trace)
 {
 	uint32_t addr = I2C_PROFILE_EEPROM;
 	uint16_t crc = 0xFFFF;
@@ -257,7 +257,7 @@ int32_t Profile::scan_region(uint8_t *loaded)
 		addr += REC_HDR_SIZE;
 		if(tag == NTAG_END) {
 			if(len != 0) {
-				journal.jprintf(" Non-empty profile end record: len=%u\n", (unsigned)len);
+				if(trace) journal.jprintf_time("CFG: непустая запись END профилей, длина %u\n", (unsigned)len);
 				return ErrorNumber(ErrorCatalog::Code::kPROFILE_DATA);
 			}
 			// Для пустой области CRC подтверждает формат, даже если нужна лишь длина.
@@ -266,7 +266,7 @@ int32_t Profile::scan_region(uint8_t *loaded)
 				if(readEEPROM_I2C(addr, (uint8_t*)&stored, sizeof(stored))) return ErrorNumber(ErrorCatalog::Code::kPROFILE_READ);
 				crc = calc_crc16(hdr, REC_HDR_SIZE, crc);
 				if(crc != stored) {
-					journal.jprintf(" Profiles CRC mismatch: %04x != %04x\n", crc, stored);
+					if(trace) journal.jprintf_time("CFG: CRC профилей рассчитана %04x, ожидалась %04x\n", crc, stored);
 					return ErrorNumber(ErrorCatalog::Code::kPROFILE_DATA);
 				}
 			}
@@ -274,13 +274,13 @@ int32_t Profile::scan_region(uint8_t *loaded)
 		}
 		if(tag != NTAG_Profile || len != 1 + sizeof(ProfileSlot) ||
 		   len + REC_HDR_SIZE + sizeof(uint16_t) > I2C_SCHEDULER_EEPROM - addr) {
-			journal.jprintf(" Invalid profile record: tag=%u len=%u\n", (unsigned)tag, (unsigned)len);
+			if(trace) journal.jprintf_time("CFG: неверная запись профиля, тег %u, длина %u\n", (unsigned)tag, (unsigned)len);
 			return ErrorNumber(ErrorCatalog::Code::kPROFILE_DATA);
 		}
 		uint8_t &slot = hdr[REC_HDR_SIZE];
 		if(readEEPROM_I2C(addr, &slot, 1)) return ErrorNumber(ErrorCatalog::Code::kPROFILE_READ);
 		if(slot >= I2C_PROFIL_NUM || seen[slot]) {
-			journal.jprintf(" Invalid or duplicate profile slot %u\n", (unsigned)slot);
+			if(trace) journal.jprintf_time("CFG: недопустимый или повторный слот профиля %u\n", (unsigned)slot);
 			return ErrorNumber(ErrorCatalog::Code::kPROFILE_DATA);
 		}
 		seen[slot] = 1;
@@ -293,7 +293,7 @@ int32_t Profile::scan_region(uint8_t *loaded)
 		}
 		addr += len;
 	}
-	journal.jprintf(" Missing end record in profiles\n");
+	if(trace) journal.jprintf_time("CFG: нет записи END в профилях\n");
 	return ErrorNumber(ErrorCatalog::Code::kPROFILE_DATA);
 }
 
@@ -336,7 +336,6 @@ int8_t Profile::cache_activate(int8_t num)
 	if(r == 1) { journal.jprintf(" Profile #%d is empty\n", num); return OK; }
 	if(r == 2) { journal.jprintf(" Profile #%d: RAM corrupted!\n", num); return err = ErrorNumber(ErrorCatalog::Code::kPROFILE_DATA); }
 	update_list(num);
-	journal.jprintf(" Profile #%d activated\n", num);
 	return OK;
 }
 
@@ -350,21 +349,22 @@ void Profile::invalidate_cache(int8_t cause)
 // Читает профили из EEPROM и публикует кеш после проверки всей области.
 // Возвращает OK либо отрицательный код и оставляет кеш недоступным при отказе.
 // Читает отдельными блоками, чтобы сохранить буфер веб-ответа.
-int8_t Profile::cache_load_all(void)
+int8_t Profile::cache_load_all(bool trace)
 {
 	invalidate_cache(ErrorNumber(ErrorCatalog::Code::kPROFILE_READ));
 	uint8_t loaded[I2C_PROFIL_NUM];
 	memset(loaded, PROFILE_EMPTY, sizeof(loaded));
 	int32_t result = region_format();
 	if(result > 0) {
-		result = scan_region(loaded);
+		result = scan_region(loaded, trace);
+		if(result >= 0 && trace) journal.jprintf_time("CFG: профили прочитаны, %d байт\n", (int)result);
 	} else if(result == 0) {
 		LegacyProfileSizes sz;
 		result = legacy_profile_sizes(HP.Option.ver, &sz, sizeof(magic) + sizeof(crc16))
-		         ? cache_load_legacy(sz, loaded) : cache_load_fixed(loaded);
+		         ? cache_load_legacy(sz, loaded, trace) : cache_load_fixed(loaded, trace);
 	}
 	if(result < 0) {
-		journal.jprintf(" Profiles: load failed (%d)\n", (int)result);
+		if(trace) journal.jprintf_time("CFG: чтение профилей не удалось (%d)\n", (int)result);
 		return cache_load_error = result;
 	}
 	memcpy(cache_magic, loaded, sizeof(cache_magic));
@@ -374,7 +374,7 @@ int8_t Profile::cache_load_all(void)
 
 // Читает слоты формата 147 в кеш и отмечает проверенные слоты в loaded.
 // Возвращает OK либо отрицательный код чтения или CRC.
-int8_t Profile::cache_load_fixed(uint8_t *loaded)
+int8_t Profile::cache_load_fixed(uint8_t *loaded, bool trace)
 {
 	// Слоты 5..9 старой раскладки сюда не попадают: цикл идёт до нового
 	// I2C_PROFIL_NUM. Так и задумано - число профилей сокращено, старшие
@@ -407,7 +407,7 @@ int8_t Profile::cache_load_fixed(uint8_t *loaded)
 			bad++;
 		} else loaded[i] = 0xaa;
 	}
-	journal.jprintf(" Profiles cached: %d used, %d bad, slots %d..%d dropped\n",
+	if(trace) journal.jprintf_time("CFG: профили прочитаны: %d used, %d bad, slots %d..%d dropped\n",
 	                used, bad, (int)I2C_PROFIL_NUM, (int)I2C_PROFIL_NUM_LEGACY - 1);
 	return bad ? ErrorNumber(ErrorCatalog::Code::kPROFILE_DATA) : OK;
 }
@@ -419,7 +419,7 @@ int8_t Profile::cache_load_fixed(uint8_t *loaded)
 
 // Читает слоты до формата 147 по размерам sz и отмечает проверенные слоты в loaded.
 // Возвращает OK либо отрицательный код чтения или CRC.
-int8_t Profile::cache_load_legacy(const LegacyProfileSizes &sz, uint8_t *loaded)
+int8_t Profile::cache_load_legacy(const LegacyProfileSizes &sz, uint8_t *loaded, bool trace)
 {
 	uint8_t tmp[128];                       // самый длинный старый блок - 120 байт
 	uint8_t used = 0, bad = 0;
@@ -460,7 +460,7 @@ int8_t Profile::cache_load_legacy(const LegacyProfileSizes &sz, uint8_t *loaded)
 		cache_crc[i] = cache_crc_of(cache[i]);          // сумма уже по НОВОЙ раскладке
 		used++;
 	}
-	journal.jprintf(" Profiles read as v.%d: %d used, %d bad\n", HP.Option.ver, used, bad);
+	if(trace) journal.jprintf_time("CFG: профили прочитаны в формате %d: %d used, %d bad\n", HP.Option.ver, used, bad);
 	return bad ? ErrorNumber(ErrorCatalog::Code::kPROFILE_DATA) : OK;
 }
 

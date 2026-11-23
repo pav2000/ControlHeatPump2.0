@@ -84,11 +84,12 @@ static inline CqResult CommandQueue_Push(CommandQueue *q, uint8_t running, uint8
 	return r;
 }
 
-// Взять самую старую. false - очередь пуста.
-static inline bool CommandQueue_Pop(CommandQueue *q, uint8_t *c)
+// Взять самую старую команду и при необходимости вернуть её флаги. false — очередь пуста.
+static inline bool CommandQueue_Pop(CommandQueue *q, uint8_t *c, uint8_t *flags = nullptr)
 {
 	if(!q->count) return false;
 	*c = q->cmd[q->head];
+	if(flags) *flags = q->fl[q->head];
 	q->head = (uint8_t)((q->head + 1) % COMMAND_QUEUE_DEPTH);
 	q->count--;
 	return true;
