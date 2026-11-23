@@ -106,8 +106,9 @@ window.stChanged = function(el) {
 	deps();
 	if(!el || el.id == 'k-eev-spt' || el.id == 'k-eev-spf') spShow();
 	else if(el.id == 'k-eev-start') spEnable();
+	eevChartUpdate();
 };
-window.stAfterApply = function() { deps(); notes(); spShow(); };
+window.stAfterApply = function() { deps(); notes(); spShow(); eevChartUpdate(); };
 
 window.onload = function() {
 	stPanel();
@@ -127,22 +128,25 @@ function build(pct) {
 	stFields('e5', [
 		f('DOP', {t: 'Задержка начала регулирования', h: '0…255 с, 255 — навсегда', u: 'с', min: 0, max: 255, step: 1, n: [4, 'Время от начала раскрутки компрессора до момента начала работы регулятора ЭРВ; должно быть больше «времени на раскрутку» (2). Если 255, то будет использована всегда либо фиксированная позиция, либо рассчитанная по подаче позиция.']}),
 		f('LST', {k: 'sw', t: 'Специальная позиция при пуске', h: 'облегчить пуск компрессора', n: [1, 'Позиция ЭРВ, с которой начинается раскрутка компрессора.']}),
-		f('PSP', {t: 'Позиция при пуске', h: 'мин … макс', u: pu, step: ps}),
-		f('DSP', {t: 'Время на раскрутку', h: '0…255 с', u: 'с', min: 0, max: 255, step: 1, n: [2, 'Время, после которого специальная позиция ЭРВ меняется на стартовую.']}),
+		f('PSP', {t: 'Предпусковая позиция', h: 'мин … макс', u: pu, step: ps}),
+		f('DSP', {t: 'Время до выхода на стартовую позицию', h: '0…255 с', u: 'с', min: 0, max: 255, step: 1, n: [2, 'Время, после которого специальная позиция ЭРВ меняется на стартовую.']}),
+		// DON перенесён из «Останова»: настройка относится к пуску. Верхний предел сужен до 30 с — выше
+		// выравнивание давлений всё равно завершено (около 12 с при 90 шагах), а клапан зря стоит открытым.
+		f('DON', {t: 'Выравнивание давлений перед пуском', h: '2…30 с', u: 'с', min: 2, max: 30, step: 1, n: [7, 'Через открытый клапан при стоящем компрессоре перетекает жидкость из конденсатора в испаритель — чтобы компрессор стартовал без перепада давления. Полное выравнивание занимает около 12 с при 90 шагах, за это время в испаритель уходит около 0,2 кг жидкости. Больше значение — мягче пуск, но глубже провал перегрева на старте; меньше — суше испаритель, но тяжелее старт. Работает только при включённом «Закрытие ЭРВ при выключении» (DOFF-поле в карточке останова) и только если позиционирование ЭРВ выполняется перед пуском компрессора.']}),
 	]);
 	stFields('spstart', [
-		f('START', {k: 'sw', t: 'Старт со стартовой позиции', h: 'иначе — с позиции при останове', n: [3, 'Если эта опция не выбрана, то работа ЭРВ начинается с позиции, которая была при остановке компрессора, а способ расчёта стартовой позиции ниже не используется.']})
+		f('START', {k: 'sw', t: 'Использовать стартовую позицию', h: 'иначе — с позиции при останове', n: [3, 'Если эта опция не выбрана, то работа ЭРВ начинается с позиции, которая была при остановке компрессора, а способ расчёта стартовой позиции ниже не используется.']})
 	]);
 	stFields('spfix', [
-		f('SP', {t: 'Стартовая позиция', h: 'мин … макс', u: pu, step: ps})
+		f('SP', {t: 'Стартовая позиция (после раскрутки)', h: 'мин … макс', u: pu, step: ps})
 	]);
 	stFields('sp1', [
 		f('PHT', {t: 'Положение при подаче 45°', h: 'мин … при 10°', u: pu, step: ps, n: [8, 'Стартовая позиция растёт от «Стартовой позиции» при подаче 10° до этого значения при подаче 45°.']})
 	]);
 	stFields('e7', [
 		f('CLOSE', {k: 'sw', t: 'Закрытие ЭРВ при выключении'}),
-		f('DOFF', {t: 'Задержка закрытия после насосов', h: '0…255 с', u: 'с', min: 0, max: 255, step: 1}),
-		f('DON', {t: 'Задержка открытия перед пуском', h: '0…255 с', u: 'с', min: 0, max: 255, step: 1})
+		f('DOFF', {t: 'Задержка закрытия после насосов', h: '0…255 с', u: 'с', min: 0, max: 255, step: 1, n: [9, 'Отсчитывается после выключения насосов: 10 с ждёт насос геоконтура, затем пауза «Выключение насоса отопления» — насос отопления. Торможение инвертора код не ждёт, поэтому при любом значении клапан закроется через 1–3 минуты после команды останова.']})
+		// DON («Выравнивание давлений перед пуском») переехал в карточку «Пуск компрессора»: он относится к пуску
 	]);
 	stFields('e8', [
 		f('cCORRECT', {k: 'sw', t: 'Корректировка перегрева', h: 'включить подстройку перегрева'}),
@@ -161,6 +165,138 @@ function build(pct) {
 		spCalc(1, 'k'); spCalc(2, 'k');
 	});
 }
+
+// ---- график открытия ЭРВ: положение клапана в цикле пуска ----
+// Всё считается из полей страницы: PSP (предпусковая позиция), SPHZ (шагов на герц) × fc.frq (стартовая частота),
+// DSP (выход на стартовую позицию), DOP (начало регулирования), DON (выравнивание давлений) и ohp.dlonp
+// (пауза насосов перед пуском компрессора). Ось X — время от пуска компрессора, ось Y — шаг, верх — максимум
+// из позиций + 10 %. Курсор и подсказка — те же классы, что у остальных графиков (.cht .cur и .cht-tip).
+var EVC = {l: 34, t: 18, b: 128, h: 152};
+function eevNum(key, def) {
+	var e = $('k-' + key.replace(/\./g, '-')), v = e ? parseFloat(e.value) : NaN;
+	return isFinite(v) ? v : def;
+}
+function eevModel(w) {
+	var psp = eevNum('eev.psp', 90), sphz = eevNum('eev.sphz', 1.9), frq = FQ[1] || 50;
+	var don = eevNum('eev.don', 5), dsp = eevNum('eev.dsp', 30), dop = eevNum('eev.dop', 50);
+	var m = {psp: psp, sp: Math.round(sphz * frq), dsp: dsp, dop: dop, don: don, dlonp: eevNum('ohp.dlonp', 60)};
+	// Положение в паузе — «Минимум шагов» (eev.min). Поле по умолчанию равно EEV_CLOSE_STEP (Config.h),
+	// ниже этого значения клапан не опускается: set_EEV прижимает всё меньшее к EEV_CLOSE_STEP.
+	m.close = eevNum('eev.min', 2);
+	// «Использовать стартовую позицию» (START): если выключено, при пуске клапан идёт не на предпусковую, а на
+	// позицию, с которой работал до останова (lastEEV), — её настройками не задать, поэтому линия там пунктирная.
+	var st = $('k-eev-start');
+	m.start = !st || st.checked;
+	// Позиционирование ЭРВ выполняется перед самым пуском (compressorON), поэтому клапан открывается за DON
+	// секунд до старта компрессора; насосы при этом включаются раньше — за паузу delayOnPump + DON.
+	m.tPump = -(m.dlonp + m.don);
+	m.tOpen = -m.don;
+	m.tL = Math.min(-70, Math.floor((m.tPump - 5) / 10) * 10);
+	m.tL = Math.min(-70, Math.floor((m.tOpen - 5) / 10) * 10);
+	m.tR = dop + 0.1 * (dop - m.tL);                       // начало регулирования + 10 % окна
+	m.yMax = Math.max(psp, m.sp, 1) * 1.1;                 // максимум из позиций + 10 %
+	m.l = EVC.l; m.r = Math.max(w - 6, EVC.l + 60); m.t = EVC.t; m.b = EVC.b;
+	m.x = function(t) { return m.l + (m.r - m.l) * (t - m.tL) / (m.tR - m.tL); };
+	m.y = function(v) { return m.b - (m.b - m.t) * v / m.yMax; };
+	m.pos = function(t) {
+		if(t < m.tOpen) return [m.close, 'клапан закрыт'];
+		if(!m.start) {                                     // стартовая позиция не используется: клапан идёт на позицию останова
+			if(t < m.dop) return [null, 'позиция при останове'];
+			return [null, 'положение задаёт регулятор'];
+		}
+		if(t < 0) return [m.psp, 'выравнивание давлений'];
+		if(t < m.dsp) return [m.psp, 'раскрутка компрессора'];
+		if(t < m.dop) return [m.sp, 'стартовая позиция'];
+		return [null, 'положение задаёт регулятор'];
+	};
+	return m;
+}
+function eevChartDraw() {
+	var box = $('eev-chart-box'), panel = $('eev-chart');
+	if(!box || !panel || panel.hidden) return;
+	var w = box.clientWidth || 520, m = eevModel(w), s = '', i, v, y;
+	s += '<rect x="' + m.x(m.tPump) + '" y="' + m.t + '" width="' + (m.r - m.x(m.tPump)) + '" height="' + (m.b - m.t) + '" fill="#F3F8FD" stroke="#CBDCF2"/>';
+	// полоса работы насосов: рамка, левая граница = момент включения и подпись со временем
+	s += '<line x1="' + m.x(m.tPump) + '" y1="' + m.t + '" x2="' + m.x(m.tPump) + '" y2="' + m.b + '" stroke="#CBDCF2" stroke-width="2"/>';
+	s += '<text x="' + (m.x(m.tPump) + 7) + '" y="' + (m.t + 11) + '" font-size="8.5" fill="#6E91BE">насосы с ' + m.tPump + ' с</text>';
+	for(i = 0; i <= 3; i++) {                               // сетка по шагам
+		v = m.yMax * i / 3; y = m.y(v);
+		s += '<line x1="' + m.l + '" y1="' + y + '" x2="' + m.r + '" y2="' + y + '" stroke="#F1F4F7"/>';
+		s += '<text x="0" y="' + (y + 3) + '" font-size="8.5" fill="#6B7785">' + Math.round(v) + '</text>';
+	}
+	[-70, -50, -30, -10, 0, 10, 30, 50].forEach(function(t) {  // подписи оси времени
+		if(t < m.tL || t > m.tR) return;
+		s += '<text x="' + (m.x(t) - 7) + '" y="' + (m.b + 12) + '" font-size="8.5" fill="' + (t === 0 ? '#F2762E' : '#6B7785') + '"' +
+			(t === 0 ? ' font-weight="bold"' : '') + '>' + (t > 0 ? '+' + t : t) + '</text>';
+	});
+	if(m.start) {
+		s += '<path fill="none" stroke="#0F8B8D" stroke-width="2" d="M' + m.x(m.tL) + ' ' + m.y(m.close) +
+			'H' + m.x(m.tOpen) + 'V' + m.y(m.psp) + 'H' + m.x(m.dsp) + 'V' + m.y(m.sp) + 'H' + m.x(m.dop) + '"/>';
+	} else {
+		// стартовая позиция выключена: открытие идёт на позицию останова, её величина настройками не задаётся
+		s += '<path fill="none" stroke="#0F8B8D" stroke-width="2" d="M' + m.x(m.tL) + ' ' + m.y(m.close) +
+			'H' + m.x(m.tOpen) + 'V' + m.y(m.sp) + 'H' + m.x(m.dop) + '" stroke-dasharray="4 3" stroke-opacity="0.75"/>';
+		s += '<text x="' + (m.x(m.tOpen) + 4) + '" y="' + (m.y(m.sp) - 5) + '" font-size="8" fill="#0F8B8D" fill-opacity="0.85">≈ позиция при останове</text>';
+	}
+	s += '<line x1="' + m.x(0) + '" y1="' + m.t + '" x2="' + m.x(0) + '" y2="' + m.b + '" stroke="#F2762E" stroke-width="2"/>';
+	s += '<line x1="' + m.x(m.dop) + '" y1="' + m.t + '" x2="' + m.x(m.dop) + '" y2="' + m.b + '" stroke="#2F7FD1" stroke-width="2"/>';
+	s += '<rect x="' + (m.x(0) - 18) + '" y="' + (m.t - 15) + '" width="36" height="13" rx="4" fill="#FFF1E8"/>' +
+		'<text x="' + m.x(0) + '" y="' + (m.t - 5) + '" font-size="8" font-weight="bold" fill="#A4501D" text-anchor="middle">пуск</text>';
+	if(m.x(m.dop) + 30 < m.r)
+		s += '<rect x="' + (m.x(m.dop) - 30) + '" y="' + (m.t - 15) + '" width="60" height="13" rx="4" fill="#E8F1FC"/>' +
+			'<text x="' + m.x(m.dop) + '" y="' + (m.t - 5) + '" font-size="8" font-weight="bold" fill="#2563C9" text-anchor="middle">Работа ЭРВ</text>';
+	s += '<line x1="' + m.l + '" y1="' + m.b + '" x2="' + m.r + '" y2="' + m.b + '" stroke="#E6EAEF"/>';
+	s += '<line x1="' + m.l + '" y1="' + m.t + '" x2="' + m.l + '" y2="' + m.b + '" stroke="#E6EAEF"/>';
+	s += '<line id="eev-cur" x1="0" y1="' + m.t + '" x2="0" y2="' + m.b + '" stroke="#6B7785" stroke-dasharray="3 3" style="display:none"/>';
+	s += '<circle id="eev-dot" r="3.5" fill="#0F8B8D" stroke="#fff" stroke-width="1.5" style="display:none"/>';
+	s += '<rect x="' + m.l + '" y="' + m.t + '" width="' + (m.r - m.l) + '" height="' + (m.b - m.t) + '" fill="transparent" style="touch-action:pan-y"/>';
+	box.innerHTML = '<svg viewBox="0 0 ' + w + ' ' + EVC.h + '" width="100%" height="' + EVC.h + '" style="display:block">' + s +
+		'</svg><div class="cht-tip" style="display:none"></div>';
+	var svg = box.firstChild;
+	svg.addEventListener('mousemove', function(e) { eevHover(e, m, w); });
+	svg.addEventListener('mouseleave', eevHide);
+	var note = $('eev-chart-note');
+	if(note) {
+		// Переток за время открытия: модель выравнивания — 0,2 кг за ~12 с при 90 шагах (m ∝ 1-(1-t/12)^2)
+		var open = -m.tOpen, fill = 0.2 * (1 - Math.pow(Math.max(0, 1 - open / 12), 2));
+		note.innerHTML = m.start
+			? 'Клапан открыт с ' + m.tOpen + ' по 0 с — ' + open + ' с; за это время в испаритель перетекает около ' +
+			  fill.toFixed(2).replace('.', ',') + ' кг жидкости. Насосы работают с ' + m.tPump + ' с. Наведите курсор — покажет время и положение.'
+			: 'Стартовая позиция отключена: клапан откроется на позицию, с которой работал до останова, а не на предпусковую (' +
+			  m.tOpen + ' с — это момент открытия).';
+	}
+}
+function eevHover(ev, m, w) {
+	var box = $('eev-chart-box'), svg = box.firstChild, r = svg.getBoundingClientRect();
+	var x = (ev.clientX - r.left) / r.width * w;
+	if(x < m.l || x > m.r) { eevHide(); return; }
+	var t = m.tL + (x - m.l) / (m.r - m.l) * (m.tR - m.tL), p = m.pos(t);
+	var cur = svg.querySelector('#eev-cur'), dot = svg.querySelector('#eev-dot'), tip = box.querySelector('.cht-tip');
+	cur.setAttribute('x1', x); cur.setAttribute('x2', x); cur.style.display = '';
+	if(p[0] === null) dot.style.display = 'none';
+	else { dot.setAttribute('cx', x); dot.setAttribute('cy', m.y(p[0])); dot.style.display = ''; }
+	tip.innerHTML = '<u>' + (t > 0 ? '+' : '') + Math.round(t) + ' с</u>' +
+		'<div><i style="background:#0F8B8D"></i>Положение<b>' + (p[0] === null ? '—' : p[0] + ' шаг') + '</b></div>' +
+		'<div><i style="background:#CFD6DE"></i>' + p[1] + '</div>';
+	tip.style.display = 'block';
+	tip.style.left = Math.min(Math.max(x / w * r.width + 12, 0), r.width - tip.offsetWidth - 4) + 'px';
+	tip.style.top = '4px';
+}
+function eevHide() {
+	var box = $('eev-chart-box'); if(!box) return;
+	var cur = box.querySelector('#eev-cur'), dot = box.querySelector('#eev-dot'), tip = box.querySelector('.cht-tip');
+	if(cur) cur.style.display = 'none';
+	if(dot) dot.style.display = 'none';
+	if(tip) tip.style.display = 'none';
+}
+function eevChartToggle(a) {
+	var b = $('eev-chart');
+	b.hidden = !b.hidden;
+	a.innerHTML = b.hidden ? 'показать ▾' : 'скрыть ▴';
+	if(!b.hidden) eevChartDraw(); else eevHide();
+}
+function eevChartUpdate() { if($('eev-chart') && !$('eev-chart').hidden) eevChartDraw(); }
+window.addEventListener('resize', function() { eevChartUpdate(); });
 </script>
 </head>
 <body class="eev-set">
@@ -168,7 +304,13 @@ function build(pct) {
 <div class="content">
 <div class="grid">
 	<section class="card c4"><h3>Диапазон и скорость</h3><div id="e2"></div><h3 style="margin-top:18px">Опции</h3><div id="e2b"></div></section>
-	<section class="card c4"><h3>Пуск компрессора</h3><div id="e5"></div></section>
+	<section class="card c4"><h3>Пуск компрессора</h3><div id="e5"></div>
+		<div class="more"><div><b>График открытия ЭРВ</b></div><a onclick="eevChartToggle(this)">показать ▾</a></div>
+		<div id="eev-chart" hidden>
+			<div id="eev-chart-box" style="position:relative;height:160px"></div>
+			<div class="rem" id="eev-chart-note"></div>
+		</div>
+	</section>
 	<section class="card c4"><h3>Стартовая позиция</h3>
 		<div id="spstart"></div>
 		<div id="spbody">
@@ -185,11 +327,15 @@ function build(pct) {
 		</div>
 		</div>
 	</section>
-	<section class="card c4"><h3>Останов компрессора</h3><div id="e7"></div></section>
+	<section class="card c4"><h3>Останов компрессора</h3><div id="e7"></div>
+		<div class="rem">Поле «Задержка открытия перед пуском» — в карточке «Пуск компрессора»: оно относится к пуску.</div>
+	</section>
 	<section class="card c8"><h3>Корректировка перегрева</h3><div id="e8"></div></section>
 </div>
 </div>
 <input type="checkbox" hidden id="k-eev-spt" data-k="eev.spt" aria-label="Старт по температуре подачи">
 <input type="checkbox" hidden id="k-eev-spf" data-k="eev.spf" aria-label="Старт по частоте">
+<!-- задержка пуска компрессора после включения насосов: нужна только для графика открытия -->
+<input type="number" hidden id="k-ohp-dlonp" data-k="ohp.dlonp" aria-label="Пауза насосов перед пуском компрессора">
 </body>
 </html>

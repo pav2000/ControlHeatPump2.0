@@ -67,7 +67,7 @@ var P_COMMON = [
 		d: 'Защита от резких движений: вентиль не сдвинется за один период больше, чем на столько шагов. <b>Обычно 10…45 шагов.</b> 0 — без ограничения (гибрид тогда берёт 45).'}]];
 var P_PID = [
 	['eev.kp', 'Kp — пропорциональная', {min: 0, max: 32, step: 0.001, n: 'Коэффициент усиления. Чем больше, тем быстрее и резче реагирует вентиль, чем меньше — тем медленнее.'}],
-	['eev.ki', 'Ki — интегральная', {min: 0, max: 32, step: 0.001, n: 'Интегрирующая составляющая устраняет статическую ошибку со временем. Накопитель ограничен одним шагом.'}],
+	['eev.ki', 'Ki — интегральная', {min: 0, max: 32, step: 0.001, x: 'рекоменд. 0', n: 'В этой прошивке выход регулятора прибавляется к текущему положению вентиля (скоростная форма), поэтому пропорциональная составляющая уже интегрирует. Интегральная добавляет второе интегрирование и раскачивает контур: на ночь 15.11 при Ki 0.2 частота ходила 89 → 48 Гц с периодом 55–75 минут. Рекомендуется 0.'}],
 	['eev.kd', 'Kd — дифференциальная', {min: 0, max: 32, step: 0.001, x: 'рекоменд. 0', n: 'Дифференцирующая составляющая противодействует прогнозируемым отклонениям. На работу ЭРВ практически не влияет, рекомендуется 0.'}],
 	['eev.p2d', 'Δ — зона вокруг цели, K', {min: 0, max: 10, step: 0.01, x: '0 — выкл.', n: 'Зона около целевого перегрева, где уменьшается пропорциональная составляющая; 0 — выключено.'}]];
 var P_HYB = [
@@ -75,7 +75,7 @@ var P_HYB = [
 	['eev.ti', 'Ti — время интегрирования, с', {min: 10, max: 600, step: 1, x: 'рекоменд. 60…90', n: 'Чем меньше, тем сильнее интегральная добавка; меньше 60 — риск колебаний.'}],
 	['eev.kff', 'kff — подача по частоте', {min: 0, max: 2, step: 0.01, x: 'рекоменд. 0,6…1 · 0 — выкл.', n: 'Доля прямого смещения вентиля вслед за изменением частоты компрессора. Работает, только если инвертор отдаёт частоту.'}],
 	['eev.ffmax', 'Предел подачи по частоте, шаг', {min: 1, max: 200, step: 1, n: 'Наибольшая прямая подача по частоте за один период расчёта.'}],
-	['eev.ohmin', 'Защита: нижний перегрев, K', {min: 0, max: 10, step: 0.01, x: '0 — выкл.', n: 'Ниже этого перегрева вентиль принудительно прикрывается (риск залива испарителя); защита включается через 120 с после пуска компрессора.'}]];
+	['eev.ohmin', 'Защита: нижний перегрев, K', {min: 0, max: 10, step: 0.01, x: '0 — выкл.', n: 'Ниже этого перегрева вентиль принудительно прикрывается. Проверяются оба перегрева: на выходе испарителя (OH) и на входе компрессора (OH2). Для OH2 защита включается через 30 с после пуска, для OH — через 120 с. Прикрытие: 1 шаг за период плюс 1 шаг за каждые 0,5 K недобора.'}]];
 
 function cbox(p) {
 	var id = stKid(p[0]), o = p[2];
@@ -121,13 +121,17 @@ window.stChanged = function(el) { if(!el || el.id == 'k-eev-hyb') applyAlg(); };
 // на контроллер уходят по «Применить».
 function recVals(isHyb) {
 	var f = Math.max(0.1, maxSteps / 480);
-	return isHyb ? {'eev.kc': Math.min(10, +(3 * f).toFixed(2)), 'eev.ti': 75, 'eev.kff': 1, 'eev.ffmax': Math.min(200, Math.round(40 * f)), 'eev.ohmin': 1}
-		: {'eev.kp': 1, 'eev.ki': 0.4, 'eev.kd': 0};
+	// Ki = 0: выход ПИД прибавляется к текущей частоте (скоростная форма), поэтому пропорциональная часть уже
+	// интегрирует, а интегральная даёт двойное интегрирование и раскачивает контур. Ti = 120 с — под запаздывание
+	// установки 3-4 минуты. Δ (p2d) — зона вокруг цели: у ПИД 0.2 K (узкая, чтобы точнее держать перегрев),
+	// у гибрида 1.0 K, как уставка его собственной зоны; алгоритм гибрида значение пока не использует.
+	return isHyb ? {'eev.kc': Math.min(10, +(3 * f).toFixed(2)), 'eev.ti': 120, 'eev.kff': 1, 'eev.ffmax': Math.min(200, Math.round(40 * f)), 'eev.ohmin': 1, 'eev.p2d': 1}
+		: {'eev.kp': 1.3, 'eev.ki': 0, 'eev.kd': 0, 'eev.p2d': 0.2};
 }
 function recText() {
 	var p = recVals(false), h = recVals(true);
-	put('rec-pid', '<b>Рекомендуемые:</b> Kp ' + stNumTxt(p['eev.kp']) + ' · Ki ' + stNumTxt(p['eev.ki']) + ' · Kd ' + stNumTxt(p['eev.kd']));
-	put('rec-hyb', '<b>Рекомендуемые:</b> Kc ' + stNumTxt(h['eev.kc']) + ' · Ti ' + h['eev.ti'] + ' · kff ' + stNumTxt(h['eev.kff']) + ' · предел ' + h['eev.ffmax'] + ' · защита ' + stNumTxt(h['eev.ohmin']));
+	put('rec-pid', '<b>Рекомендуемые:</b> Kp ' + stNumTxt(p['eev.kp']) + ' · Ki ' + stNumTxt(p['eev.ki']) + ' · Kd ' + stNumTxt(p['eev.kd']) + ' · Δ ' + stNumTxt(p['eev.p2d']));
+	put('rec-hyb', '<b>Рекомендуемые:</b> Kc ' + stNumTxt(h['eev.kc']) + ' · Ti ' + h['eev.ti'] + ' · kff ' + stNumTxt(h['eev.kff']) + ' · предел ' + h['eev.ffmax'] + ' · защита ' + stNumTxt(h['eev.ohmin']) + ' · Δ ' + stNumTxt(h['eev.p2d']));
 }
 function recApply(isHyb) {
 	var v = recVals(isHyb);
@@ -139,17 +143,48 @@ function recApply(isHyb) {
 	}
 }
 
+// Подсветка плиток перегрева: значение ниже порога защиты (поле eev.ohmin на этой же странице), компрессор
+// работает (fc.cfc > 1 Гц) и с пуска прошла задержка своей проверки: 120 с для перегрева испарителя,
+// 30 с для перегрева на входе компрессора. При остановленном компрессоре перегрев около нуля - норма.
+var eevFreq = 0;                       // fc.cfc: текущая частота, Гц
+var eevStartAt = 0;                    // момент пуска компрессора, мс; 0 - не знаем (страница открыта посреди работы)
+function tileProt(tid, bid, v, delay, low) {
+	var b = $(bid), t = $(tid);
+	if(!b) return;
+	var ok = v !== null && v !== undefined && !isNaN(v);
+	b.textContent = ok ? num(v, 1) : '—';
+	var on = ok && low;
+	if(t) t.style.boxShadow = on ? 'inset 0 0 0 2px var(--heat)' : '';
+	b.style.color = on ? 'var(--heat)' : '';
+}
+function protShow() {
+	var f = $('k-eev-ohmin'), min = f ? parseFloat(f.value) : NaN;
+	var h = $('k-eev-hyb');                       // защита есть только в гибриде
+	var run = eevFreq > 1 && h && h.checked && isFinite(min) && min > 0;
+	var age = eevStartAt ? (Date.now() - eevStartAt) / 1000 : 1e6;   // не знаем пуск - считаем, что работает давно
+	tileProt('tile-oh',  't-oh',  cur.oh,  120, run && age >= 120 && cur.oh  < min);
+	tileProt('tile-oh2', 't-oh2', cur.oh2, 30,  run && age >= 30  && cur.oh2 < min);
+}
 function eevPoll(d) {
 	for(var k in d) {
 		var v = d[k];
 		switch(k) {
 		case 'eev.pospp': var p = parseInt(v); put('t-pos', p >= 0 ? p : '–'); cur.pos = p; legend(); break;
-		case 'state.overheat': put('t-oh', num(v, 1)); cur.oh = v; legend(); break;
+		case 'state.overheat': cur.oh = v; legend(); protShow(); break;
+		case 'state.overheat_tcomp': cur.oh2 = v; protShow(); break;
+		case 'fc.cfc': {
+			var fq = +v || 0;
+			if(fq > 1 && eevFreq <= 1) eevStartAt = Date.now();   // пуск компрессора
+			else if(fq <= 1) eevStartAt = 0;                      // компрессор стоит
+			eevFreq = fq;
+			protShow();
+			break;
+		}
 		case 'state.evapor': put('t-ev', num(v, 1)); break;
 		case 'state.tcomp_tcon': put('t-tt', num(v, 1)); cur.tt = v; legend(); break;
 		case 'eev.ctdelta': put('t-dl', v === null ? '–' : (v > 0 ? '+' : '') + num(v, 1)); break;
 		case 'eev.trg': cur.trg = v; legend(); break;
-		case 'eev.error': put('t-er', stCode(v)); put('eev-st', v == 0 ? '<span class="tag ok">ошибок нет</span>' : '<span class="tag bad">ошибка ' + v + '</span>'); break;
+		case 'eev.error': put('eev-st', v == 0 ? '<span class="tag ok">ошибок нет</span>' : '<span class="tag bad">ошибка ' + v + '</span>'); break;
 		}
 	}
 }
@@ -241,7 +276,7 @@ window.onload = function() {
 	});
 	legend();
 	setTimeout(refresh, 1500);
-	api.poll({k: ['eev.pospp', 'state.overheat', 'eev.error', 'state.tcomp_tcon', 'eev.ctdelta', 'state.evapor', 'eev.trg']}, eevPoll);
+	api.poll({k: ['eev.pospp', 'state.overheat', 'state.overheat_tcomp', 'fc.cfc', 'eev.error', 'state.tcomp_tcon', 'eev.ctdelta', 'state.evapor', 'eev.trg']}, eevPoll);
 	setInterval(refresh, 30000);
 };
 </script>
@@ -259,8 +294,8 @@ window.onload = function() {
 	<section class="card c4">
 		<h3>Определение перегрева</h3>
 		<div class="tiles t3">
-			<div class="tile"><i>Положение</i><b id="t-pos">–</b><u id="t-pu">шаг</u></div><div class="tile"><i>Перегрев</i><b id="t-oh">–</b><u>K</u></div><div class="tile"><i>T кипения</i><b id="t-ev">–</b><u>°</u></div>
-			<div class="tile"><i>Нагн. − конд.</i><b id="t-tt">–</b><u>K</u></div><div class="tile" title="Целевая разность температур нагнетания и конденсации для корректировки перегрева; сравнивается с плиткой “Нагн. − конд.”"><i>Цель: Нагн. − конд.</i><b id="t-dl">–</b><u>K</u></div><div class="tile"><i>Код ошибки</i><b id="t-er">–</b></div>
+			<div class="tile"><i>Положение</i><b id="t-pos">–</b><u id="t-pu">шаг</u></div><div class="tile" id="tile-oh" title="Перегрев на выходе испарителя (TEVAOUT − температура кипения). Ниже порога защиты (K) вентиль прикрывается. Оранжевая подсветка — значение ниже порога при работающем компрессоре, не раньше чем через 120 с после пуска"><i>Перегрев</i><b id="t-oh">–</b><u>K</u></div><div class="tile" id="tile-oh2" title="Перегрев на входе компрессора (TCOMPIN − температура кипения). Ниже порога защиты (K) вентиль прикрывается. Оранжевая подсветка — значение ниже порога при работающем компрессоре, не раньше чем через 30 с после пуска"><i>Перегрев на входе</i><b id="t-oh2">–</b><u>K</u></div>
+			<div class="tile"><i>T кипения</i><b id="t-ev">–</b><u>°</u></div><div class="tile"><i>Нагн. − конд.</i><b id="t-tt">–</b><u>K</u></div><div class="tile" title="Целевая разность температур нагнетания и конденсации для корректировки перегрева; сравнивается с плиткой “Нагн. − конд.”"><i>Цель: Нагн. − конд.</i><b id="t-dl">–</b><u>K</u></div>
 		</div>
 		<div id="rule"></div>
 		<div class="two" id="fc"></div>
@@ -280,7 +315,7 @@ window.onload = function() {
 	<section class="card c12">
 		<h3>Регулирование
 			<span class="adesc" data-a="pid" style="display:inline">классический регулятор по перегреву; не знает о частоте компрессора</span>
-			<span class="adesc" data-a="hyb" style="display:none">ПИ с накоплением дробных шагов, подачей по частоте и защитой от залива</span>
+			<span class="adesc" data-a="hyb" style="display:none">ПИ с накоплением дробных шагов, подачей по частоте и защитой от залива по обоим перегревам</span>
 			<span class="r"><span class="mode" id="mode"><a class="on" onclick="setMode(false)">ПИД</a><a onclick="setMode(true)">Гибрид</a></span></span></h3>
 		<div class="prow" id="prow1"></div>
 		<div class="prow" id="prow2"></div>

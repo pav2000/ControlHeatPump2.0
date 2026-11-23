@@ -905,8 +905,8 @@ x_I2C_init_std_message:
 	// ПРИОРИТЕТ 1 средний - обслуживание вебморды в несколько потоков и дисплея Nextion
 	// ВНИМАНИЕ первый поток должен иметь больший стек для обработки фоновых сетевых задач
 	// 1 - поток
-	if ( xTaskCreate(vWeb0,"Web0", STACK_vWebX+14,NULL,1,&Tasks.xHandleUpdateWeb0)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY) HP.raise_Error(ErrorCatalog::Code::kRTOS, nameFREERTOS);
-	Diag.mRTOS=Diag.mRTOS+64+4*(STACK_vWebX+14);
+	if ( xTaskCreate(vWeb0,"Web0", STACK_vWeb0,NULL,1,&Tasks.xHandleUpdateWeb0)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY) HP.raise_Error(ErrorCatalog::Code::kRTOS, nameFREERTOS);
+	Diag.mRTOS=Diag.mRTOS+64+4*(STACK_vWeb0);
 #if W5200_THREAD >= 2 // - потока
 	if ( xTaskCreate(vWeb1,"Web1", STACK_vWebX,NULL,1,&Tasks.xHandleUpdateWeb1)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY) HP.raise_Error(ErrorCatalog::Code::kRTOS, nameFREERTOS);
 	Diag.mRTOS=Diag.mRTOS+64+4*STACK_vWebX;
@@ -947,7 +947,10 @@ x_I2C_init_std_message:
 
 	journal.jprintf("17. Information:\n");
 	freeRamShow();
-	Diag.startRAM=freeRam()-Diag.mRTOS;   // оценка свободной памяти до пуска шедулера, поправка на 1054 байта
+	// freeRam() считает уже без стеков задач: sbrk(0) стоит за ними, поэтому прежний вычет
+	// Diag.mRTOS отнимал их второй раз и в журнале было вдвое меньше реального запаса
+	// (4964 вместо 15536 при size 10604). С этой строкой сверяются при выборе стеков.
+	Diag.startRAM=freeRam();
 	journal.jprintf("FREE MEMORY %d bytes\n",(int)(Diag.startRAM));
 	journal.jprintf("Temperature DS2331: %.2d\n",getTemp_RtcI2C());
 	if(Is_otg_vbus_high()) journal.jprintf("USB connected\n");

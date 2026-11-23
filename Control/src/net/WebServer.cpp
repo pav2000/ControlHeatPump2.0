@@ -267,13 +267,13 @@ void web_server(uint8_t thread)
                         uint8_t ret= parserPOST(thread, len);         // разобрать и получить тип ответа
                         strcpy(Socket[thread].outBuf, HEADER_ANSWER);
 						strcat(Socket[thread].outBuf, postRet[ret]);   // вернуть текстовый ответ, который надо вывести
-               			if(sendBufferRTOS(thread, (byte*) (Socket[thread].outBuf), strlen(Socket[thread].outBuf)) == 0) {
+			if(sendBufferRTOS(thread, (byte*) (Socket[thread].outBuf), strlen(Socket[thread].outBuf)) == 0) {
 							if(DBG_ON(DBG_WERR)) {
 								uint8_t ip[4];
 								W5100.readSnDIPR(sock, ip);
 								journal.jprintf_time("Error send POST(%d.%d.%d.%d): %s\n", ip[0], ip[1], ip[2], ip[3], (char*) Socket[thread].inBuf);
 							}
-               			}
+			}
 						break;
 					}
 					case HTTP_POST_: // предварительный запрос post

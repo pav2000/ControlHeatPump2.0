@@ -26,7 +26,9 @@
  *   dx  = Kc * ((s - s_пред) + период / Ti * s)    скоростной ПИ, ограничен +-stepMax
  *   если частота компрессора есть (обе, прошлая и текущая, выше 1 Гц):
  *   dx += kff * x * (f / f_пред - 1)               прямая подача вслед за частотой, ограничена +-ffMax
- *   если перегрев < ohMin и с пуска прошло не меньше protDelay: dx -= 1 + (ohMin - перегрев) / 0,5 K
+ *   oh = min(перегрев испарителя, перегрев на входе компрессора); если OH2 = EEVHYB_OH2_NONE - только испарителя
+ *   если oh < ohMin и с пуска прошло не меньше своей задержки (protDelay2 для OH2, protDelay для OH):
+ *       dx -= 1 + (ohMin - oh) / 0,5 K
  *   acc += dx; шаг = целая часть acc; acc -= шаг   дробные шаги копятся, а не теряются
  * Итог - новое положение, ограниченное minSteps ... maxSteps. Вентиль сюда не двигается: это делает devEEV.
  *
@@ -46,6 +48,8 @@
 
 #define EEVHYB_STEP_MAX_DEFAULT	45		// stepMax = 0 (в настройках «без ограничения»): предел сдвига ПИ-части за период, шагов
 #define EEVHYB_PROT_DELAY		120		// защита от низкого перегрева включается через столько секунд после пуска компрессора
+#define EEVHYB_PROT_DELAY2		30		// то же для перегрева на входе компрессора (OH2): жидкость появляется раньше и опасна сразу
+#define EEVHYB_OH2_NONE			32767	// «перегрева на входе нет»: проверяется только перегрев испарителя
 #define EEVHYB_FREQ_MIN			100		// частота не выше 1 Гц (сотые герца) - подача по частоте отключена
 
 struct EevHybridParams
@@ -61,6 +65,7 @@ struct EevHybridParams
 	int16_t  minSteps;		// границы положения вентиля, шагов
 	int16_t  maxSteps;
 	uint16_t protDelay;		// задержка защиты после пуска, с (EEVHYB_PROT_DELAY)
+	uint16_t protDelay2;	// то же для проверки по OH2, с (EEVHYB_PROT_DELAY2)
 };
 
 struct EevHybridState
@@ -75,8 +80,10 @@ struct EevHybridState
 void    eevhyb_reset(EevHybridState *st, const EevHybridParams *p, int16_t overheat100, int16_t freq100);
 
 // Один период расчёта. x - текущее положение вентиля, secSinceStart - секунд с пуска компрессора.
+// overheat2_100 - перегрев на входе компрессора, сотые градуса; EEVHYB_OH2_NONE - датчика нет, проверяется
+// только перегрев испарителя. Оба последних аргумента обязательные: nullptr в requested допустим.
 // Возвращает ограниченное положение; requested при ненулевом указателе получает положение до ограничения (для защит).
-int16_t eevhyb_step(EevHybridState *st, const EevHybridParams *p, int16_t overheat100, int16_t freq100, int16_t x, uint32_t secSinceStart, int32_t *requested = 0);
+int16_t eevhyb_step(EevHybridState *st, const EevHybridParams *p, int16_t overheat100, int16_t freq100, int16_t x, uint32_t secSinceStart, int32_t *requested, int16_t overheat2_100);
 
 
 // ---------------------------------------------------------------------------

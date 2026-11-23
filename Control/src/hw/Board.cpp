@@ -212,7 +212,15 @@ char* ResetCause(void)
 		switch(resetCause) {
 			case 1: strcat(_buf, "CONFIG");  break;
 			case 2: strcat(_buf, "MALLOC");  break;
-			case 3: strcpy(_buf, "MEM "); strncat(_buf, (char *)&GPBR->SYS_GPBR[GPBR_TASK], 10);  break;
+			// Код 3 - это переполнение стека, а не ошибка памяти: имя задачи записал
+			// vApplicationStackOverflowHook (Libraries/FreeRTOS_ARM/src/FreeRTOS_ARM.c).
+			// Прежний текст "MEM " читался в журнале как отказ памяти и путал разбор.
+			// Имя в трёх регистрах GPBR может быть без нуля, поэтому копируется не больше,
+			// чем остаётся места в общем буфере.
+			case 3:
+				strcpy(_buf, "STACK_OVERFLOW ");
+				strncat(_buf, (char *)&GPBR->SYS_GPBR[GPBR_TASK], sizeof(_buf) - 1 - strlen(_buf));
+				break;
 			case 4: strcat(_buf, "HARD FAULT");  break;
 			case 5: strcat(_buf, "BUS FAULT");  break;
 			case 6: strcat(_buf, "USAGE FAULT");  break;

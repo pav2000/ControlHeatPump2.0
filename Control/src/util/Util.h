@@ -85,7 +85,9 @@ bool load_struct(void *to, const uint8_t **from, const uint8_t *end, uint16_t to
 // Общий буфер вывода и шестнадцатеричные преобразования. Определены в Util.cpp.
 // ВНИМАНИЕ: буфер ОДИН на всех, включая ResetCause. Пользоваться только в
 // веб-потоке или под замком xWebThreadSemaphore.
-#define UTIL_BUF_SIZE 20
+// Размер выбран по самой длинной строке: ResetCause выводит "STACK_OVERFLOW " и следом
+// имя задачи из трёх регистров GPBR (до 12 байт без завершающего нуля) - 28 байт вместе с нулём.
+#define UTIL_BUF_SIZE 28
 extern char _buf[UTIL_BUF_SIZE];
 char *MAC2String(uint8_t *mac);      // MAC в строку 01:23:45:67:89:AB
 char *addressToHex(uint8_t *f);      // адрес OneWire, восемь байт

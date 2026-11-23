@@ -76,18 +76,23 @@ bool HeatPump::compressor_emergency_off()
 }
 
 
-// Копирует в info метаданные одной аварии и при наличии text её строку.
-void HeatPump::copy_errorInfo(ErrorEventInfo &info, char *text) const
+// Копирует в info метаданные одной аварии и при наличии text её строку не длиннее size.
+void HeatPump::copy_errorInfo(ErrorEventInfo &info, char *text, size_t size) const
 {
 	const uint32_t irq = irqSave();
 	info.code = activeError.code;
 	info.detail = info.code ? activeError.detail : ErrorDetail{};
 	if(info.code) {
 		memcpy(info.source, activeError.source, sizeof(info.source));
-		if(text) memcpy(text, activeError.text, sizeof(activeError.text));
+		if(text && size) {
+			const size_t count = size < sizeof(activeError.text) ? size : sizeof(activeError.text);
+			memcpy(text, activeError.text, count);
+			text[count - 1] = '\0';
+			ErrorTrimUtf8(text);
+		}
 	} else {
 		info.source[0] = 0;
-		if(text) text[0] = 0;
+		if(text && size) text[0] = 0;
 	}
 	irqRestore(irq);
 }
@@ -95,14 +100,16 @@ void HeatPump::copy_errorInfo(ErrorEventInfo &info, char *text) const
 // Заполняет event согласованным снимком метаданных и текста активной аварии.
 void HeatPump::get_errorEvent(ErrorEvent &event) const
 {
-	copy_errorInfo(event, event.text);
+	copy_errorInfo(event, event.text, sizeof(event.text));
 }
 
-// Возвращает согласованный снимок метаданных активной аварии без текста.
-ErrorEventInfo HeatPump::get_errorInfo() const
+// Возвращает согласованный снимок метаданных активной аварии; если text задан, копирует туда
+// её текст. Код и текст всегда от одной аварии - один захват. В отличие от get_errorEvent
+// не требует ErrorEvent (188 байт) на стеке вызывающего.
+ErrorEventInfo HeatPump::get_errorInfo(char *text, size_t size) const
 {
 	ErrorEventInfo info{};
-	copy_errorInfo(info, nullptr);
+	copy_errorInfo(info, text, size);
 	return info;
 }
 
@@ -217,11 +224,13 @@ void HeatPump::set_Warning(ErrorCatalog::Code code, const char *device, uint16_t
 	}
 	journal.jprintf_time("%s\n", line);
 	if(code != ErrorCatalog::Code::kNOTIFY) {
-		char messageText[sizeof(lastWarningText)]{};
-		m_snprintf(messageText, sizeof(messageText), "%d %s", (int)ErrorNumber(code), operatorText);
-		ErrorTrimUtf8(messageText);
+		// Текст уведомления собирается в уже отработавший буфер журнальной строки: третий
+		// такой же буфер на стеке (160 байт) утяжелял ровно тот путь, что исполняется в
+		// веб-задаче (sendMessage -> noteDelivery -> set_Warning) и упирался в её стек.
+		m_snprintf(line, sizeof(line), "%d %s", (int)ErrorNumber(code), operatorText);
+		ErrorTrimUtf8(line);
 		message.setMessage(code == ErrorCatalog::Code::kSD ? pMESSAGE_SD : pMESSAGE_WARNING,
-		                   messageText, ErrorNumber(code), subject);
+		                   line, ErrorNumber(code), subject);
 	}
 }
 
@@ -359,10 +368,12 @@ void HeatPump::record_StoppedError(ErrorCatalog::Code code, const char *device,
 	WarningRecord key{ErrorNumber(code), detail.value, 0, {}, detail};
 	strncpy(key.device, source, sizeof(key.device) - 1);
 	const uint32_t subject = key.Subject() ^ ((uint32_t)detail.kind << 16) ^ detail.state;
-	char messageText[sizeof(activeError.text)]{};
-	m_snprintf(messageText, sizeof(messageText), "%d %s", (int)ErrorNumber(code), operatorText);
-	ErrorTrimUtf8(messageText);
-	message.setMessage(pMESSAGE_ERROR, messageText, ErrorNumber(code), subject);
+	// Текст уведомления - в буфер уже выведенной журнальной строки (и сброшенной в EEPROM).
+	// Четвёртый буфер по 161 байту на стеке делал этот путь недоступным для веб-задачи,
+	// когда ошибку поднимает сохранение настроек из API.
+	m_snprintf(note, sizeof(note), "%d %s", (int)ErrorNumber(code), operatorText);
+	ErrorTrimUtf8(note);
+	message.setMessage(pMESSAGE_ERROR, note, ErrorNumber(code), subject);
 	process_error();
 }
 
@@ -2068,53 +2079,6 @@ void HeatPump::compressorON()
 		return;
 	}
 
-#ifdef EEV_DEF
-	if(lastEEV != -1) {         // Не первое включение компрессора после старта ТН
-		// 1. Обеспечение минимальной паузы компрессора
-		if(compressor_in_pause) return;
-		journal.jprintf_time("compressorON > modWork:%X[%s], now %s\n",get_modWork(),Ret_Text(Status.ret), is_compressor_on() ? "ON" : "OFF");
-	}//get_fEEVStartPosByTemp()
-	// 2. Разбираемся с ЭРВ
-	journal.jprintf(EEV_go);
-	if(dEEV.get_LightStart()) { // Выйти на пусковую позицию
-		dEEV.set_EEV(dEEV.get_preStartPos());
-#ifdef EEV_PREFER_PERCENT
-		journal.jprintf("preStartPos: %.2d\n", dEEV.calc_percent(dEEV.get_preStartPos()));
-#else
-		journal.jprintf("preStartPos: %d\n", dEEV.get_preStartPos());
-#endif
-	} else if(dEEV.get_StartFlagPos()) { // Всегда начинать работу ЭРВ со стартовой позиции
-		dEEV.set_EEV(dEEV.get_StartPos());
-#ifdef EEV_PREFER_PERCENT
-		journal.jprintf("StartPos: %.2d\n", dEEV.calc_percent(dEEV.get_EEV()));
-#else
-		journal.jprintf("StartPos: %d\n", dEEV.get_EEV());
-#endif
-
-	} else if(lastEEV != -1) { // установка последнего значения ЭРВ
-		dEEV.set_EEV(lastEEV);
-#ifdef EEV_PREFER_PERCENT
-		journal.jprintf("lastEEV: %.2d\n", dEEV.calc_percent(lastEEV));
-#else
-		journal.jprintf("lastEEV: %d\n", lastEEV);
-#endif
-	}
-	if(lastEEV != -1 && dEEV.get_EevClose()) {        // Если закрывали то пауза для выравнивания давлений
-		// delayOn задаётся в секундах: так сказано и в объявлении поля, и у умолчания,
-		// и в сеттере (диапазон 0..255 с), и в описании параметра DON для веба;
-		// парный delayOff в compressorOFF умножается на 1000. Без множителя пауза
-		// выравнивания давлений при умолчании 5 длилась бы 5 мс, то есть её фактически
-		// не было бы.
-		//
-		// Отмечаемся: с множителем это уже длинная пауза (до 255 с) в пути пуска
-		// компрессора, а предел молчания UpdateHP и CommandHP - 120 с.
-		Watchdog_SleepHere(dEEV.get_delayOn() * 1000);  // Задержка на delayOn сек для выравнивания давлений
-	}
-	dEEV.CorrectOverheatInit();
-	for(uint8_t i = 1; i && dEEV.stepperEEV.isBusy(); i++) _delay(100); // wait EEV stop
-#endif
-	
-
 	// 3. Управление компрессором
 	if (get_errcode()==OK)                                 // Компрессор включить если нет ошибок
 	{
@@ -2181,6 +2145,53 @@ void HeatPump::compressorON()
 #endif
 		const bool boilerStart = (get_modWork() & pBOILER) != 0;
 		if(activeError.code || !pressureAllowsStart() || (boilerStart && boilerHeatBlocked())) return;
+		// Позиционируем ЭРВ после прокачки и проверки протока. Время открытия
+		// перед пуском больше не включает паузу насосов delayOnPump.
+#ifdef EEV_DEF
+	if(lastEEV != -1) {         // Не первое включение компрессора после старта ТН
+		// 1. Обеспечение минимальной паузы компрессора
+		if(compressor_in_pause) return;
+		journal.jprintf_time("compressorON > modWork:%X[%s], now %s\n",get_modWork(),Ret_Text(Status.ret), is_compressor_on() ? "ON" : "OFF");
+	}//get_fEEVStartPosByTemp()
+	// 2. Разбираемся с ЭРВ
+	journal.jprintf(EEV_go);
+	if(dEEV.get_LightStart()) { // Выйти на пусковую позицию
+		dEEV.set_EEV(dEEV.get_preStartPos());
+#ifdef EEV_PREFER_PERCENT
+		journal.jprintf("preStartPos: %.2d\n", dEEV.calc_percent(dEEV.get_preStartPos()));
+#else
+		journal.jprintf("preStartPos: %d\n", dEEV.get_preStartPos());
+#endif
+	} else if(dEEV.get_StartFlagPos()) { // Всегда начинать работу ЭРВ со стартовой позиции
+		dEEV.set_EEV(dEEV.get_StartPos());
+#ifdef EEV_PREFER_PERCENT
+		journal.jprintf("StartPos: %.2d\n", dEEV.calc_percent(dEEV.get_EEV()));
+#else
+		journal.jprintf("StartPos: %d\n", dEEV.get_EEV());
+#endif
+
+	} else if(lastEEV != -1) { // установка последнего значения ЭРВ
+		dEEV.set_EEV(lastEEV);
+#ifdef EEV_PREFER_PERCENT
+		journal.jprintf("lastEEV: %.2d\n", dEEV.calc_percent(lastEEV));
+#else
+		journal.jprintf("lastEEV: %d\n", lastEEV);
+#endif
+	}
+	if(lastEEV != -1 && dEEV.get_EevClose()) {        // Если закрывали то пауза для выравнивания давлений
+		// delayOn задаётся в секундах: так сказано и в объявлении поля, и у умолчания,
+		// и в сеттере (диапазон 0..255 с), и в описании параметра DON для веба;
+		// парный delayOff в compressorOFF умножается на 1000. Без множителя пауза
+		// выравнивания давлений при умолчании 5 длилась бы 5 мс, то есть её фактически
+		// не было бы.
+		//
+		// Отмечаемся: с множителем это уже длинная пауза (до 255 с) в пути пуска
+		// компрессора, а предел молчания UpdateHP и CommandHP - 120 с.
+		Watchdog_SleepHere(dEEV.get_delayOn() * 1000);  // Задержка на delayOn сек для выравнивания давлений
+	}
+	dEEV.CorrectOverheatInit();
+	for(uint8_t i = 1; i && dEEV.stepperEEV.isBusy(); i++) _delay(100); // wait EEV stop
+#endif
 	  	COMPRESSOR_ON;                                      // Включить компрессор
 		if(boilerStart && boilerHeatBlocked()) {
 			stopForError();

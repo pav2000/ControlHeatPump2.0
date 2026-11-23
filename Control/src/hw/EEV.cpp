@@ -393,6 +393,7 @@ void devEEV::hybParams(EevHybridParams *p)
 	p->minSteps = _data.minSteps;
 	p->maxSteps = _data.maxSteps;
 	p->protDelay = EEVHYB_PROT_DELAY;
+	p->protDelay2 = EEVHYB_PROT_DELAY2;
 }
 
 // Обновление ЭРВ - одна итерация алгоритма отслеживания
@@ -421,9 +422,17 @@ int8_t devEEV::Update(void) //boolean fHeating)
 			EevHybridParams hp;
 			hybParams(&hp);
 			const int16_t fq = HP.dFC.get_present() ? HP.dFC.get_frequency() : 0;
-			newEEV = eevhyb_step(&hybState, &hp, Overheat, fq, currentEEV, Uptime_s() - HP.get_startCompressor(), &hybridRequested);
+			// Второй перегрев - на входе компрессора (TCOMPIN - температура кипения). Проверяем наличие датчика
+			// в конфигурации и правдоподобность: без этого защита от залива работала бы по мусору.
+#ifdef TCOMPIN
+			int16_t oh2 = OverheatTCOMP;
+			if(!HP.sTemp[TCOMPIN].get_present() || oh2 < -2000 || oh2 > 20000) oh2 = Overheat;
+#else
+			int16_t oh2 = Overheat;
+#endif
+			newEEV = eevhyb_step(&hybState, &hp, Overheat, fq, currentEEV, Uptime_s() - HP.get_startCompressor(), &hybridRequested, oh2);
 			hybridResult = true;
-			if(DBG_ON(DBG_EEV)) journal.jprintf("EEV hyb: oh %d, f %d, x %d -> %d, acc %d\n", Overheat, fq, currentEEV, newEEV, (int) hybState.acc1000);
+			if(DBG_ON(DBG_EEV)) journal.jprintf("EEV hyb: oh %d/%d, f %d, x %d -> %d, acc %d\n", Overheat, oh2, fq, currentEEV, newEEV, (int) hybState.acc1000);
 		} else {                                   // ПИД
 			newEEV = _data.tOverheat - Overheat;   // Расчет ошибки для пида
 			pidw.Kp_dmin=_data.pid_zone;           // передать параметр - уменьшение пропорциональной при определенной ошибке

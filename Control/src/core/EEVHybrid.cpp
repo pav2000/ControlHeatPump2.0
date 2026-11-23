@@ -37,7 +37,7 @@ void eevhyb_reset(EevHybridState *st, const EevHybridParams *p, int16_t overheat
 	st->fPrev100 = freq100;
 }
 
-int16_t eevhyb_step(EevHybridState *st, const EevHybridParams *p, int16_t overheat100, int16_t freq100, int16_t x, uint32_t secSinceStart, int32_t *requested)
+int16_t eevhyb_step(EevHybridState *st, const EevHybridParams *p, int16_t overheat100, int16_t freq100, int16_t x, uint32_t secSinceStart, int32_t *requested, int16_t overheat2_100)
 {
 	const int32_t stepMax = p->stepMax > 0 ? p->stepMax : EEVHYB_STEP_MAX_DEFAULT;
 	const int32_t ffMax = p->ffMax > 0 ? p->ffMax : 0;
@@ -52,9 +52,15 @@ int16_t eevhyb_step(EevHybridState *st, const EevHybridParams *p, int16_t overhe
 	if(p->kff100 > 0 && ffMax > 0 && st->fPrev100 > EEVHYB_FREQ_MIN && freq100 > EEVHYB_FREQ_MIN)
 		dx += limit(div_round((int64_t) p->kff100 * x * ((int32_t) freq100 - st->fPrev100) * 10, st->fPrev100), ffMax * 1000);
 
-	// Защита от залива: ниже ohMin вентиль прикрывается на 1 шаг и ещё на 1 шаг за каждые 0,5 K недобора
-	if(p->ohMin100 > 0 && overheat100 < p->ohMin100 && secSinceStart >= p->protDelay)
-		dx -= 1000 + 20 * ((int32_t) p->ohMin100 - overheat100);
+	// Защита от залива: худший из двух перегревов. OH2 - перегрев на входе компрессора: он показывает, что
+	// к компрессору идёт насыщенный газ (жидкость), даже когда испаритель «в норме» (OH 1-2 K). У OH2 своя,
+	// более короткая задержка: жидкость появляется в первые полминуты, а OH на старте проседает из-за
+	// перетока, и защита по нему должна молчать, пока провал не уляжется.
+	int16_t  oh    = overheat100;
+	uint32_t delay = p->protDelay;
+	if(overheat2_100 < oh) { oh = overheat2_100; delay = p->protDelay2; }
+	if(p->ohMin100 > 0 && oh < p->ohMin100 && secSinceStart >= delay)
+		dx -= 1000 + 20 * ((int32_t) p->ohMin100 - oh);
 
 	dx = limit(dx, (stepMax + ffMax + 5) * 1000);						// итог за период ограничен, что бы ни пришло в настройках
 

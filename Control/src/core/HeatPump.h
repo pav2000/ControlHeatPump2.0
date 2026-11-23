@@ -290,7 +290,10 @@ class HeatPump
     // Копирует в event текущую аварию вместе с текстом. Значение не возвращает.
     void get_errorEvent(ErrorEvent &event) const;
     // Возвращает согласованный снимок кода, источника и детали активной аварии.
-    ErrorEventInfo get_errorInfo() const;
+    // Если text задан, копирует туда её операторский текст: код и текст от одной аварии.
+    // Замена get_errorEvent там, где ErrorEvent (188 байт) на стеке дорог: выгрузки
+    // state.txt и settings.txt отдаёт веб-задача.
+    ErrorEventInfo get_errorInfo(char *text = nullptr, size_t size = 0) const;
     // Возвращает снимок предупреждения. Если text задан, копирует текст в буфер размером size.
     WarningRecord get_lastWarning(char *text = nullptr, size_t size = 0) const;
     // Регистрирует предупреждение code для device. cause задаёт ключ повтора, detail заменяет текст.
@@ -644,7 +647,7 @@ class HeatPump
     type_status Status;                   // Описание состояния ТН
 
     // Ошибки и описания
-    void copy_errorInfo(ErrorEventInfo &info, char *text) const;
+    void copy_errorInfo(ErrorEventInfo &info, char *text, size_t size) const;
     ActiveError activeError{};             // Согласованное состояние активной аварии и останова
     WarningRecord lastWarning{};          // Снимок последнего предупреждения
     char lastWarningText[160]{};           // Операторский текст предупреждения без маркера и номера

@@ -86,11 +86,12 @@ void get_txtState(uint8_t thread, boolean header)
 {   uint8_t i,j; 
     int16_t x; 
      if (header) get_Header(thread,(char*)"state.txt");   // Если нужен заголовок
-     ErrorEvent event;
-     HP.get_errorEvent(event);
-     if(event.code) sendPrintfRTOS(thread, "\n  1. Тепловой насос\r\nСостояниеТН: %s\r\nПоследняя ошибка: %d %s\r\n", HP.StateToStr(), event.code, event.text);
-     else sendPrintfRTOS(thread, "\n  1. Тепловой насос\r\nСостояниеТН: %s\r\nПоследняя ошибка: -\r\n", HP.StateToStr());
+     // Текст аварии и текст предупреждения нужны по очереди, поэтому помещаются в один
+     // буфер: ErrorEvent на стеке занимает 188 байт, а это веб-задача.
      char warningText[160];
+     const ErrorEventInfo error = HP.get_errorInfo(warningText, sizeof(warningText));
+     if(error.code) sendPrintfRTOS(thread, "\n  1. Тепловой насос\r\nСостояниеТН: %s\r\nПоследняя ошибка: %d %s\r\n", HP.StateToStr(), error.code, warningText);
+     else sendPrintfRTOS(thread, "\n  1. Тепловой насос\r\nСостояниеТН: %s\r\nПоследняя ошибка: -\r\n", HP.StateToStr());
      const WarningRecord warning = HP.get_lastWarning(warningText, sizeof(warningText));
      if(warning.code) sendPrintfRTOS(thread, "Последнее предупреждение: %d %s\r\n", warning.code, warningText);
      else sendPrintfRTOS(thread, "Последнее предупреждение: -\r\n");
@@ -234,11 +235,11 @@ void get_txtSettings(uint8_t thread)
      int16_t x; 
      
      get_Header(thread,(char*)"settings.txt");
-     ErrorEvent event;
-     HP.get_errorEvent(event);
-     if(event.code) sendPrintfRTOS(thread, "Состояние ТН: %s\r\nПоследняя ошибка: %d %s\r\n", HP.StateToStr(), event.code, event.text);
-     else sendPrintfRTOS(thread, "Состояние ТН: %s\r\nПоследняя ошибка: -\r\n", HP.StateToStr());
+     // Один буфер на текст аварии и на текст предупреждения, см. get_txtState.
      char warningText[160];
+     const ErrorEventInfo error = HP.get_errorInfo(warningText, sizeof(warningText));
+     if(error.code) sendPrintfRTOS(thread, "Состояние ТН: %s\r\nПоследняя ошибка: %d %s\r\n", HP.StateToStr(), error.code, warningText);
+     else sendPrintfRTOS(thread, "Состояние ТН: %s\r\nПоследняя ошибка: -\r\n", HP.StateToStr());
      const WarningRecord warning = HP.get_lastWarning(warningText, sizeof(warningText));
      if(warning.code) sendPrintfRTOS(thread, "Последнее предупреждение: %d %s\r\n", warning.code, warningText);
      else sendPrintfRTOS(thread, "Последнее предупреждение: -\r\n");
