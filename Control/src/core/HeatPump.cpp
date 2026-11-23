@@ -257,6 +257,17 @@ SAFETY_WHY HeatPump::safety_check(SAFETY_OUT out, bool on, const char *name, con
 	return w;
 }
 
+// Записывает событие каталога с уже выбранной меткой прямо в журнал.
+static void logCatalogEvent(EventLevel level, ErrorCatalog::Code code, const char *device,
+                            ErrorDetail detail, const char *meaning)
+{
+	const auto *entry = ErrorCatalog::Find(code);
+	if(!entry) return;
+	char line[sizeof(ActiveError::text)];
+	formatEvent(line, sizeof(line), level, entry, nullptr, device, detail, meaning);
+	journal.jprintf_time("%s\n", line);
+}
+
 // Снимает команду работающего компрессора и отмечает время принятой команды останова.
 // Возвращает false при отказе команды инвертору и запрещает автоматический повторный пуск.
 bool HeatPump::stopForError()
@@ -277,19 +288,17 @@ bool HeatPump::stopForError()
 	const uint32_t irq = irqSave();
 	activeError.stopFailed = true;
 	irqRestore(irq);
-	log_Event(ErrorCatalog::Code::kCOMP_NO_STOP, driveDevice, {},
-	          "Команда аварийного останова не подтверждена");
+	// stopFailed блокирует автоповтор. Пишем прямо в журнал: raise_Error повторно
+	// вызвал бы останов. Первичную причину публикует вызывающий код.
+	logCatalogEvent(EventLevel::Error, ErrorCatalog::Code::kCOMP_NO_STOP, driveDevice, {},
+	                "Команда аварийного останова не подтверждена");
 	return false;
 }
 
 // Пишет предупреждение code только в журнал с источником device, деталями и пояснением meaning.
 void HeatPump::log_Event(ErrorCatalog::Code code, const char *device, ErrorDetail detail, const char *meaning)
 {
-	const auto *entry = ErrorCatalog::Find(code);
-	if(!entry) return;
-	char line[sizeof(activeError.text)];
-	formatEvent(line, sizeof(line), EventLevel::Warning, entry, nullptr, device, detail, meaning);
-	journal.jprintf_time("%s\n", line);
+	logCatalogEvent(EventLevel::Warning, code, device, detail, meaning);
 }
 
 // Пишет служебное событие source от устройства device с пояснением text.
@@ -322,8 +331,8 @@ void HeatPump::raise_ModbusError(ModbusResult result, const char *device, ErrorC
 	raise_Error(code, device, ModbusDetail(result));
 }
 
-// После выполненного драйвером останова публикует первую аварию; вторичную оставляет как $WARN.
-// code задаёт событие, device и detail уточняют источник; meaning заменяет текст каталога.
+// После команды останова публикует первую аварию в activeError и уведомлении.
+// Вторичные причины остаются в журнале как аварии. meaning заменяет текст каталога.
 void HeatPump::record_StoppedError(ErrorCatalog::Code code, const char *device,
                                   ErrorDetail detail, const char *meaning)
 {
@@ -357,13 +366,8 @@ void HeatPump::record_StoppedError(ErrorCatalog::Code code, const char *device,
 	}
 	irqRestore(irq);
 	if(duplicate) return;
-	if(!first) {
-		formatEvent(note, sizeof(note), EventLevel::Warning, entry, nullptr, source, detail, meaning);
-		journal.jprintf_time("%s\n", note);
-		return;
-	}
-
-	journal.jprintf_time("%s\n", note);
+	journal.jprintf_time("%s%s\n", note, first ? "" : " (вторичная авария)");
+	if(!first) return;
 	if(xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) save_DumpJournal(true);
 	WarningRecord key{ErrorNumber(code), detail.value, 0, {}, detail};
 	strncpy(key.device, source, sizeof(key.device) - 1);

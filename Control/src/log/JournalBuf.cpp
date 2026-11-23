@@ -28,50 +28,6 @@
  */
 #include "JournalBuf.h"
 
-// ---- подавление повторов ----
-
-void JournalDedup_Reset(JournalDedup *d)
-{
-	d->last[0] = '\0';
-	d->prev[0] = '\0';
-	d->count = 0;
-}
-
-JournalAction JournalDedup_Check(JournalDedup *d, const char *body, uint16_t *repeats,
-                                 const char **body_out)
-{
-	if(body == NULL) body = "";
-	if(d->last[0] && strncmp(d->last, body, JRN_DEDUP_CMP - 1) == 0) {
-		if(d->count < 0xFFFF) d->count++;    // насыщение вместо переполнения
-		return JRN_SUPPRESS;
-	}
-	// Сообщение сменилось. Прежнее уезжает в prev: именно оно повторялось,
-	// и именно его имя должно попасть в строку о повторах.
-	uint16_t pending = d->count;
-	d->count = 0;
-	memcpy(d->prev, d->last, JRN_DEDUP_CMP);
-	strncpy(d->last, body, JRN_DEDUP_CMP - 1);
-	d->last[JRN_DEDUP_CMP - 1] = '\0';
-	if(pending) {
-		if(repeats) *repeats = pending;
-		if(body_out) *body_out = d->prev;
-		return JRN_EMIT_REPEATS;
-	}
-	return JRN_WRITE;
-}
-
-bool JournalDedup_Flush(JournalDedup *d, uint16_t *repeats, const char **body_out)
-{
-	if(!d->count) return false;
-	if(repeats) *repeats = d->count;
-	// Здесь сообщение НЕ сменилось, повторялось именно last - его и отдаём.
-	if(body_out) *body_out = d->last;
-	d->count = 0;
-	// last не трогаем: если та же строка придёт снова, счёт начнётся заново,
-	// но повторы уже выданы и не потеряются.
-	return true;
-}
-
 // ---- кольцо ----
 
 void JournalRing_Init(JournalRing *r, uint8_t *storage, uint16_t size)

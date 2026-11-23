@@ -20,7 +20,7 @@
 #ifndef Information_h
 #define Information_h
 #include "../../Constant.h"                       // Вся конфигурация и константы проекта Должен быть первым !!!!
-#include "JournalBuf.h"                     // Подавление повторов и кольцо отложенной записи
+#include "JournalBuf.h"                     // Кольцо отложенной записи
 #include "DebugFlags.h"                     // DBG_ON: флаги отладки, что пишется в журнал
 #include "mini-printf.h"                    // MINI_PRINTF_FMT - проверка форматов компилятором
 // Если mini-printf.h взят из копии БЕЗ этого макроса (например из sketchbook,
@@ -74,25 +74,21 @@ private:
   int32_t bufferHead, bufferTail;                        // Начало и конец
   uint8_t full;                                           // признак полного буфера
   void _write(char *dataPtr);                            // Записать строку в журнал
-  // Замки журнала. L1 (xJournalSemaphore) - короткий, листовой: pbuf, кольцо, dedup, ring.lost.
+  // Замки журнала. L1 (xJournalSemaphore) защищает pbuf, кольцо и учёт потерь.
   // L2 (xJournalWriteSemaphore) - писатель: Drain, FlushAll и Format на время записи в EEPROM.
   // Порядок: xWebThread -> L2 -> L1 | xI2C; L1 берётся последним, L2 продюсеры не берут никогда.
   bool _lock(void);                                      // взять L1; при отказе строка засчитана в потери
   void _unlock(void);
-  uint16_t _take(uint8_t *chunk, bool housekeeping);     // под L1 забрать кусок из кольца
+  uint16_t _take(uint8_t *chunk, bool reportLoss);        // Под L1 забрать порцию данных из кольца
 
-  // Отложенная запись и подавление повторов. Обоснование - в JournalBuf.h.
-  void _post(char *line, const char *body);              // Положить строку в кольцо (или записать сразу)
-  void _putRepeats(uint16_t repeats, const char *msg);    // Запись о подавленных повторах, с текстом повторявшегося сообщения
+  void _post(char *line);                                // Положить строку в кольцо (или записать сразу)
 public:
   void Drain(void);                                      // Выгрузить пачку из кольца в EEPROM, вызывается из vServiceHP
   void FlushAll(void);                                   // Выгрузить кольцо целиком - перед чтением журнала
   uint16_t get_lost(void) { return ring.lost; }          // Сколько строк потеряно при переполнении кольца
 private:
-  JournalDedup  dedup;
   JournalRing   ring;
   uint8_t       ringbuf[JOURNAL_RING_SIZE];
-  uint32_t      lastPostTick;                            // когда последний раз что-то клали - для выдачи повторов по таймауту
   uint16_t      lostReported;                            // сколько потерь уже показано в журнале
    // Переменные
   char pbuf[PRINTF_BUF+2];                                // Буфер для одной строки + маркеры

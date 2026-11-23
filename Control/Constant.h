@@ -163,7 +163,6 @@ const uint16_t  defaultPort=80;
 #define JOURNAL_RING_SIZE      1024   // байт оперативной памяти под кольцо
 #define JOURNAL_DRAIN_CHUNK    64     // размер пачки = странице EEPROM (I2C_PAGE_EEPROM)
 #define JOURNAL_DRAIN_CHUNKS   4      // пачек за один вызов Drain: 256 Б/с при ~20 мс шины I2C
-#define JOURNAL_REPEAT_TIMEOUT 60000  // мсек молчания, после которых выдаются накопленные повторы
 
 // Предел ожидания подтверждения отправки пакета сетевым чипом, мсек.
 // Штатно отправка укладывается в единицы миллисекунд; таймаут нужен только

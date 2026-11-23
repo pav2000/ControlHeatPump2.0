@@ -39,7 +39,7 @@
 
 // Замки журнала. Схема и порядок захвата описаны в Journal.h (_lock).
 #define JOURNAL_LOCK_WAIT  100     // мсек. Дольше ждать нельзя: строку проще потерять, чем остановить задачу
-static SemaphoreHandle_t xJournalSemaphore;        // L1: pbuf, кольцо, dedup, lost
+static SemaphoreHandle_t xJournalSemaphore;        // L1: pbuf, кольцо, учёт потерь
 static SemaphoreHandle_t xJournalWriteSemaphore;   // L2: писатель в EEPROM, Format
 
 static inline bool lockTake(SemaphoreHandle_t h, TickType_t wait)
@@ -82,9 +82,7 @@ void Journal::Init()
 	full = 0;
 	// Отложенная запись: до старта шедулера _post пишет напрямую, но состояние
 	// должно быть готово с самого начала.
-	JournalDedup_Reset(&dedup);
 	JournalRing_Init(&ring, ringbuf, sizeof(ringbuf));
-	lastPostTick = 0;
 	writeLockTimeouts = 0;
 	lostReported = 0;
 
@@ -199,7 +197,7 @@ void Journal::jprintf(const char *format, ...)
 	m_vsnprintf(pbuf, PRINTF_BUF, format, ap);
 	va_end(ap);
 	if(Is_otg_vbus_high()) SerialDbg.print(pbuf);
-	_post(pbuf, pbuf);          // вся строка - и тело для сравнения повторов
+	_post(pbuf);
 	_unlock();
 }
 
@@ -214,7 +212,7 @@ void Journal::jprintf_time(const char *format, ...)
 	m_vsnprintf(pbuf + 9, PRINTF_BUF - 9, format, ap);
 	va_end(ap);
 	if(Is_otg_vbus_high()) SerialDbg.print(pbuf);
-	_post(pbuf, pbuf + 9);      // тело без отметки времени "HH:MM:SS "
+	_post(pbuf);
 	_unlock();
 }   
 
@@ -231,7 +229,7 @@ void Journal::jprintf_date(const char *format, ...)
 	m_vsnprintf(pbuf + 20, PRINTF_BUF - 20, format, ap);
 	va_end(ap);
 	if(Is_otg_vbus_high()) SerialDbg.print(pbuf);
-	_post(pbuf, pbuf + 20);     // тело без отметки "DD.MM.YYYY HH:MM:SS "
+	_post(pbuf);
 	_unlock();
 }
 
@@ -304,68 +302,29 @@ size_t Journal::write (uint8_t c)
   return 1;   // one byte output
   }  // end of myOutputtingClass::write
          
-// Записать строку в журнал
-
-// Сообщение о подавленных повторах. Текст сообщения включается в запись:
-// один счётчик без контекста бесполезен, если исходная строка ушла наверх.
-void Journal::_putRepeats(uint16_t repeats, const char *msg)
-{
-	char rbuf[JRN_DEDUP_CMP + 40];
-	char body[JRN_DEDUP_CMP];
-	m_snprintf(body, sizeof(body), "%s", msg);
-	// у тела обычно есть свой перевод строки - убираем, чтобы не рвать запись
-	for(char *p = body; *p; p++) if(*p == '\n' || *p == '\r') { *p = 0; break; }
-	int n = m_snprintf(rbuf, sizeof(rbuf), "  ^ повторялось %u раз: %s\n",
-	                   (unsigned) repeats, body);
-	if(n > 0) JournalRing_Put(&ring, rbuf, (uint16_t) n);
-}
-
-// Положить строку в кольцо отложенной записи. Обоснование - в JournalBuf.h.
-//   line - строка целиком (с отметкой времени, если она есть)
-//   body - та её часть, по которой определяется повтор (без отметки времени)
+// Положить в кольцо всю строку вместе с отметкой времени.
 //
 // До старта шедулера писать отложенно нельзя: выгружать кольцо некому,
 // а журнал загрузки нужен целиком - пишем сразу. При ОСТАНОВЛЕННОМ планировщике (между vTaskSuspendAll и
 // xTaskResumeAll) прямая запись в EEPROM недопустима: замок I2C тогда не берётся, а держатель может стоять
 // посреди транзакции. Кольцо замков не использует, поэтому строка кладётся в него и уйдёт позже.
-void Journal::_post(char *line, const char *body)
+void Journal::_post(char *line)
 {
 	if(xTaskGetSchedulerState() == taskSCHEDULER_NOT_STARTED) { _write(line); return; }
 
-	uint16_t repeats = 0;
-	const char *repeated = NULL;
-	JournalAction act = JournalDedup_Check(&dedup, body, &repeats, &repeated);
-	if(act == JRN_SUPPRESS) return;
-	if(act == JRN_EMIT_REPEATS) _putRepeats(repeats, repeated);
 	JournalRing_Put(&ring, line, (uint16_t) m_strlen(line));
-	lastPostTick = GetTickCount();
 }
 
-// Забрать из кольца один кусок. Всё, что трогает общее состояние (кольцо, dedup, lost), - под L1;
-// запись в EEPROM идёт уже вне его, чтобы задачи в это время клали строки.
-// housekeeping: сообщить о потерях и выдать накопленные повторы по таймауту (раз за вызов Drain).
-uint16_t Journal::_take(uint8_t *chunk, bool housekeeping)
+// Забрать порцию данных под L1. Писатель обращается к EEPROM после отпускания L1.
+// reportLoss включает запись о потерях один раз за вызов Drain.
+uint16_t Journal::_take(uint8_t *chunk, bool reportLoss)
 {
 	if(!lockTake(xJournalSemaphore, JOURNAL_LOCK_WAIT / portTICK_PERIOD_MS)) return 0;
-	if(housekeeping) {
-		// Потери при переполнении кольца показываем один раз на каждое новое значение
-		if(ring.lost != lostReported) {
-			lostReported = ring.lost;
-			char lbuf[56];
-			int n = m_snprintf(lbuf, sizeof(lbuf), "  ^ журнал: потеряно строк %u\n", (unsigned) lostReported);
-			if(n > 0) JournalRing_Put(&ring, lbuf, (uint16_t) n);
-		}
-		// Ничего не пришло - выдать накопленные повторы, чтобы они не висели
-		// в счётчике неопределённо долго.
-		if(JournalRing_Used(&ring) == 0 && GetTickCount() - lastPostTick > JOURNAL_REPEAT_TIMEOUT) {
-			uint16_t repeats;
-			const char *repeated = NULL;
-			// Имя повторявшегося сообщения отдаёт сам Flush: иначе счётчик
-			// без контекста бесполезен. Из dedup.last его брать нельзя -
-			// см. комментарий к JournalDedup_Check.
-			if(JournalDedup_Flush(&dedup, &repeats, &repeated)) _putRepeats(repeats, repeated);
-			lastPostTick = GetTickCount();
-		}
+	if(reportLoss && ring.lost != lostReported) {
+		lostReported = ring.lost;
+		char lbuf[56];
+		int n = m_snprintf(lbuf, sizeof(lbuf), "  ^ журнал: потеряно строк %u\n", (unsigned) lostReported);
+		if(n > 0) JournalRing_Put(&ring, lbuf, (uint16_t) n);
 	}
 	uint16_t n = JournalRing_Get(&ring, chunk, JOURNAL_DRAIN_CHUNK);
 	lockGive(xJournalSemaphore);
