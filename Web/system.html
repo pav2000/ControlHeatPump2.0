@@ -22,14 +22,15 @@
 // Состояние контроллера: ключ sys.info («подпись|значение;...», разделы - строки <b>…</b>) плюс время работы, последний сброс,
 // причина сброса, температура платы и память. Опрос раз в 4 с. Сброс контроллера, сети и сезонных счётчиков - внизу.
 urlupdate = 4000;
-function tip(n, t) { return '<span class="hint" tabindex="0" data-tip="' + stEsc(t) + '">' + n + '</span>'; }
+function tip(t) { return '<span class="hint" tabindex="0" data-tip="' + stEsc(t) + '">i</span>'; }
+// Прошивка передаёт номера подсказок в подписях sys.info.
 var TIPS = {
 	2: 'Состояние FreeRTOS при старте: старший байт — номер задачи (см. «Диагностика → Задачи RTOS»), младший байт — код ошибки (1 — configASSERT fails, 2 — malloc fails, 3 — stack overflow, 4 — hard fault, 5 — bus fault, 6 — usage fault, 7 — crash data).',
 	3: 'Контроль включается в «Связь → Сеть → Контроль связи с чипом раз 10 сек.»; при необходимости — его сброс.'
 };
 var fixed = {};
 function kv(label, value, mono) {
-	label = label.replace(/<sup>(\d)<\/sup>/g, function(m, n) { return TIPS[n] ? tip(n, TIPS[n]) : ''; });
+	label = label.replace(/<sup>(\d)<\/sup>/g, function(m, n) { return TIPS[n] ? tip(TIPS[n]) : ''; });
 	return '<div class="kvl"><span>' + label + '</span><b' + (mono ? ' class="mono"' : '') + '>' + value + '</b></div>';
 }
 
@@ -55,7 +56,7 @@ function render(v) {
 	});
 	put('ctl', h);
 	var st = '';
-	if(status) st += '<div class="kvl"><span>' + status[0].replace(/<sup>\d<\/sup>/, '') + tip(4, 'State: 0 — выключен, 1 — стартует, 2 — останавливается, 3 — работает, 4 — ожидание, 5 — ошибка. modWork: код режима и точка возврата алгоритма; расшифровка — на странице «Диагностика → Журнал» (блок под журналом). fHP(0x..): 01 — BoilerTogetherHeat.') + '</span></div><div class="stat">' + status[1] + '</div>' +
+	if(status) st += '<div class="kvl"><span>' + status[0].replace(/<sup>\d<\/sup>/, '') + tip('State: 0 — выключен, 1 — стартует, 2 — останавливается, 3 — работает, 4 — ожидание, 5 — ошибка. modWork: код режима и точка возврата алгоритма; расшифровка — на странице «Диагностика → Журнал» (блок под журналом). fHP(0x..): 01 — BoilerTogetherHeat.') + '</span></div><div class="stat">' + status[1] + '</div>' +
 		'<div class="legend2"><b>State:</b> 0 выключен, 1 стартует, 2 останавливается, 3 работает, 4 ожидание, 5 ошибка. <b>modWork:</b> код режима и точка возврата алгоритма — расшифровка на странице <a href="log.html">«Диагностика → Журнал»</a>. <b>fHP(0x..):</b> 01 — BoilerTogetherHeat.</div>';
 	st += '<div class="sbh">Времена</div>' + (by['Времена'] || []).map(function(r) { return kv(r[0], r[1] || '—'); }).join('');
 	put('st', st);

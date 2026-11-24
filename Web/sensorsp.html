@@ -167,7 +167,7 @@ window.onload = function() {
 <div class="grid">
 	<section class="card c12" id="flow-card" hidden>
 		<h3>Частотные датчики · расход</h3>
-		<div class="scrollx"><table class="t"><thead><tr><th>Датчик</th><th>Значение</th><th>Контроль минимума<span class="hint" tabindex="0" data-tip="Включение контроля минимального протока.">1</span></th><th>Коэфф., имп/л</th><th>Теплоёмкость, Дж/(кг·°C)</th><th>Частота</th><th>Тест</th><th>Pin</th><th>Код ошибки</th></tr></thead><tbody id="flow"></tbody></table></div>
+		<div class="scrollx"><table class="t"><thead><tr><th>Датчик</th><th>Значение</th><th>Контроль минимума<span class="hint" tabindex="0" data-tip="Включение контроля минимального протока.">i</span></th><th>Коэфф., имп/л</th><th>Теплоёмкость, Дж/(кг·°C)</th><th>Частота</th><th>Тест</th><th>Pin</th><th>Код ошибки</th></tr></thead><tbody id="flow"></tbody></table></div>
 	</section>
 	<section class="card c12" id="press-card" hidden>
 		<h3>Аналоговые датчики · давление</h3>
@@ -188,16 +188,16 @@ window.onload = function() {
 	</section>
 	<section class="card c12" id="sdm-card">
 		<h3>Электрический счётчик · <span id="k-sdm-name" data-kr="sdm.name">–</span> <span class="r row" style="gap:10px;color:var(--mute);font-weight:600">Modbus · связь <span id="sdm-link"></span>
-			<button class="btn2" style="padding:6px 12px" onclick="sdmAction('sdm.link','Сбросить флаг сбоя связи и попытаться прочитать данные со счётчика?')">Восстановить связь<span class="hint" data-tip="При нажатии кнопки флаг сбоя связи сбрасывается и делается попытка прочитать данные со счётчика.">2</span></button>
-			<button class="btn2" style="padding:6px 12px" onclick="sdmAction('sdm.program','Записать параметры связи в счётчик? Счётчик должен быть в режиме программирования (на экране «Set»); после операции выключите его питание.')">Запрограммировать<span class="hint" data-tip="Производится установка параметров связи счётчика под требуемые. Перед нажатием необходимо перевести счётчик в режим программирования (долгое нажатие на кнопку, надпись Set на экране). После этой операции счётчик надо сбросить (выключить питание).">3</span></button></span></h3>
+			<button class="btn2" style="padding:6px 12px" onclick="sdmAction('sdm.link','Сбросить флаг сбоя связи и попытаться прочитать данные со счётчика?')">Восстановить связь<span class="hint" data-tip="При нажатии кнопки флаг сбоя связи сбрасывается и делается попытка прочитать данные со счётчика.">i</span></button>
+			<button class="btn2" style="padding:6px 12px" onclick="sdmAction('sdm.program','Записать параметры связи в счётчик? Счётчик должен быть в режиме программирования (на экране «Set»); после операции выключите его питание.')">Запрограммировать<span class="hint" data-tip="Производится установка параметров связи счётчика под требуемые. Перед нажатием необходимо перевести счётчик в режим программирования (долгое нажатие на кнопку, надпись Set на экране). После этой операции счётчик надо сбросить (выключить питание).">i</span></button></span></h3>
 		<div class="sdm">
 			<div class="tile"><i>Напряжение</i><b id="sdm-volt">–</b><u>В</u></div><div class="tile"><i>Ток</i><b id="sdm-current">–</b><u>А</u></div><div class="tile"><i>Мощность</i><b id="sdm-acpower">–</b><u>Вт</u></div>
 			<div class="tile"><i>cos φ</i><b id="sdm-pf">–</b></div><div class="tile"><i>Частота</i><b id="sdm-freq">–</b><u>Гц</u></div><div class="tile"><i>Энергия</i><b id="sdm-acenergy">–</b><u>кВт·ч</u></div><div class="tile"><i>Ошибок</i><b id="sdm-err">–</b></div>
 		</div>
 		<div class="row" style="gap:24px;flex-wrap:wrap">
-			<div class="field" style="flex:1;min-width:260px"><div class="l">Максимальное напряжение<span class="hint" tabindex="0" data-tip="При выполнении условия ТН останавливается по ошибке.">4</span><small>останов ТН по ошибке · 0…400 В</small></div><label class="inp"><input id="k-sdm-maxv" data-k="sdm.maxv" type="number" min="0" max="400" step="1"><u>В</u></label></div>
-			<div class="field" style="flex:1;min-width:260px"><div class="l">Минимальное напряжение<span class="hint" tabindex="0" data-tip="При выполнении условия ТН не останавливается, генерируется уведомление.">5</span><small>только уведомление · 0…400 В</small></div><label class="inp"><input id="k-sdm-minv" data-k="sdm.minv" type="number" min="0" max="400" step="1"><u>В</u></label></div>
-			<div class="field" style="flex:1;min-width:260px"><div class="l">Контроль мощности<span class="hint" tabindex="0" data-tip="При выполнении условия ТН не останавливается, генерируется уведомление.">5</span><small>только уведомление · 0…30000 Вт</small></div><label class="inp"><input id="k-sdm-maxp" data-k="sdm.maxp" type="number" min="0" max="30000" step="1"><u>Вт</u></label></div>
+			<div class="field" style="flex:1;min-width:260px"><div class="l">Максимальное напряжение<span class="hint" tabindex="0" data-tip="При выполнении условия ТН останавливается по ошибке.">i</span><small>останов ТН по ошибке · 0…400 В</small></div><label class="inp"><input id="k-sdm-maxv" data-k="sdm.maxv" type="number" min="0" max="400" step="1"><u>В</u></label></div>
+			<div class="field" style="flex:1;min-width:260px"><div class="l">Минимальное напряжение<span class="hint" tabindex="0" data-tip="При выполнении условия ТН не останавливается, генерируется уведомление.">i</span><small>только уведомление · 0…400 В</small></div><label class="inp"><input id="k-sdm-minv" data-k="sdm.minv" type="number" min="0" max="400" step="1"><u>В</u></label></div>
+			<div class="field" style="flex:1;min-width:260px"><div class="l">Контроль мощности<span class="hint" tabindex="0" data-tip="При выполнении условия ТН не останавливается, генерируется уведомление.">i</span><small>только уведомление · 0…30000 Вт</small></div><label class="inp"><input id="k-sdm-maxp" data-k="sdm.maxp" type="number" min="0" max="30000" step="1"><u>Вт</u></label></div>
 		</div>
 	</section>
 </div>

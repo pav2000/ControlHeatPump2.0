@@ -31,6 +31,7 @@
 #include "../hw/Hardware.h"     // readEEPROM_I2C / writeEEPROM_I2C, eepromI2C
 #include "../core/Rtos.h"         // _delay, замки шин
 #include "../core/Watchdog.h"     // Watchdog_AliveHere
+#include "../net/ParamRegistry.h" // ApiOut, api_put_str
 #include "../net/WebShared.h"    // Socket[] - журнал одалживает выходной буфер
 #include "mini-printf.h"  // m_vsnprintf
 
@@ -169,7 +170,13 @@ void Journal::Format(void)
 	bufferHead = failed ? -1 : 0;
 	bufferTail = failed ? -1 : 1;
 	irqRestore(pm);
-	if(!failed) jprintf("\nFormat I2C journal (size %d bytes) - Ok\n", JOURNAL_LEN);
+	if(!failed) {
+		if(lockTake(xJournalSemaphore, JOURNAL_LOCK_WAIT / portTICK_PERIOD_MS)) {
+			recentNext = recentSize = 0;
+			lockGive(xJournalSemaphore);
+		}
+		jprintf("\nFormat I2C journal (size %d bytes) - Ok\n", JOURNAL_LEN);
+	}
 	lockGive(xJournalWriteSemaphore);
 	if(failed) HP.set_Warning(ErrorCatalog::Code::kJOURNAL, "journal", static_cast<uint16_t>(JournalStatus::WriteFailed),
 	                          "Не удалось записать заголовок I2C-журнала", false, true);
@@ -255,13 +262,62 @@ void Journal::event(Stamp stamp, const char *source, const char *action, const c
 	va_start(ap, format);
 	m_vsnprintf(pbuf + offset, PRINTF_BUF - offset - 1, format, ap);
 	va_end(ap);
+	_postEvent();
+	_unlock();
+}
+
+// Добавляет время к записи каталога. Регистрация и подавление повторов уже выполнены вызывающим.
+void Journal::catalogEvent(const char *line, const char *suffix)
+{
+	if(!_lock()) return;
+	const uint8_t offset = _stamp(Stamp::Time);
+	m_snprintf(pbuf + offset, PRINTF_BUF - offset - 1, "%s%s", line, suffix);
+	_postEvent();
+	_unlock();
+}
+
+// Сохраняет копию записи для списка недавних событий. Служебные символы внутри текста
+// заменяются пробелами, чтобы событие всегда оставалось одной строкой.
+void Journal::_postEvent()
+{
 	ErrorTrimUtf8(pbuf);
 	const size_t len = m_strlen(pbuf);
+	for(size_t i = 0; i < len; ++i) if(static_cast<uint8_t>(pbuf[i]) < ' ') pbuf[i] = ' ';
+	auto &line = recent[recentNext];
+	if(len < sizeof(line)) {
+		memcpy(line, pbuf, len + 1);
+	} else {
+		// Сокращаем только копию для веба и оставляем место для многоточия и нуля.
+		constexpr char ellipsis[] = "…";
+		const size_t limit = sizeof(line) - sizeof(ellipsis);
+		memcpy(line, pbuf, limit);
+		line[limit] = '\0';
+		ErrorTrimUtf8(line);
+		memcpy(line + m_strlen(line), ellipsis, sizeof(ellipsis));
+	}
+	recentNext = (recentNext + 1) % RecentCount;
+	if(recentSize < RecentCount) ++recentSize;
 	pbuf[len] = '\n';
 	pbuf[len + 1] = '\0';
 	if(Is_otg_vbus_high()) SerialDbg.print(pbuf);
 	_post(pbuf);
-	_unlock();
+}
+
+// Собирает согласованный снимок прямо в выходном буфере веб-потока.
+// Замок отпускается до передачи по сети. Обращений к EEPROM здесь нет.
+bool Journal::recentEvents(ApiOut &out) const
+{
+	if(!lockTake(xJournalSemaphore, JOURNAL_LOCK_WAIT / portTICK_PERIOD_MS)) return false;
+	api_put(&out, "{\"items\":[");
+	uint8_t index = (recentNext + RecentCount - recentSize) % RecentCount;
+	for(uint8_t n = 0; n < recentSize; ++n) {
+		if(n) api_putc(&out, ',');
+		api_put_str(&out, recent[index]);
+		if(++index == RecentCount) index = 0;
+	}
+	api_put(&out, "]}");
+	lockGive(xJournalSemaphore);
+	return true;
 }
 
 // отдать журнал в сеть клиенту  Возвращает число записанных байт

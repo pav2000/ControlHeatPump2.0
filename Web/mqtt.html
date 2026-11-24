@@ -76,7 +76,7 @@ window.onload = function() {
 		f('ID_NARMON', {k: 'text', max: 15, t: 'Имя устройства', h: 'название прибора · до 15 знаков', n: [3, 'Название прибора на «Народном мониторинге», до 15 знаков.']})
 	]);
 	$('m2').insertAdjacentHTML('beforeend', '<div class="field dis"><div class="l">Личный код для передачи<small>не используется</small></div><span class="ro" id="k-mqtt-password_narmon" data-kr="mqtt.password_narmon">–</span></div>' +
-		'<div class="field"><div class="l">Идентификатор на мониторинге<span class="hint" tabindex="0" data-tip="MAC-адрес должен быть уникален: для этого измените его с дефолтного (страница «Сеть»). С дефолтного адреса отправка блокируется.">4</span><small>MAC-адрес W5xxx: должен быть уникален, с адреса по умолчанию отправка блокируется</small></div><span class="mono" style="font-weight:800" id="narmon-id">–</span></div>');
+		'<div class="field"><div class="l">Идентификатор на мониторинге<span class="hint" tabindex="0" data-tip="MAC-адрес должен быть уникален: для этого измените его с дефолтного (страница «Сеть»). С дефолтного адреса отправка блокируется.">i</span><small>MAC-адрес W5xxx: должен быть уникален, с адреса по умолчанию отправка блокируется</small></div><span class="mono" style="font-weight:800" id="narmon-id">–</span></div>');
 	stLoadK();
 	api.poll({k: ['mqtt.ip_mqtt', 'mqtt.ip_narmon', 'net.mac']}, mqttPoll);
 	setTimeout(mode, 1500);
@@ -89,7 +89,7 @@ window.onload = function() {
 <div class="grid">
 	<section class="card c6"><h3><span id="mq-title">Клиент MQTT</span> <span class="r" id="ts-note" style="color:var(--mute);font-weight:600"></span></h3><div id="m1"></div></section>
 	<section class="card c6"><h3>«Народный мониторинг»</h3><div id="m2"></div>
-		<div class="row" style="gap:14px;margin-top:12px;align-items:flex-start"><button class="btn2" onclick="testNarmon()" style="white-space:nowrap">Отправить показания сейчас<span class="hint" tabindex="0" data-tip="Отладочный режим: отправка ставится в очередь, выполняется основным потоком в течение примерно 10 секунд, сам пакет и ответ сервера пишутся в журнал. Интервал не проверяется, жать кнопку можно подряд. Но помните: если с прошлой отправки не прошло 5 минут, сервер ответит ошибкой INTERVAL, а за систематические злоупотребления блокирует прибор. Штатная отправка после нажатия отсчитывается заново, от момента проверки.">6</span></button>
+		<div class="row" style="gap:14px;margin-top:12px;align-items:flex-start"><button class="btn2" onclick="testNarmon()" style="white-space:nowrap">Отправить показания сейчас<span class="hint" tabindex="0" data-tip="Отладочный режим: отправка ставится в очередь, выполняется основным потоком в течение примерно 10 секунд, сам пакет и ответ сервера пишутся в журнал. Интервал не проверяется, жать кнопку можно подряд. Но помните: если с прошлой отправки не прошло 5 минут, сервер ответит ошибкой INTERVAL, а за систематические злоупотребления блокирует прибор. Штатная отправка после нажатия отсчитывается заново, от момента проверки.">i</span></button>
 			<span class="fnote" style="margin:0">Отладка: отправка встаёт в очередь на ≈10 с, пакет и ответ пишутся в журнал. Если с прошлой отправки не прошло 5 минут, сервер ответит INTERVAL; за систематическое злоупотребление прибор блокируется.</span></div></section>
 	<section class="card c12"><h3>Справка по протоколу «Народного мониторинга» <span class="r"><a style="cursor:pointer;font-weight:800;color:var(--acc)" onclick="toggleProto(this)">показать ▾</a></span></h3>
 		<div id="proto-b" class="proto" hidden>

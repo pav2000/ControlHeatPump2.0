@@ -216,7 +216,7 @@ void HeatPump::set_Warning(ErrorCatalog::Code code, const char *device, uint16_t
 		} else journal.printf("%s %s\n", timeText, line);
 		return;
 	}
-	journal.jprintf_time("%s\n", line);
+	journal.catalogEvent(line);
 	if(code != ErrorCatalog::Code::kNOTIFY) {
 		// Текст уведомления собирается в уже отработавший буфер журнальной строки: третий
 		// такой же буфер на стеке (160 байт) утяжелял ровно тот путь, что исполняется в
@@ -259,7 +259,7 @@ static void logCatalogEvent(EventLevel level, ErrorCatalog::Code code, const cha
 	if(!entry) return;
 	char line[sizeof(ActiveError::text)];
 	formatEvent(line, sizeof(line), level, entry, device, detail, meaning);
-	journal.jprintf_time("%s\n", line);
+	journal.catalogEvent(line);
 }
 
 // Снимает команду работающего компрессора и отмечает время принятой команды останова.
@@ -358,7 +358,7 @@ void HeatPump::record_StoppedError(ErrorCatalog::Code code, const char *device,
 	}
 	irqRestore(irq);
 	if(duplicate) return;
-	journal.jprintf_time("%s%s\n", note, first ? "" : " (вторичная авария)");
+	journal.catalogEvent(note, first ? "" : " (вторичная авария)");
 	if(!first) return;
 	if(xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) save_DumpJournal(true);
 	WarningRecord key{ErrorNumber(code), detail.value, 0, {}, detail};

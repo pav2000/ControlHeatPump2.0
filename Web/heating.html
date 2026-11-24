@@ -67,7 +67,7 @@ function cardTarget(P) {
 		'<input type="checkbox" class="sw oh" id="mode_sw" onchange="modeSw(this)"></div>';
 	h += f.map(stField).join('');
 	h += '<div class="nowline">Текущая цель в доме <b id="trg-' + q + '">–</b> <span id="trgp-' + q + '"></span></div>';
-	h += '<div class="more"><div><b>ПИД · тонкая настройка</b><span class="hint" tabindex="0" data-tip="Для ПИДа производится стабилизация заданной температуры подачи.">1</span><small id="pids-' + q + '"></small></div><a onclick="pidToggle(\'' + q + '\', this)">показать ▾</a></div>';
+	h += '<div class="more"><div><b>ПИД · тонкая настройка</b><span class="hint" tabindex="0" data-tip="Для ПИДа производится стабилизация заданной температуры подачи.">i</span><small id="pids-' + q + '"></small></div><a onclick="pidToggle(\'' + q + '\', this)">показать ▾</a></div>';
 	h += '<div id="pidf-' + q + '" hidden>' + pf.map(stField).join('') + '</div></div>';
 	return h;
 }

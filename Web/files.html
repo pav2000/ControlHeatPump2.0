@@ -61,7 +61,7 @@ function yearList(kind, key) {
 		fixYear(kind);
 	});
 }
-function hintTip(n, t) { return '<span class="hint" tabindex="0" data-tip="' + stEsc(t) + '">' + n + '</span>'; }
+function hintTip(t) { return '<span class="hint" tabindex="0" data-tip="' + stEsc(t) + '">i</span>'; }
 
 // ---- восстановление настроек ----
 function pickSetup(inp) {
@@ -186,9 +186,9 @@ window.onload = function() {
 	$('dl1').innerHTML = dlRow('Документация', 'manual.pdf', 'manual.pdf') + dlRow('Текущее состояние ТН', 'state.txt', 'state.txt') + dlRow('Настройки ТН в текстовом виде', 'settings.txt', 'settings.txt') +
 		dlRow('Настройки ТН в бинарном виде', 'settings.bin', 'settings.bin') + dlRow('Вся память EEPROM', 'settings_eeprom.bin', 'settings_eeprom.bin');
 	$('dl2').innerHTML = dlRow('Журнал работы ТН', 'journal.txt', 'journal.txt') + dlRow('Графики из памяти контроллера', 'chart.csv', 'chart.csv') +
-		yearRow('Статистика (файлы по годам)', 'пишется всегда, не чаще раза в сутки', 'stats', hintTip(3, 'Статистика пишется всегда, запись происходит не чаще одного раза в день.')) +
-		yearRow('История (файлы по годам)', 'метка с секундами; нужна запись истории на SD-карту — Графики → История', 'hist', hintTip(4, 'Для записи истории необходимо на странице «Графики → История» включить «Писать историю раз в минуту». Чаще, каждые 10 секунд вокруг пуска и останова компрессора, пишет «Детализация ВКЛ/ВЫКЛ компрессора». Первая строка файла (и строки с «#» внутри) описывает столбцы; скачанный файл открывается в Excel, строки описания можно удалить.')) +
-		yearRow('История прежнего формата (файлы по годам)', 'раз в минуту, метка до минуты, 16 столбцов; на графике показываются', 'histold', hintTip(5, 'Файлы hist_ГГГГ.csv, записанные прошивкой до перехода на метку с секундами. Новые записи идут в файлы «История (файлы по годам)».'));
+		yearRow('Статистика (файлы по годам)', 'пишется всегда, не чаще раза в сутки', 'stats', hintTip('Статистика пишется всегда, запись происходит не чаще одного раза в день.')) +
+		yearRow('История (файлы по годам)', 'метка с секундами; нужна запись истории на SD-карту — Графики → История', 'hist', hintTip('Для записи истории необходимо на странице «Графики → История» включить «Писать историю раз в минуту». Чаще, каждые 10 секунд вокруг пуска и останова компрессора, пишет «Детализация ВКЛ/ВЫКЛ компрессора». Первая строка файла (и строки с «#» внутри) описывает столбцы; скачанный файл открывается в Excel, строки описания можно удалить.')) +
+		yearRow('История прежнего формата (файлы по годам)', 'раз в минуту, метка до минуты, 16 столбцов; на графике показываются', 'histold', hintTip('Файлы hist_ГГГГ.csv, записанные прошивкой до перехода на метку с секундами. Новые записи идут в файлы «История (файлы по годам)».'));
 	yearList('stats', 'sys.list_stats');
 	yearList('hist', 'sys.list_hist');
 	yearList('histold', 'sys.list_hist_old');
@@ -207,12 +207,12 @@ window.onload = function() {
 <div class="content">
 <div class="grid">
 	<section class="card c6"><h3>Настройки и состояние</h3><div id="dl1"></div>
-		<div class="dl" style="display:block"><div class="l"><b>Восстановить настройки из бинарного файла</b><span class="hint" tabindex="0" data-tip="После восстановления нажмите «Записать в EEPROM» до перезагрузки.">1</span><small id="rf-sub">настройки и расписание загружаются в ОЗУ, профили записываются в EEPROM</small></div>
+		<div class="dl" style="display:block"><div class="l"><b>Восстановить настройки из бинарного файла</b><span class="hint" tabindex="0" data-tip="После восстановления нажмите «Записать в EEPROM» до перезагрузки.">i</span><small id="rf-sub">настройки и расписание загружаются в ОЗУ, профили записываются в EEPROM</small></div>
 			<div class="rfile"><span class="nm" id="rf-name">settings.bin — файл не выбран</span><input type="file" id="Setup" hidden onchange="pickSetup(this)"><button class="btn2" onclick="$('Setup').click()">Выбрать…</button><button class="btn2 bad" id="btn-restore" onclick="restore()">Восстановить…</button></div></div></section>
 	<section class="card c6"><h3>Веб-интерфейс контроллера</h3>
 		<div class="dl"><div class="l"><b>Откуда контроллер берёт страницы</b><small>переключение действует до перезагрузки; сохраняется записью в EEPROM</small></div><span class="seg2" id="src"><a onclick="setSource(1)">SPI Flash</a><a onclick="setSource(0)">SD-карта</a></span></div>
 		<div class="drop" id="drop"><b>Перетащите файлы сюда</b> или выберите<div id="drop-sel" style="font-size:12px;margin-top:4px"></div><input type="file" id="Files" multiple hidden onchange="addFiles(this.files)"></div>
-		<div class="row" style="gap:10px;flex-wrap:wrap"><button class="btn2 p" id="btn-spi" onclick="sendWeb('SPI_FLASH')">Записать в SPI Flash</button><button class="btn2" id="btn-sd" onclick="sendWeb('SD_CARD')">Записать на SD-карту</button><span class="hint" tabindex="0" data-tip="Если запись в SPI Flash, то будут перезаписаны все данные (добавление файлов невозможно). На SD-карту файлы сохраняются с перезаписью существующих, остальные данные не изменяются.">2</span></div>
+		<div class="row" style="gap:10px;flex-wrap:wrap"><button class="btn2 p" id="btn-spi" onclick="sendWeb('SPI_FLASH')">Записать в SPI Flash</button><button class="btn2" id="btn-sd" onclick="sendWeb('SD_CARD')">Записать на SD-карту</button><span class="hint" tabindex="0" data-tip="Если запись в SPI Flash, то будут перезаписаны все данные (добавление файлов невозможно). На SD-карту файлы сохраняются с перезаписью существующих, остальные данные не изменяются.">i</span></div>
 		<div class="up idle" id="up"><div class="line"><span id="up-ic"></span><span id="up-tx">Выберите файлы и нажмите кнопку записи.</span></div><div class="pb" id="up-pb" hidden><i id="up-bar"></i></div></div>
 		<div class="fnote"><b>2.</b> В SPI Flash перезаписываются все данные, добавлять файлы по одному нельзя. На SD-карте файлы заменяются, остальное остаётся. Если веб не открывается, переключить источник можно запросом: <span class="mono">IP/api/set?ohp.wspif=1</span> — SPI Flash, <span class="mono">ohp.wspif=0</span> — SD.</div></section>
 	<section class="card c6"><h3>Работа ТН</h3><div id="dl2"></div></section>

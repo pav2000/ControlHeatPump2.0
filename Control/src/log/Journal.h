@@ -49,6 +49,8 @@
 
 #include "../net/Network.h"   // sendPacketRTOS и прочий транспорт
 
+struct ApiOut;
+
 class Journal :public Print
 {
 public:
@@ -64,6 +66,8 @@ public:
   void jprintf_date(const char *format, ...) MINI_PRINTF_FMT(2, 3);			// +DateTime, далее печать в консоль и журнал
   // Пишет событие с отметкой времени и завершает строку.
   void event(Stamp stamp, const char *source, const char *action, const char *format, ...) MINI_PRINTF_FMT(5, 6);
+  void catalogEvent(const char *line, const char *suffix = ""); // Готовая строка $ERROR или $WARN без времени.
+  bool recentEvents(ApiOut &out) const;                  // Снимок событий от старых к новым, false если журнал занят.
   int32_t send_Data(uint8_t thread);                     // отдать журнал в сеть клиенту  Возвращает число записанных байт
   int32_t available(void);                               // Возвращает размер журнала
   // Возвращает состояние носителя и последней операции журнала.
@@ -77,7 +81,7 @@ private:
   int32_t bufferHead, bufferTail;                        // Начало и конец
   uint8_t full;                                           // признак полного буфера
   void _write(char *dataPtr);                            // Записать строку в журнал
-  // Замки журнала. L1 (xJournalSemaphore) защищает pbuf, кольцо и учёт потерь.
+  // Замки журнала. L1 защищает pbuf, кольцо записи, последние события и учёт потерь.
   // L2 (xJournalWriteSemaphore) - писатель: Drain, FlushAll и Format на время записи в EEPROM.
   // Порядок: xWebThread -> L2 -> L1 | xI2C; L1 берётся последним, L2 продюсеры не берут никогда.
   bool _lock(void);                                      // взять L1; при отказе строка засчитана в потери
@@ -86,6 +90,7 @@ private:
   uint16_t _take(uint8_t *chunk, bool reportLoss);        // Под L1 забрать порцию данных из кольца
 
   void _post(char *line);                                // Положить строку в кольцо (или записать сразу)
+  void _postEvent();                                     // Опубликовать сформированную строку события под L1.
 public:
   void Drain(void);                                      // Выгрузить пачку из кольца в EEPROM, вызывается из vServiceHP
   void FlushAll(void);                                   // Выгрузить кольцо целиком - перед чтением журнала
@@ -94,6 +99,10 @@ private:
   JournalRing   ring;
   uint8_t       ringbuf[JOURNAL_RING_SIZE];
   uint16_t      lostReported;                            // сколько потерь уже показано в журнале
+  static constexpr uint8_t RecentCount = 11;
+  static constexpr uint16_t RecentLineSize = 200;        // Отметка времени, текст и завершающий ноль.
+  char recent[RecentCount][RecentLineSize];              // Последние события с момента запуска.
+  uint8_t recentNext = 0, recentSize = 0;                // Следующая ячейка и число занятых ячеек.
    // Переменные
   char pbuf[PRINTF_BUF+2];                                // Буфер для одной строки + маркеры
     void writeTAIL();                                     // Записать символ "конец" значение bufferTail должно быть установлено

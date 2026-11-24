@@ -29,16 +29,36 @@
 .hi em{font-style:normal;font-size:11px;font-weight:800;color:#a6b0bc;letter-spacing:.3px}
 .hi.on .b{background:var(--tbad);color:var(--bad);box-shadow:0 0 0 1px #f3c4c4}.hi.on em{color:var(--bad)}
 .sw-row{display:flex;justify-content:space-between;align-items:center;color:var(--ink);font-weight:600;margin-top:6px;padding-top:8px;border-top:1px solid var(--line)}
-.loops{display:grid;gap:8px;margin-bottom:12px}
-.loop{border-radius:12px;padding:7px 10px;display:flex;align-items:baseline;gap:8px;white-space:nowrap;font-size:14px}
+.hp-card h3{flex-wrap:wrap}
+.hp-card h3 .hp-generator{display:flex;align-items:center;gap:6px;color:var(--mute);font-size:12px}
+.hp-mode{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;color:var(--mute);font-size:13px}
+.hp-mode select{min-width:0}
+.hp-card .tiles{grid-template-columns:repeat(3,minmax(0,1fr));gap:5px}
+.hp-card .tile{padding:4px 8px;line-height:1.2}
+.hp-card .tile b{font-size:17px}
+.loops{display:grid;gap:4px;margin-top:6px}
+.loop{display:grid;grid-template-columns:75px minmax(0,1fr) auto auto;align-items:baseline;gap:6px;padding:4px 8px;border-radius:8px;font-size:13px;line-height:1.35}
 .loop.g{background:var(--tb)}.loop.h{background:var(--tw)}
-.loop .t{width:72px;font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.3px}
+.loop .t{font-size:11px;font-weight:800;text-transform:uppercase}
 .loop.g .t{color:var(--cold)}.loop.h .t{color:var(--heat)}
-.loop .v{color:var(--mute)}.loop .v b{color:var(--ink);font-size:15px}
-.loop .d{font-weight:800;font-size:15px;margin-left:auto}
-.loop .p{font-weight:800;font-size:14px;color:var(--mute)}.loop .p.on{color:var(--ok)}
-.ctl-mode{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;color:var(--mute)}
-.card .ctl-mode select{min-width:0}
+.loop .values{display:flex;flex-wrap:wrap;gap:0 6px}
+.loop .v{color:var(--mute);white-space:nowrap}.loop .v b{color:var(--ink);font-size:14px}
+.loop .d,.loop .p{font-weight:800;white-space:nowrap}
+.loop .p{color:var(--mute);font-size:12px}.loop .p.on{color:var(--ok)}
+@media(max-width:420px){
+	.loop{grid-template-columns:64px minmax(0,1fr) auto auto;gap:4px;padding:4px 6px;font-size:12px}
+	.loop .t{font-size:10px}.loop .values{column-gap:4px}.loop .v b{font-size:13px}.loop .p{font-size:11px}
+}
+.hp-status{margin-top:6px}
+.hp-status .tag{font-size:14px;overflow-wrap:anywhere}
+.hp-card #warning{margin-top:4px;font-size:15px;line-height:1.35;overflow-wrap:anywhere}
+.events-card{min-width:0}
+#events .ev{display:grid;grid-template-columns:8ch 16px minmax(0,1fr);align-items:center;gap:4px;line-height:18px}
+#events time{width:auto;white-space:nowrap}
+#events .ev-icon{width:15px;height:15px;justify-self:center;color:var(--mute)}
+#events .ev-icon.ERROR{color:var(--bad)}
+#events .ev-icon.WARN{color:var(--warnfg)}
+#events .ev-text{grid-column:3;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ev-empty{color:var(--mute);font-size:13px;padding:8px 0}
 .lnk{font-weight:800;text-decoration:none}
 .card#wx{padding-top:8px;padding-bottom:8px}#wx h3{margin-bottom:4px}
@@ -61,7 +81,7 @@ html.m .wxd{flex:none;width:64px}
 urlupdate = 4000;
 var CH_COLORS = {tout: '#2f7fd1', tevaing: '#72b4ee', tconoutg: '#f2762e', power: '#8a6fd1', cop: '#0f8b8d', tin: '#0f8b8d'};
 var chart = null, spark = null, chData = {}, chRange = 0, homeTrg = NaN, chStep = 30, chTimer = null;
-var curTime = '', ev = [], prev = {};
+var errorCode, errorText = '';
 var warningCode = 0, warningText = ''; // Раздельный снимок предупреждения для согласованного показа номера и текста.
 
 
@@ -70,7 +90,7 @@ var IDX_KEYS = {'temp.TIN.value': 'get_Temp(TIN)', 'temp.TOUT.value': 'get_Temp(
 	'temp.TCONING.value': 'get_Temp(TCONING)', 'temp.TCONOUTG.value': 'get_Temp(TCONOUTG)', 'temp.TBOILER.value': 'get_Temp(TBOILER)',
 	'state.trg_home': 'get_TrgT(1)', 'boiler.trg': 'get_Boiler(TRG)', 'fc.cfc': 'get_pFC(cFC)', 'state.overheat': 'get_OverHeat', 'eev.pospp': 'get_pEEV(POSpp)',
 	'state.power_220': 'get_Power220', 'state.power_out': 'get_PowerCO', 'state.cop': 'get_fullCOP', 'relay.RBOILER.on': 'get_Relay(RBOILER)',
-	'relay.RPUMPI.on': 'get_Relay(RPUMPI)', 'relay.RPUMPO.on': 'get_Relay(RPUMPO)', 'state.errcode': 'get_errcode', 'state.error': 'get_error', 'state.warning': 'get_warning', 'state.warning_text': 'get_warning_text', 'state.time': 'get_status',
+	'relay.RPUMPI.on': 'get_Relay(RPUMPI)', 'relay.RPUMPO.on': 'get_Relay(RPUMPO)', 'state.errcode': 'get_errcode', 'state.error': 'get_error', 'state.warning': 'get_warning', 'state.warning_text': 'get_warning_text',
 	'state.work': 'get_WORK', 'state.mode': 'get_MODE'};
 function idxPoll(d) {
 	for(var k in d) {
@@ -83,13 +103,12 @@ function idxPoll(d) {
 		if(IDX_KEYS[k]) window.onPageValue(IDX_KEYS[k], v);
 	}
 }
-// режим дома: список (из meta, недоступные пункты погашены) и тумблер сборки «только отопление»
+// Список режима дома доступен в сборке с охлаждением, недоступные пункты отключены.
 var modeNow = 0;
 function modeShow(v) {
-	var s = $('get_modehp'), sw = $('get_modehp_sw');
+	var s = $('get_modehp');
 	modeNow = v;
 	if(s && s.options.length) s.selectedIndex = v;
-	if(sw) sw.checked = v != 0;
 }
 function setKey(key, val, ok) {
 	var p = {};
@@ -99,7 +118,6 @@ function setKey(key, val, ok) {
 		else if(ok) ok(D[key]);
 	});
 }
-function toggleMode(sw) { setKey('state.mode_house', sw.checked ? 1 : 0); }
 // ---- значения, пришедшие от контроллера (вызывается из idxPoll) ----
 var ing = NaN, outg = NaN, coning = NaN, conoutg = NaN, boilerT = NaN, boilerTrg = NaN;
 window.onPageValue = function(n, v) {
@@ -109,7 +127,7 @@ window.onPageValue = function(n, v) {
 	case 'get_TrgT(1)':     put('v-trg', num(v, 1)); var nt = parseFloat(v); if(nt !== homeTrg && chData.at) { homeTrg = nt; chartDraw(); } else homeTrg = nt; break;		// перерисовка только при смене цели: иначе график и его подсказка сбрасываются каждый опрос
 	case 'get_Temp(TBOILER)': boilerT = parseFloat(v); drawRing(); break;
 	case 'get_Boiler(TRG)': boilerTrg = parseFloat(v); put('v-btrg', btrgTxt(boilerTrg)); drawRing(); break;
-	case 'get_pFC(cFC)':    put('t-fc', num(v, 0)); fcEvent(parseFloat(v)); break;
+	case 'get_pFC(cFC)':    put('t-fc', num(v, 0)); break;
 	case 'get_OverHeat':    put('t-oh', num(v, 1)); break;
 	case 'get_pEEV(POSpp)': put('t-eev', parseInt(v) >= 0 ? parseInt(v) : '–'); break;
 	case 'get_Power220':    put('t-p220', num(v, 1)); break;
@@ -122,16 +140,15 @@ window.onPageValue = function(n, v) {
 	case 'get_Relay(RBOILER)': hot.ten = v == 1; heatIcons(); break;
 	case 'get_Relay(RPUMPI)':  pump('c-pi', v); break;
 	case 'get_Relay(RPUMPO)':  pump('c-po', v); break;
-	case 'get_errcode':     errState(parseInt(v)); break;
-	case 'get_error':       prev.errtext = v; showErr(); break;
+	case 'get_errcode':     errorCode = parseInt(v); showErr(); break;
+	case 'get_error':       errorText = v; showErr(); break;
 	case 'get_warning': warningCode = parseInt(v) || 0; showWarning(); break;
 	case 'get_warning_text': warningText = v || ''; showWarning(); break;
 	case 'get_Heat(ADT)':   night.t = parseFloat(v); showNight(); break;
 	case 'get_Heat(ADH)':   night.h = parseInt(v); showNight(); break;
 	case 'get_Heat(ADEH)':  night.e = parseInt(v); showNight(); break;
-	case 'get_status':      curTime = v.split('|')[0]; break;
-	case 'get_WORK':        hot.work = v == 'ON'; heatIcons(); track('work', v, v == 'ON' ? 'Пуск ТН' : 'Останов ТН'); break;
-	case 'get_MODE':        hot.mode = v; heatIcons(); track('mode', v, 'Режим: ' + v.toLowerCase()); break;
+	case 'get_WORK':        hot.work = v == 'ON'; heatIcons(); break;
+	case 'get_MODE':        hot.mode = v; heatIcons(); break;
 	}
 };
 // Обновляет строку последнего предупреждения из кода и операторского текста; ничего не возвращает.
@@ -161,40 +178,40 @@ function showNight() {
 }
 
 // ---- ошибки ----
-function errState(code) {
-	track('errcode', code, code ? 'Ошибка ' + code : 'Ошибка устранена');
-	showErr();
-}
 function showErr() {
 	var e = $('err');
-	if(!e || prev.errcode === undefined) return;
-	if(prev.errcode) { e.className = 'tag bad'; e.innerHTML = '⚠ ' + prev.errcode + ' ' + esc(prev.errtext || 'Ошибка'); }
+	if(!e || errorCode === undefined) return;
+	if(errorCode) { e.className = 'tag bad'; e.innerHTML = '⚠ ' + errorCode + ' ' + esc(errorText || 'Ошибка'); }
 	else { e.className = 'tag ok'; e.innerHTML = '✓ Ошибок нет'; }
 }
 
-// ---- события: журнал с контроллера не берём (он весит ~100 КБ), копим то, что видит страница ----
-try { ev = JSON.parse(sessionStorage.getItem('ev') || '[]'); } catch(e) { ev = []; }
-function addEvent(text) {
-	ev.unshift([curTime || new Date().toTimeString().substr(0, 5), text]);
-	ev = ev.slice(0, 6);
-	try { sessionStorage.setItem('ev', JSON.stringify(ev)); } catch(e) {}
-	showEvents();
+// Контроллер отдаёт записи от старых к новым, уже с временем публикации.
+var eventRequest = false, eventHtml = '';
+var eventIcons = {
+	ERROR: ['Авария', '<circle cx="12" cy="12" r="9"/><path d="m9 9 6 6m0-6-6 6"/>'],
+	WARN: ['Предупреждение', '<path d="M10.3 4.9a2 2 0 0 1 3.4 0l7.4 12.8a2 2 0 0 1-1.7 3H4.6a2 2 0 0 1-1.7-3z"/><path d="M12 10v4m0 3h.01"/>'],
+	EVENT: ['Событие', '<circle cx="12" cy="12" r="9"/><path d="M12 11v5m0-8h.01"/>']
+};
+function showEvents(items) {
+	var h = items.map(function(line) {
+		var m = /^(?:\d{2}\.\d{2}\.\d{4} )?(\d{2}:\d{2}:\d{2}) (?:\$(ERROR|WARN|EVENT) )?(.+)$/.exec(line);
+		if(!m) return '';
+		var icon = eventIcons[m[2]];
+		var svg = icon ? '<svg class="ev-icon ' + m[2] + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"' +
+			' stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="' + icon[0] + '">' + icon[1] + '</svg>' : '';
+		// Сохраняем исходную строку контроллера для поиска записи в журнале.
+		return '<div class="ev" title="' + esc(line) + '"><time>' + esc(m[1]) + '</time>' + svg + '<span class="ev-text">' + esc(m[3]) + '</span></div>';
+	}).join('') || '<div class="ev-empty">Событий пока нет</div>';
+	if(h !== eventHtml) { put('events', h); eventHtml = h; }
 }
-// событие - это изменение значения; первое полученное значение событием не считается
-function track(key, val, text) {
-	if((key in prev) && prev[key] !== val) addEvent(text);
-	prev[key] = val;
-}
-var lastFc = null;
-function fcEvent(f) {
-	if(isNaN(f)) return;
-	if(lastFc === null) { lastFc = f; return; }
-	if(Math.abs(f - lastFc) >= 5) { addEvent('Компрессор: частота ' + Math.round(lastFc) + ' → ' + Math.round(f) + ' Гц'); lastFc = f; }
-}
-function showEvents() {
-	var h = '';
-	for(var i = 0; i < ev.length && i < 6; i++) h += '<div class="ev"><time>' + esc(ev[i][0]) + '</time><span>' + esc(ev[i][1]) + '</span></div>';
-	put('events', h || '<div class="ev-empty">Изменений пока не было</div>');
+function loadEvents() {
+	if(document.hidden || eventRequest) return;
+	eventRequest = true;
+	api.call('events', '', function(data, err) {
+		eventRequest = false;
+		if(data && Array.isArray(data.items)) showEvents(data.items);
+		else if(!eventHtml) $('events').textContent = err && err.code === 400 ? 'Для списка событий обновите прошивку' : 'Не удалось загрузить события';
+	});
 }
 
 // ---- цель дома: кнопки меняют скрытое поле get_trgt-1 и отправляют ключ state.trg_home ----
@@ -309,7 +326,8 @@ window.onload = function() {
 	api.init(function(v) {
 		var caps = (v && v.caps) || {};
 		if(!caps.cool) document.body.classList.add('onlyheat');
-		api.metaOf('state', function(m) {
+		$('events-log').hidden = !v || v.role !== 'admin';
+		if(caps.cool) api.metaOf('state', function(m) {
 			var s = $('get_modehp'), o = m && m.m && m.m['state.mode_house'];
 			if(s && o) {
 				s.innerHTML = o.o.map(function(t, i) { return '<option' + ((o.na || []).indexOf(i) >= 0 ? ' disabled' : '') + '>' + stEsc(t) + '</option>'; }).join('');
@@ -321,10 +339,13 @@ window.onload = function() {
 			night.t = D['heat.adt']; night.h = D['heat.adh']; night.e = D['heat.adeh']; showNight();
 		});
 		api.get({k: ['relay.RBOILER.present']}, function(D) { hot.hasTen = D['relay.RBOILER.present'] === true; heatIcons(); });
-		var keys = Object.keys(IDX_KEYS).concat(['boiler.on', 'boiler.urg', 'ohp.bpow', 'state.mode_house']);
+		var keys = Object.keys(IDX_KEYS).concat(['boiler.on', 'boiler.urg', 'ohp.bpow']);
+		if(caps.cool) keys.push('state.mode_house');
 		api.poll({k: keys}, idxPoll);
+		loadEvents();
+		setInterval(loadEvents, 12000);
+		document.addEventListener('visibilitychange', loadEvents);
 	});
-	showEvents();
 	chartInit();
 	wxRender($('wx'));
 	setInterval(function() { wxRender($('wx')); }, 30 * 60 * 1000);
@@ -369,11 +390,11 @@ window.onload = function() {
 		<div class="sw-row"><span>Срочный нагрев</span><input type="checkbox" class="sw sm" id="get_boiler-urg" onchange="setKey('boiler.urg', this.checked ? 1 : 0)"></div>
 	</section>
 
-	<section class="card c4">
-		<h3>Тепловой насос</h3>
-		<div class="ctl-mode"><span><span class="noh">Режим работы</span><span class="oh">Отопление</span></span>
-			<select id="get_modehp" onchange="setKey('state.mode_house', this.selectedIndex)"></select><input type="checkbox" class="sw oh" id="get_modehp_sw" onchange="toggleMode(this)"></div>
-		<div class="ctl-mode gen"><span>Работа от генератора<span class="hint" data-tip="Работа ТН от резервного источника питания: ограничение потребляемой мощности, электрокотёл, ТЭН бойлера и реле по суткам выключены. Флаг не хранится в EEPROM и сбрасывается при сбросе контроллера.">i</span></span><input type="checkbox" class="sw" id="get_ohp-bpow" onchange="setKey('ohp.bpow', this.checked ? 1 : 0)"></div>
+	<section class="card c4 hp-card">
+		<h3>Тепловой насос <span class="hp-generator r"><label for="get_ohp-bpow">Работа от генератора</label><span class="hint" data-tip="Работа ТН от резервного источника питания: ограничение потребляемой мощности, электрокотёл, ТЭН бойлера и реле по суткам выключены. Флаг не хранится в EEPROM и сбрасывается при сбросе контроллера.">i</span><input type="checkbox" class="sw sm" id="get_ohp-bpow" onchange="setKey('ohp.bpow', this.checked ? 1 : 0)"></span></h3>
+		<div class="hp-mode cool"><label for="get_modehp">Режим работы</label>
+			<select id="get_modehp" onchange="setKey('state.mode_house', this.selectedIndex)"></select>
+		</div>
 		<div class="tiles">
 			<div class="tile"><i>Компрессор</i><b id="t-fc">–</b><u>Гц</u></div>
 			<div class="tile"><i>Перегрев</i><b id="t-oh">–</b><u>K</u></div>
@@ -382,7 +403,11 @@ window.onload = function() {
 			<div class="tile"><i>Тепло</i><b id="t-pco">–</b><u>кВт</u></div>
 			<div class="tile acc"><i>COP</i><b id="t-cop">–</b></div>
 		</div>
-		<div class="row" style="margin-top:12px"><span class="tag ok" id="err">…</span></div>
+		<div class="loops" role="group" aria-label="Контуры">
+			<div class="loop g"><span class="t">Геоконтур</span><span class="values"><span class="v">из <b id="c-ing">–</b></span><span class="v">в <b id="c-outg">–</b></span></span><span class="d" id="c-dg"></span><span class="p" id="c-pi"></span></div>
+			<div class="loop h"><span class="t">Отопление</span><span class="values"><span class="v">под. <b id="c-coutg">–</b></span><span class="v">обр. <b id="c-coning">–</b></span></span><span class="d" id="c-dc"></span><span class="p" id="c-po"></span></div>
+		</div>
+		<div class="row hp-status"><span class="tag ok" id="err">…</span></div>
 		<div id="warning" hidden></div>
 	</section>
 
@@ -393,14 +418,9 @@ window.onload = function() {
 		<div class="row" style="justify-content:flex-end;margin-top:4px"><a href="charts.html" class="lnk">Все графики →</a></div>
 	</section>
 
-	<section class="card c4">
-		<h3>Контуры</h3>
-		<div class="loops">
-			<div class="loop g"><span class="t">Геоконтур</span><span class="v">из <b id="c-ing">–</b></span><span class="v">в <b id="c-outg">–</b></span><span class="d" id="c-dg"></span><span class="p" id="c-pi"></span></div>
-			<div class="loop h"><span class="t">Отопление</span><span class="v">под. <b id="c-coutg">–</b></span><span class="v">обр. <b id="c-coning">–</b></span><span class="d" id="c-dc"></span><span class="p" id="c-po"></span></div>
-		</div>
-		<h3 style="margin-top:6px">События <span class="r" style="color:var(--mute);font-weight:600">с открытия страницы</span></h3>
-		<div id="events"></div>
+	<section class="card c4 events-card">
+		<h3>События <a href="log.html" class="r lnk" id="events-log" hidden>Журнал →</a></h3>
+		<div id="events"><div class="ev-empty">Загрузка событий…</div></div>
 	</section>
 
 	<section class="card c12" id="wx" hidden></section>

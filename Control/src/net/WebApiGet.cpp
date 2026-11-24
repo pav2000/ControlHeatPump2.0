@@ -1688,6 +1688,10 @@ uint8_t api_dispatch(uint8_t thread)
 	else if(vl == 4 && !strncmp(path, "meta", 4)) r = api_meta(&c, q, &o);
 	else if(vl == 5 && !strncmp(path, "chart", 5)) r = api_chart(q, &o);
 	else if(vl == 6 && !strncmp(path, "errors", 6)) r = api_errors(q, &o);
+	else if(vl == 6 && !strncmp(path, "events", 6)) {
+		if(!journal.recentEvents(o)) return api_reply_small(thread, "503 Service Unavailable", "{\"e\":\"busy\"}");
+		r = o.over ? -2 : 0;
+	}
 	else if(vl == 3 && !strncmp(path, "ver", 3)) { api_ver(&c, &o); r = o.over ? -2 : 0; }
 
 	if(r == -1) return api_reply_small(thread, "400 Bad Request", "{\"e\":\"bad_request\"}");

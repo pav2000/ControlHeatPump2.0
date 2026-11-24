@@ -121,19 +121,26 @@ window.addEventListener('resize', function() {
 	wxTimer = setTimeout(function() { if(wxLast[0].clientWidth) wxDraw(wxLast[0], wxLast[1]); }, 150);
 });
 function wxChart(d, W) {
-	var n = d.time.length, H = 92, pl = 4, pr = 4, top = 20, bot = 58;
+	var n = d.time.length, H = 92, pl = 4, pr = 4;
+	// Оставляем место для температур над и под точками и одной строки дней внизу.
+	var top = 16, bot = H - 26;
 	var hi = Math.max.apply(null, d.temperature_2m_max), lo = Math.min.apply(null, d.temperature_2m_min);
 	if(hi - lo < 4) { hi += 2; lo -= 2; }
 	var X = function(i) { return pl + (i + .5) * (W - pl - pr) / n; }, Y = function(v) { return top + (hi - v) * (bot - top) / (hi - lo); };
 	var line = function(a, cls) { return '<polyline class="' + cls + '" points="' + a.map(function(v, i) { return X(i).toFixed(1) + ',' + Y(v).toFixed(1); }).join(' ') + '"/>'; };
 	var h = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="' + W + '" height="' + H + '" role="img" aria-label="Температура днём и ночью">';
-	if(lo < 0 && hi > 0) h += '<rect class="neg" x="' + pl + '" y="' + Y(0).toFixed(1) + '" width="' + (W - pl - pr) + '" height="' + (bot - Y(0) + 8).toFixed(1) + '"/><line class="zero" x1="' + pl + '" x2="' + (W - pr) + '" y1="' + Y(0).toFixed(1) + '" y2="' + Y(0).toFixed(1) + '"/>';
+	if(lo < 0) {
+		// На морозной шкале фон доходит до верхнего края, включая поле над точками.
+		var shadeTop = hi <= 0 ? 0 : Y(0);
+		h += '<rect class="neg" x="' + pl + '" y="' + shadeTop.toFixed(1) + '" width="' + (W - pl - pr) + '" height="' + (bot - shadeTop + 8).toFixed(1) + '"/>';
+		if(hi > 0) h += '<line class="zero" x1="' + pl + '" x2="' + (W - pr) + '" y1="' + shadeTop.toFixed(1) + '" y2="' + shadeTop.toFixed(1) + '"/>';
+	}
 	h += line(d.temperature_2m_max, 'lh') + line(d.temperature_2m_min, 'll');
 	for(var i = 0; i < n; i++) {
 		var a = d.temperature_2m_max[i], b = d.temperature_2m_min[i], x = X(i).toFixed(1);
 		h += '<circle class="dh" cx="' + x + '" cy="' + Y(a).toFixed(1) + '" r="2.5"/><circle class="dl" cx="' + x + '" cy="' + Y(b).toFixed(1) + '" r="2.5"/>' +
-			'<text class="th" x="' + x + '" y="' + (Y(a) - 6).toFixed(1) + '">' + wxTemp(a) + '</text><text class="tl" x="' + x + '" y="' + (Y(b) + 12).toFixed(1) + '">' + wxTemp(b) + '</text>' +
-			'<text class="td" x="' + x + '" y="' + (H - 3) + '">' + wxDay(d.time[i], i).w + '</text>';
+			'<text class="th" x="' + x + '" y="' + (Y(a) - 5).toFixed(1) + '">' + wxTemp(a) + '</text><text class="tl" x="' + x + '" y="' + (Y(b) + 10).toFixed(1) + '">' + wxTemp(b) + '</text>' +
+			'<text class="td" x="' + x + '" y="' + (H - 4) + '">' + wxDay(d.time[i], i).w + '</text>';
 	}
 	return h + '</svg>';
 }

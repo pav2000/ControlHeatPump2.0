@@ -12,7 +12,7 @@ function stEsc(s) { return esc(s); }
 
 // text: pw - пароль (скрыт точками, показ по значку), pattern - проверка формата до отправки, mono - моноширинный шрифт
 // f: {key: ключ API, t: подпись, h: пояснение под подписью, u: единица, k: 'num'|'sel'|'sw'|'ro'|'text',
-//     min,max,step, n: [номер сноски, текст подсказки], cls: класс строки, now: применять сразу (действие, а не настройка)}
+//     min,max,step, n: [прежний номер, текст подсказки], cls: класс строки, now: применять сразу (действие, а не настройка)}
 // Атрибуты числового поля. min - начало отсчёта шага в браузере: при min 0,01 и шаге 0,1 допустимы 1,91 и 2,01, а 2,00 нет (стрелки
 // несимметричны, ввод «2.0» красный). Поэтому min ставится, только если он кратен шагу; иначе граница в data-mn, её проверяет stValid.
 function stMinAligned(mn, st) { return !st || Math.abs(mn / st - Math.round(mn / st)) < 1e-6; }
@@ -29,7 +29,7 @@ function stField(f) {
 	else if(f.k == 'text') ctl = '<label class="inp wide' + (f.mono ? ' mono' : '') + '"><input type="' + (f.pw ? 'password' : 'text') + '" ' + a + (f.max ? ' maxlength="' + f.max + '"' : '') +
 		(f.pattern ? ' pattern="' + f.pattern + '" title="' + stEsc(f.title || 'Неверный формат') + '"' : '') + ' autocomplete="off">' + (f.pw ? '<button type="button" class="eye" tabindex="-1" title="Показать / скрыть" onclick="stEye(this)">&#128065;</button>' : '') + '</label>';
 	else ctl = '<label class="inp"><input type="number" ' + a + stNumAttrs(f) + '>' + (f.u ? '<u>' + f.u + '</u>' : '') + '</label>';
-	var tip = f.n ? '<span class="hint" tabindex="0" data-tip="' + stEsc(f.n[1]) + '">' + f.n[0] + '</span>' : '';
+	var tip = f.n ? '<span class="hint" tabindex="0" data-tip="' + stEsc(f.n[1]) + '">i</span>' : '';
 	return '<div class="field' + (f.cls ? ' ' + f.cls : '') + '" id="f-' + id + '"><div class="l">' + f.t + tip + (f.h ? '<small>' + f.h + '</small>' : '') + '</div>' + ctl + '</div>';
 }
 function stEye(b) { var i = b.parentNode.querySelector('input'); i.type = i.type == 'password' ? 'text' : 'password'; }
