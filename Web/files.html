@@ -183,7 +183,7 @@ function prepUpdate() {
 
 window.onload = function() {
 	stPanel({apply: false, note: 'Источник веб-страниц сохраняется записью в EEPROM.'});
-	$('dl1').innerHTML = dlRow('Документация', 'manual.pdf', 'manual.pdf') + dlRow('Текущее состояние ТН', 'state.txt', 'state.txt') + dlRow('Настройки ТН в текстовом виде', 'settings.txt', 'settings.txt') +
+	$('dl1').innerHTML = dlRow('Руководство пользователя', 'manual.pdf', 'manual.pdf') + dlRow('Текущее состояние ТН', 'state.txt', 'state.txt') + dlRow('Настройки ТН в текстовом виде', 'settings.txt', 'settings.txt') +
 		dlRow('Настройки ТН в бинарном виде', 'settings.bin', 'settings.bin') + dlRow('Вся память EEPROM', 'settings_eeprom.bin', 'settings_eeprom.bin');
 	$('dl2').innerHTML = dlRow('Журнал работы ТН', 'journal.txt', 'journal.txt') + dlRow('Графики из памяти контроллера', 'chart.csv', 'chart.csv') +
 		yearRow('Статистика (файлы по годам)', 'пишется всегда, не чаще раза в сутки', 'stats', hintTip('Статистика пишется всегда, запись происходит не чаще одного раза в день.')) +

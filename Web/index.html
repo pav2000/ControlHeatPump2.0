@@ -10,6 +10,7 @@
 <script src="chart.js"></script>
 <script src="weather.js"></script>
 <style>
+.card.comp-active{outline:2px solid var(--ok);outline-offset:-2px}
 .home-t{display:flex;justify-content:space-between;align-items:flex-end}
 .stepper{display:flex;align-items:center;gap:10px}
 .stepper b{font-size:22px;min-width:64px;text-align:center;font-variant-numeric:tabular-nums}
@@ -92,7 +93,7 @@ var IDX_KEYS = {'temp.TIN.value': 'get_Temp(TIN)', 'temp.TOUT.value': 'get_Temp(
 	'state.power_220': 'get_Power220', 'state.power_out': 'get_PowerCO', 'state.cop': 'get_fullCOP', 'relay.RBOILER.on': 'get_Relay(RBOILER)',
 	'relay.RPUMPI.on': 'get_Relay(RPUMPI)', 'relay.RPUMPO.on': 'get_Relay(RPUMPO)', 'state.errcode': 'get_errcode', 'state.error': 'get_error', 'state.warning': 'get_warning', 'state.warning_text': 'get_warning_text',
 	'state.work': 'get_WORK', 'state.mode': 'get_MODE'};
-function idxPoll(d) {
+function idxPoll(d, errors) {
 	for(var k in d) {
 		var v = d[k];
 		if(k == 'state.work') v = v ? 'ON' : 'OFF';
@@ -102,7 +103,22 @@ function idxPoll(d) {
 		if(k == 'state.mode_house') { modeShow(v); continue; }
 		if(IDX_KEYS[k]) window.onPageValue(IDX_KEYS[k], v);
 	}
+	if(errors && errors['state.mode']) activeCards(null);
+	else if('state.mode' in d) activeCards(d['state.mode']);
 }
+// StateToStr() выдаёт эти три режима только при работающем компрессоре.
+// Подсветка не зависит от разрешения нагрева, электрокотла или ТЭНа.
+var activeCardTimer = null;
+function activeCards(mode) {
+	clearTimeout(activeCardTimer); activeCardTimer = null;
+	if(document.hidden) mode = null;
+	var home = mode == 'Отопление' || mode == 'Охлаждение', boiler = mode == 'ГВС';
+	$('home-card').classList.toggle('comp-active', home);
+	$('boiler-card').classList.toggle('comp-active', boiler);
+	// При пропавших ответах режим нельзя оставлять активным бессрочно.
+	if(home || boiler) activeCardTimer = setTimeout(function() { activeCards(null); }, Math.max(12000, urlupdate * 3));
+}
+document.addEventListener('visibilitychange', function() { if(document.hidden) activeCards(null); });
 // Список режима дома доступен в сборке с охлаждением, недоступные пункты отключены.
 var modeNow = 0;
 function modeShow(v) {
@@ -357,16 +373,16 @@ window.onload = function() {
 <div class="content">
 <div class="grid">
 
-	<section class="card c4">
+	<section class="card c4" id="home-card">
 		<h3>Дом <span class="r" style="color:var(--mute)" id="spark-cap"></span></h3>
 		<div class="home-t">
 			<div class="big"><span id="v-tin">–</span><small>°C</small></div>
 			<div style="text-align:center">
 				<div class="cap" style="margin-bottom:6px">Цель</div>
 				<div class="stepper">
-					<button class="btn" onclick="trgStep(-0.5)" title="Цель ниже на 0,5°"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg></button>
+					<button class="btn" onclick="trgStep(-0.1)" title="Цель ниже на 0,1°"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg></button>
 					<b><span id="v-trg">–</span>°</b>
-					<button class="btn p" onclick="trgStep(0.5)" title="Цель выше на 0,5°"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
+					<button class="btn p" onclick="trgStep(0.1)" title="Цель выше на 0,1°"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
 				</div>
 				<input id="get_trgt-1" type="number" step="0.1" hidden>
 			</div>
@@ -375,7 +391,7 @@ window.onload = function() {
 		<div id="spark"></div>
 	</section>
 
-	<section class="card c4">
+	<section class="card c4" id="boiler-card">
 		<h3>Бойлер ГВС <span class="r">Нагрев</span><input type="checkbox" class="sw sm" id="get_boiler-on" onchange="setKey('boiler.on', this.checked ? 1 : 0)"></h3>
 		<div class="gvs"><div class="ringw"><div id="ring"></div><div class="in"><b id="v-bt">–</b><span>сейчас</span></div></div>
 			<div><div class="cap" style="margin-bottom:6px">Цель</div>

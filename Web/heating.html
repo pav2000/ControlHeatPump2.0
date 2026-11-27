@@ -53,7 +53,7 @@ function cardTarget(P) {
 			n: [4, 'При использовании погодозависимости целевая температура подачи указывается для уличной температуры 0 градусов.']},
 		{key: kk(P, 'HP_TIME'), t: 'Постоянная интегрирования времени', h: '10…600 с', u: 'с', min: 10, max: 600, step: 1},
 		{key: kk(P, 'HP_PRO'), t: 'Пропорциональная составляющая', h: '0…32', min: 0, max: 32, step: 0.001},
-		{key: kk(P, 'HP_IN'), t: 'Интегральная составляющая', h: '0…32', min: 0, max: 32, step: 0.001},
+		{key: kk(P, 'HP_IN'), t: 'Интегральная составляющая', h: '0…32', min: 0, max: 32, step: 0.001, n: heat ? [0, 'Рекомендуется всегда устанавливать 0.'] : null},
 		{key: kk(P, 'HP_DIF'), t: 'Дифференциальная составляющая', h: '0…32', min: 0, max: 32, step: 0.001},
 		{key: kk(P, 'W'), k: 'sw', t: 'Погодозависимость для ПИД', h: 'подача растёт при похолодании', n: [5, 'Изменение целевой температуры подачи в зависимости от уличной температуры, доступно только для ПИД.']},
 		{key: kk(P, 'KW'), t: 'Коэффициент погодозависимости', h: 'повышение подачи на 1° похолодания', u: 'К/°', step: 0.001,
@@ -144,9 +144,15 @@ function deps(P) {
 		if(tg) { tg.disabled = rule.selectedIndex == opt(q + '.rule', 'HYBRID', 2); }
 	}
 	if(tg && tg.options.length) {
-		var home = opt(q + '.target', 'Дом', 0);
-		set('temp2', tg.selectedIndex == home, 'недоступно: цель — дом');
-		set('temp1', tg.selectedIndex != home, 'недоступно: цель — обратка');
+		var home = tg.selectedIndex == opt(q + '.target', 'Дом', 0);
+		// Гибрид всегда использует температуру дома, независимо от сохранённого выбора цели.
+		if(P == 'Heat' && rule && rule.selectedIndex == opt(q + '.rule', 'HYBRID', 2)) home = true;
+		set('temp2', home, 'недоступно: цель — дом');
+		set('temp1', !home, 'недоступно: цель — обратка');
+		if(P == 'Heat') ['temp1', 'temp2'].forEach(function(n) {
+			var row = $('f-k-' + q + '-' + n);
+			if(row) row.hidden = n == 'temp1' ? !home : home;
+		});
 	}
 }
 function pidSummary(P) {
@@ -164,25 +170,45 @@ var tout = NaN, feedNow = NaN;
 function fv(n) { var e = $('k-heat-' + n); return e ? parseFloat(e.value) : NaN; }
 function fmt(x, d) { return isNaN(x) ? '–' : x.toFixed(d == null ? 1 : d).replace('.', ','); }
 function sgn(x) { return (x > 0 ? '+' : x < 0 ? '−' : '') + fmt(Math.abs(x)); }
-// рисует кривую f(t), t = -25...25; ref - горизонтальная линия {v, text}
-function drawCurve(svgId, f, ref) {
+// Кривая f(t), t = -25...25 (расширяется до текущей улицы); ref - горизонтальная линия {v, text}.
+// У включённой функции показываем текущую точку, а при движении курсора — координаты на кривой.
+function drawCurve(svgId, f, ref, active) {
 	var svg = $(svgId);
 	if(!svg) return;
 	var W = svg.clientWidth || 380, H = 170, L = 34, R = 8, T = 10, B = 22, pts = [], lo = 1e9, hi = -1e9;
-	for(var t = -25; t <= 25; t++) { var y = f(t); pts.push([t, y]); if(y < lo) lo = y; if(y > hi) hi = y; }
+	var current = active && isFinite(tout), tmin = current ? Math.min(-25, Math.floor(tout)) : -25, tmax = current ? Math.max(25, Math.ceil(tout)) : 25;
+	for(var t = tmin; t <= tmax; t++) { var y = f(t); pts.push([t, y]); if(y < lo) lo = y; if(y > hi) hi = y; }
 	if(ref && ref.v != null) { if(ref.v < lo) lo = ref.v; if(ref.v > hi) hi = ref.v; }
 	if(hi - lo < 1) { hi += 0.5; lo -= 0.5; }
 	var st = SvgChart.niceStep(lo, hi, 4);
 	lo = Math.floor(lo / st) * st; hi = Math.ceil(hi / st) * st;
-	var X = function(t) { return L + (W - L - R) * (t + 25) / 50; }, Y = function(y) { return T + (H - T - B) * (1 - (y - lo) / (hi - lo)); };
+	var X = function(t) { return L + (W - L - R) * (t - tmin) / (tmax - tmin); }, Y = function(y) { return T + (H - T - B) * (1 - (y - lo) / (hi - lo)); };
 	var h = '';
 	for(var k = Math.ceil(lo / st) * st; k <= hi + st / 1000; k += st) h += '<line class="g" x1="' + L + '" x2="' + (W - R) + '" y1="' + Y(k) + '" y2="' + Y(k) + '"/><text x="' + (L - 5) + '" y="' + (Y(k) + 4) + '" text-anchor="end">' + Math.round(k * 100) / 100 + '</text>';
-	for(k = -25; k <= 25; k += 10) h += '<text x="' + X(k) + '" y="' + (H - 6) + '" text-anchor="middle">' + k + '°</text>';
+	for(k = tmin; k <= tmax; k += 10) h += '<text x="' + X(k) + '" y="' + (H - 6) + '" text-anchor="middle">' + k + '°</text>';
 	if(ref && ref.v != null) h += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + Y(ref.v) + '" y2="' + Y(ref.v) + '" stroke="#d64545" stroke-dasharray="4 3"/><text x="' + (W - R - 4) + '" y="' + (Y(ref.v) - 4) + '" text-anchor="end" style="fill:#d64545">' + ref.text + '</text>';
 	h += '<path d="M' + pts.map(function(p) { return X(p[0]).toFixed(1) + ',' + Y(p[1]).toFixed(1); }).join('L') + '" fill="none" stroke="#0f8b8d" stroke-width="2.4" stroke-linejoin="round"/>';
-	if(!isNaN(tout) && tout >= -25 && tout <= 25) h += '<line x1="' + X(tout) + '" x2="' + X(tout) + '" y1="' + T + '" y2="' + (H - B) + '" stroke="#9aa5b1" stroke-dasharray="3 3"/><circle cx="' + X(tout) + '" cy="' + Y(f(tout)) + '" r="5" fill="#fff" stroke="#0f8b8d" stroke-width="2.5"/>';
+	if(current) h += '<line x1="' + X(tout) + '" x2="' + X(tout) + '" y1="' + T + '" y2="' + (H - B) + '" stroke="#9aa5b1" stroke-dasharray="3 3"/><circle cx="' + X(tout) + '" cy="' + Y(f(tout)) + '" r="5" fill="var(--card)" stroke="#0f8b8d" stroke-width="2.5"/>';
+	h += '<g class="curve-hover" style="display:none;pointer-events:none"></g>';
 	svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
 	svg.innerHTML = h;
+	function hover(e) {
+		var box = svg.getBoundingClientRect(), x = (e.clientX - box.left) * W / box.width, y = (e.clientY - box.top) * H / box.height;
+		var marker = svg.querySelector('.curve-hover');
+		if(x < L || x > W - R || y < T || y > H - B) { hide(); return; }
+		svg._curvePointer = {clientX: e.clientX, clientY: e.clientY};
+		var t = tmin + (x - L) / (W - L - R) * (tmax - tmin), v = f(t), cy = Y(v);
+		var title = svgId == 'wg' ? 'Цель в доме: ' : 'Цель подачи: ';
+		var line1 = 'Улица: ' + fmt(t) + ' °C', line2 = title + fmt(v) + ' °C', width = Math.max(line1.length, line2.length) * 7 + 16;
+		var lx = Math.max(L, Math.min(x + 12, W - R - width)), ly = cy - 54 >= T ? cy - 54 : Math.min(cy + 12, H - B - 46);
+		marker.innerHTML = '<line x1="' + x + '" x2="' + x + '" y1="' + T + '" y2="' + (H - B) + '" stroke="#9aa5b1" stroke-dasharray="3 3"/><circle cx="' + x + '" cy="' + cy + '" r="4" fill="var(--card)" stroke="#0f8b8d" stroke-width="2"/>' +
+			'<rect x="' + lx + '" y="' + ly + '" width="' + width + '" height="46" rx="5" fill="var(--card)" stroke="#0f8b8d"/><text x="' + (lx + 8) + '" y="' + (ly + 17) + '" style="fill:var(--ink)">' + line1 + '</text><text x="' + (lx + 8) + '" y="' + (ly + 35) + '" style="fill:var(--ink);font-weight:700">' + line2 + '</text>';
+		marker.style.display = '';
+	}
+	function hide() { svg._curvePointer = null; svg.querySelector('.curve-hover').style.display = 'none'; }
+	svg.onpointermove = active ? hover : null;
+	svg.onpointerleave = hide;
+	if(active && svg._curvePointer) hover(svg._curvePointer); else hide();
 }
 // состояние карточки: on - работает, off - выключена, na - недоступна; msg - пояснение с инструкцией, now - строка расчёта
 function wstate(key, st, msg, now) {
@@ -203,7 +229,7 @@ function weather() {
 	var kb = fv('kwb'), kt = fv('kwt'), kr = fv('kwr');
 	var fa = function(t) { return t1 + Math.max(-kr, Math.min(kr, (kb - t) * kt)); };
 	if([t1, kb, kt, kr].every(function(x) { return !isNaN(x); })) {
-		drawCurve('wg', fa);
+		drawCurve('wg', fa, null, kt != 0);
 		var kfield = $('f-k-heat-kwt');
 		if(kfield) kfield.classList.toggle('hl', kt == 0);
 		if(kt != 0) wstate('a', 'on', 'Включена: цель в доме сдвигается по уличной температуре (К = ' + fmt(kt, 3) + ').',
@@ -215,8 +241,8 @@ function weather() {
 	if($('wc') && w && !isNaN(tp) && !isNaN(kw)) {
 		var cap = isNaN(lim) ? 50 : lim - 0.5;
 		var fc = function(t) { var v = tp + kw * (0 - t); v = Math.min(v, cap); v = Math.max(v, 7); return Math.min(v, 50); };
-		drawCurve('wg2', fc, isNaN(lim) ? null : {v: Math.min(cap, 50), text: 'предел подачи'});
 		var pidOn = ri == RPID;
+		drawCurve('wg2', fc, isNaN(lim) ? null : {v: Math.min(cap, 50), text: 'предел подачи'}, pidOn && w.checked);
 		if(!pidOn) {
 			var rn = rule && rule.options[ri] ? ({HYSTERESIS: 'Гистерезис', PID: 'ПИД', HYBRID: 'Гибрид'}[rule.options[ri].text] || rule.options[ri].text) : '';
 			wstate('c', 'na', 'Недоступна: сейчас выбран алгоритм «' + rn + '». <b>Чтобы включить</b>, выберите «Алгоритм работы → PID» в карточке «Что поддерживаем».', 'Кривая подачи не применяется при этом алгоритме');
