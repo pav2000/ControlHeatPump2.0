@@ -323,21 +323,21 @@ int16_t Scheduler::load(uint8_t *data, uint8_t version)
 
 // Проверяет секцию расписания в buf длиной avail, учитывая hint из заголовка, если он задан.
 // Возвращает длину данных без CRC либо 0 при отказе.
-uint16_t Scheduler::file_data_len(const uint8_t *buf, uint16_t avail, uint16_t hint)
+uint16_t Scheduler::file_data_len(const uint8_t *buf, uint16_t avail, uint16_t hint, bool verify)
 {
-#ifndef LOAD_VERIFICATION
-	(void)buf;
+#ifdef LOAD_VERIFICATION
+	verify = true;
 #endif
 	uint16_t len = 0;
 	const uint16_t cand[2] = { SCHEDULER_LEN_NEW, SCHEDULER_LEN_OLD };
 	for(uint8_t i = 0; i < 2 && !len; i++) {
 		if(hint && hint != cand[i]) continue;
 		if(avail < cand[i] + 2) continue;
-#ifdef LOAD_VERIFICATION
-		uint16_t crc = 0xFFFF;
-		for(uint16_t k = 0; k < cand[i]; k++) crc = _crc16(crc, buf[k]);
-		if(crc != rec_hdr_tag(buf + cand[i])) continue;
-#endif
+		if(verify) {
+			uint16_t crc = 0xFFFF;
+			for(uint16_t k = 0; k < cand[i]; k++) crc = _crc16(crc, buf[k]);
+			if(crc != rec_hdr_tag(buf + cand[i])) continue;
+		}
 		len = cand[i];
 	}
 	return len;

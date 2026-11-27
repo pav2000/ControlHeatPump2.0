@@ -27,7 +27,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include "RingChart.h"
-#include "mini-printf.h"
 
 // Имена величин для веб-API. Порядок обязан совпадать с enum STATS_OBJ_* -
 // индексом служит само значение перечисления. Завершается NULL: по нему
@@ -81,12 +80,13 @@ void statChart::clear()
 	pos = 0;                                        // текущая позиция для записи
 	num = 0;                                        // число накопленных точек
 	flagFULL = false;                               // false в буфере менее size точек
-	memset(data, 0, sizeof(CHART_DATA_TYPE) * size);
+	if(size) memset(data, 0, sizeof(CHART_DATA_TYPE) * size);
 }
 
 // добавить точку в массиве
 void statChart::add_Point(CHART_DATA_TYPE y)
 {
+	if(!size) return;
 	data[pos] = y;
 	if(pos < size - 1) {
 		pos++;
@@ -112,61 +112,24 @@ CHART_DATA_TYPE statChart::get_Point(uint16_t x)
 	}
 }
 
-// получить строку в которой перечислены все точки в строковом виде через; при этом значения делятся на 100
-// строка не обнуляется перед записью
-void statChart::get_PointsStrDiv100(char *&b)
+bool statChart::readAligned(uint16_t rows, uint16_t point, int16_t &value)
 {
-	if(num == 0) return;
-	b += m_strlen(b);
-	for(uint16_t i = 0; i < num; i++) {
-		b = dptoa(b, get_Point(i), 2);
-		*b++ = ';';
-		*b = '\0';
-	}
+	const uint16_t count = num;
+	if(count > rows || point >= rows || point < rows - count) return false;
+	value = get_Point(point - (rows - count));
+	return true;
 }
 
-// получить строку в которой перечислены все точки в строковом виде через;
-// строка не обнуляется перед записью
-void statChart::get_PointsStr(char *&b)
+bool chart_power_milli(int32_t delta, int16_t flow, uint16_t capacity, int32_t &value)
 {
-	if(num == 0) return;
-	b += m_strlen(b);
-	for(uint16_t i = 0; i < num; i++) {
-		b += m_itoa(get_Point(i), b, 10, 0);
-		*b++ = ';';
-		*b = '\0';
-	}
+	// Округление сохраняет порядок старых операций. Широкий промежуточный
+	// результат нужен уже при умножении на теплоёмкость.
+	const int64_t result = (int64_t(delta) * flow / 10) * capacity / 3600;
+	if(result <= INT32_MIN || result > INT32_MAX) return false;
+	value = result;
+	return true;
 }
 
-void statChart::get_PointsStrSubDiv100(char *&b, statChart *sChart, int16_t add)
-{
-	if(num == 0 || sChart->get_num() == 0) {
-		return;
-	}
-	b += m_strlen(b);
-	for(uint16_t i = 0; i < num; i++) {
-		b = dptoa(b, get_Point(i) - sChart->get_Point(i) + add, 2);
-		*b++ = ';';
-		*b = '\0';
-	}
-}
-// Расчитать мощность на лету используется для графика потока, передаются указатели на графики температуры + теплоемкость
-// График температур - сотые градуса, график потока это ДЕСЯТКИ литров в час
-// Теплоемкость kfCapacity =  (3600*100/Capacity)
-void statChart::get_PointsStrPower(char *&b, statChart *inChart, statChart *outChart, uint16_t Capacity)
-{
-	if(num == 0 || inChart->get_num() == 0 || outChart->get_num() == 0) {
-		return;
-	}
-	b += m_strlen(b);
-	for(uint16_t i = 0; i < num; i++) {
-		b = dptoa(b, (int32_t)(outChart->get_Point(i) - inChart->get_Point(i)) * get_Point(i) / 10 * Capacity / 3600, 3); // выходная мощность в кВт
-		*(b - 1) = ';';
-	}
-}
-
-// Позиция величины в таблице графиков, CHART_NOT_FOUND если её там нет.
-// Смысл нуля как признака отсутствия разобран в RingChart.h.
 uint8_t chart_find(const Charts_Mod_setup *setup, uint8_t count, uint8_t object, uint8_t number)
 {
 	for(uint8_t i = 0; i < count; i++)

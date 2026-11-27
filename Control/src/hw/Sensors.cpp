@@ -80,9 +80,8 @@ void adc_setup()
 		}
 	}
 
-	NVIC_EnableIRQ(ADC_IRQn);        // enable ADC interrupt vector
 	ADC->ADC_IDR = 0xFFFFFFFF;       // disable interrupts IDR Interrupt Disable Register
-	ADC->ADC_IER = 1 << max;         // Самый старший канал
+	if(adcMask) ADC->ADC_IER = 1 << max; // Прерывание по последнему включённому каналу.
 	ADC->ADC_CHDR = 0xFFFF;          // Channel Disable Register CHDR disable all channels
 	ADC->ADC_CHER = adcMask;         // Channel Enable Register CHER enable just A11  каналы здесь SAMX3!!
 	ADC->ADC_CGR = adcGain;
@@ -90,6 +89,7 @@ void adc_setup()
 	// 12bit, 14MHz, trig source TIOA Output of the Timer Counter Channel 2
 	ADC->ADC_MR = ADC_MR_PRESCAL(ADC_PRESCAL) | ADC_MR_LOWRES_BITS_12 | ADC_MR_USEQ_NUM_ORDER | ADC_MR_STARTUP_SUT16 | ADC_MR_TRACKTIM(16) | ADC_MR_SETTLING_AST17 | ADC_MR_TRANSFER(2) | ADC_MR_TRGSEL_ADC_TRIG3 | ADC_MR_TRGEN | ADC_MR_ANACH;
 	adc_set_bias_current(ADC, 0);    // for sampling frequency: 0 - below 500 kHz, 1 - between 500 kHz and 1 MHz.
+	if(adcMask) NVIC_EnableIRQ(ADC_IRQn);
 }
 
 
@@ -106,6 +106,8 @@ void ADC_Handler(void)
 	for(uint8_t i = 0; i < ANUMBER; i++)    // по всем датчикам
 	{
 		sensorADC *adc = &HP.sADC[i];
+		// Прерывание общего АЦП вызывается и при отказе памяти одного из каналов.
+		if(!adc->get_present() || adc->get_fmodbus()) continue;
 #ifdef ADC_SKIP_EXTREMUM
 		int32_t a = ADC->ADC_CDR[adc->get_pinA()]; // get conversion result
 		if(adc->adc_lastVal != 0xFFFF && abs(a - adc->adc_lastVal) > ADC_SKIP_EXTREMUM) {
@@ -142,23 +144,7 @@ void ADC_Handler(void)
 // Значение хранится в СОТЫХ (БАР)
 void sensorADC::initSensorADC(uint8_t sensor, uint8_t pinA, uint16_t filter_size)
 {
-	// Инициализация структуры для хранения "сырых"данных с аналогового датчика.
-	if(AnalogSetup[sensor].present) adc_filter_max = filter_size;   // отводим память если используем датчик под сырые данные
-	else adc_filter_max = 1;
-	adc_filter = (uint16_t*) malloc(sizeof(uint16_t) * adc_filter_max);
-	if(adc_filter == NULL) {   // ОШИБКА если память не выделена
-		HP.raise_Error(ErrorCatalog::Code::kMEMORY, "sensorADC");
-		return;
-	}
-	memset(adc_filter, 0, sizeof(uint16_t) * adc_filter_max);
-	adc_filter_max--;
-	adc_sum = 0;                                                                   // сумма
-	adc_last = 0;                                                                  // текущий индекс
-	adc_flagFull = false;                                                          // буфер полный
-	adc_lastVal = 0;                                                               // последнее считанное значение
-	adc_samples = adc_samples_read = 0;
-	clearBuffer();
-
+	// Сохраняем назначение канала и имя даже при отказе памяти.
 	testMode = NORMAL;                           // Значение режима тестирования
 	cfg.minValue = AnalogSetup[sensor].min;                 // минимально разрешенное значение
 	cfg.maxValue = AnalogSetup[sensor].max;                 // максимально разрешенное значение
@@ -173,6 +159,19 @@ void sensorADC::initSensorADC(uint8_t sensor, uint8_t pinA, uint16_t filter_size
 	Temp = ERROR_TEMPERATURE;
 	note = (char*) AnalogSetup[sensor].note;              // присвоить наименование датчика
 	name = (char*) AnalogSetup[sensor].name;              // присвоить имя датчика
+	if(!Device::get_present()) return;
+	adc_filter = (uint16_t*) malloc(filter_size * sizeof(*adc_filter));
+	if(!adc_filter) {
+		err = ErrorNumber(ErrorCatalog::Code::kMEMORY);
+		HP.raise_Error(ErrorCatalog::Code::kMEMORY, name, {}, "Не выделен буфер фильтра АЦП");
+		return;
+	}
+	memset(adc_filter, 0, filter_size * sizeof(*adc_filter));
+	adc_filter_max = filter_size - 1;
+	adc_sum = adc_last = adc_lastVal = 0;
+	adc_flagFull = false;
+	adc_samples = adc_samples_read = 0;
+	clearBuffer();
 }
     
  // очистить буфер АЦП
@@ -192,7 +191,7 @@ void sensorADC::initSensorADC(uint8_t sensor, uint8_t pinA, uint16_t filter_size
  {
 	 if(fresh) *fresh = false;
 	 bool accepted = false;
-	 if(!(GETBIT(flags, fPresent))) return err;        // датчик запрещен в конфигурации ничего не делаем
+	 if(!get_present()) return err;
 	 int16_t lastPress;
 	 if(testMode != NORMAL) {
 		 lastPress = cfg.testValue;                // В режиме теста
@@ -286,7 +285,7 @@ int8_t sensorADC::set_zeroValue(int16_t p)
 //Получить значение давления датчика в сотых бара
 int16_t sensorADC::get_Value()
 {
-	if (!(GETBIT(flags,fPresent))) return -100;                  // датчик запрещен в конфигурации то давление -100
+	if(!get_present()) return -100;                 // Для недоступного канала действует прежнее служебное значение.
 	return Value;    
 }
 
@@ -674,18 +673,18 @@ static const ApiParam apiPressTab[] = {
 };
 static uint8_t api_pr_n(void) { return ANUMBER; }
 static const char *api_pr_name(uint8_t i) { return HP.sADC[i].get_name(); }
-static uint8_t api_pr_ok(uint8_t i) { return HP.sADC[i].get_present(); }
+static uint8_t api_pr_ok(uint8_t i) { return HP.sADC[i].get_present() || HP.sADC[i].adcFilterFailed(); }
 static int api_get_pr(uint8_t hook, uint8_t dev, ApiOut *o)
 {
 	sensorADC &s = HP.sADC[dev];
 	switch(hook) {
-	case P_VALUE:   api_put_dec(o, s.get_Value(), 100); break;
+	case P_VALUE:   if(s.adcFilterFailed()) api_put(o, "null"); else api_put_dec(o, s.get_Value(), 100); break;
 	case P_TEMP:
 #ifdef EEV_DEF
-		if(dev < 2) { api_put_dec(o, PressToTemp(dev), 100); break; }
+		if(dev < 2 && s.get_present()) { api_put_dec(o, PressToTemp(dev), 100); break; }
 #endif
 		api_put(o, "null"); break;
-	case P_ADC:     api_put_int(o, s.get_lastADC()); break;
+	case P_ADC:     if(s.adcFilterFailed()) api_put(o, "null"); else api_put_int(o, s.get_lastADC()); break;
 	case P_MIN:     api_put_dec(o, s.get_minValue(), 100); break;
 	case P_MAX:     api_put_dec(o, s.get_maxValue(), 100); break;
 	case P_ZERO:    api_put_int(o, s.get_zeroValue()); break;

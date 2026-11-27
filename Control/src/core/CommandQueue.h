@@ -40,6 +40,23 @@
 
 #define CQ_STOP      1   // команда останова: пуск прерывается, если такая стоит в очереди
 #define CQ_CRITICAL  2   // не теряется при полной очереди, вытесняя обычную
+#define CQ_MANUAL_STOP  0x40
+#define CQ_START        0x80   // пуск, возобновление или постановка повторного пуска
+
+// Срок отложенного пуска принадлежит CommandHP. Разность тиков
+// сохраняет смысл при переполнении счётчика FreeRTOS.
+struct DeferredStart {
+	uint32_t since = 0, delay = 0;
+	volatile bool pending = false;
+
+	void Arm(uint32_t now, uint32_t ticks) { since = now; delay = ticks; pending = true; }
+	void Cancel() { pending = false; }
+	bool TakeDue(uint32_t now) {
+		if(!pending || now - since < delay) return false;
+		Cancel();
+		return true;
+	}
+};
 
 enum CqResult {
 	CQ_QUEUED = 0,   // поставлена
@@ -59,9 +76,28 @@ static inline void CommandQueue_Init(CommandQueue *q) { q->head = 0; q->count = 
 
 static inline uint8_t CommandQueue_Index(const CommandQueue *q, uint8_t k) { return (uint8_t)((q->head + k) % COMMAND_QUEUE_DEPTH); }
 
+static inline bool CommandQueue_Has(const CommandQueue *q, uint8_t flag)
+{
+	for(uint8_t k = 0; k < q->count; k++) if(q->fl[CommandQueue_Index(q, k)] & flag) return true;
+	return false;
+}
+
 // running - выполняемая сейчас команда (0, если нет). Повтор выполняемой или последней в очереди игнорируется.
 static inline CqResult CommandQueue_Push(CommandQueue *q, uint8_t running, uint8_t c, uint8_t fl)
 {
+	// Ручной STOP отменяет накопленные пуски, сохраняя порядок остальных команд.
+	if(fl & CQ_MANUAL_STOP) {
+		uint8_t kept = 0;
+		for(uint8_t k = 0; k < q->count; ++k) {
+			const uint8_t src = CommandQueue_Index(q, k);
+			if(q->fl[src] & CQ_START) continue;
+			const uint8_t dst = CommandQueue_Index(q, kept++);
+			q->cmd[dst] = q->cmd[src];
+			q->fl[dst] = q->fl[src];
+		}
+		q->count = kept;
+		if(CommandQueue_Has(q, CQ_MANUAL_STOP)) return CQ_DUPLICATE;
+	} else if((fl & CQ_START) && CommandQueue_Has(q, CQ_MANUAL_STOP)) return CQ_DUPLICATE;
 	if(c == running) return CQ_DUPLICATE;
 	if(q->count && q->cmd[CommandQueue_Index(q, (uint8_t)(q->count - 1))] == c) return CQ_DUPLICATE;
 	CqResult r = CQ_QUEUED;
@@ -70,7 +106,10 @@ static inline CqResult CommandQueue_Push(CommandQueue *q, uint8_t running, uint8
 		// вытесняем самую старую обычную, а если все критичные - самую старую
 		uint8_t k = 0;
 		while(k < q->count && (q->fl[CommandQueue_Index(q, k)] & CQ_CRITICAL)) k++;
-		if(k == q->count) k = 0;
+		if(k == q->count) {
+			k = (q->fl[q->head] & CQ_MANUAL_STOP) ? 1 : 0;
+			if(k == q->count) return CQ_FULL;
+		}
 		for(uint8_t j = k; j + 1 < q->count; j++) {
 			q->cmd[CommandQueue_Index(q, j)] = q->cmd[CommandQueue_Index(q, (uint8_t)(j + 1))];
 			q->fl[CommandQueue_Index(q, j)]  = q->fl[CommandQueue_Index(q, (uint8_t)(j + 1))];
@@ -79,6 +118,7 @@ static inline CqResult CommandQueue_Push(CommandQueue *q, uint8_t running, uint8
 		r = CQ_EVICTED;
 	}
 	uint8_t i = CommandQueue_Index(q, q->count);
+	if(fl & CQ_MANUAL_STOP) i = q->head = (q->head + COMMAND_QUEUE_DEPTH - 1) % COMMAND_QUEUE_DEPTH;
 	q->cmd[i] = c; q->fl[i] = fl;
 	q->count++;
 	return r;
@@ -93,13 +133,6 @@ static inline bool CommandQueue_Pop(CommandQueue *q, uint8_t *c, uint8_t *flags 
 	q->head = (uint8_t)((q->head + 1) % COMMAND_QUEUE_DEPTH);
 	q->count--;
 	return true;
-}
-
-// Есть ли в очереди команда с флагом.
-static inline bool CommandQueue_Has(const CommandQueue *q, uint8_t flag)
-{
-	for(uint8_t k = 0; k < q->count; k++) if(q->fl[CommandQueue_Index(q, k)] & flag) return true;
-	return false;
 }
 
 #endif

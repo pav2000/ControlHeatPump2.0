@@ -26,6 +26,7 @@
  * сверкой размеров методов и присутствием в бинарнике кода, существующего
  * только в одной из ветвей.
  */
+#include "Rtos.h"
 #include "HeatPump.h"     // HeatPump, HP, датчики, PressToTemp
 #include "../log/RingChart.h"    // chart_find, STATS_OBJ_names, CHART_NOT_FOUND
 #include "../util/Util.h"         // _itoa
@@ -56,8 +57,16 @@ void HeatPump::get_listChart(char* ret, const char *delimiter)
 // сбросить графики в ОЗУ
 void HeatPump::clearChart()
 {
-	for(uint8_t i = 0; i < sizeof(Charts) / sizeof(Charts[0]); i++) Charts[i].clear();
+	const uint8_t suspended = TaskSuspendAll();
+	for(auto &chart : Charts) chart.clear();
+	chartRows = 0;
+	refreshChartSources();
+	++chartRevision;
+	if(suspended) xTaskResumeAll();
+}
 
+void HeatPump::refreshChartSources()
+{
 	// Позиции величин, из которых считаются производные графики - разности
 	// и мощности: ищет одна функция, проверяемая на хосте.
 	const uint8_t n = sizeof(ChartsModSetup) / sizeof(ChartsModSetup[0]);
@@ -80,10 +89,27 @@ void HeatPump::clearChart()
 #endif
 }
 
+void HeatPump::setChartSource(uint8_t index, const Charts_Mod_setup &setup)
+{
+	if(index >= CHARTS_MOD_COUNT) return;
+	const uint8_t suspended = TaskSuspendAll();
+	auto &current = ChartsModSetup[index];
+	if(current.object != setup.object || current.number != setup.number) {
+		current = setup;
+		Charts[index].clear();
+		refreshChartSources();
+		++chartRevision;
+	}
+	if(suspended) xTaskResumeAll();
+}
+
 // обновить статистику, добавить одну точку и если надо записать ее на карту.
 // Все значения в графиках целочислены (сотые), выводятся в формате 0.01
 void  HeatPump::updateChart()
 {
+	// Сырые точки одной строки и её положение обновляются вместе.
+	// Долгая отправка CSV не держит планировщик и проверяет ревизию.
+	const uint8_t suspended = TaskSuspendAll();
 	for(uint8_t i = 0; i < sizeof(ChartsModSetup) / sizeof(ChartsModSetup[0]); i++) {
 		if(ChartsModSetup[i].object == STATS_OBJ_Temp) Charts[i].add_Point(sTemp[ChartsModSetup[i].number].get_Temp());
 		else if(ChartsModSetup[i].object == STATS_OBJ_Press) Charts[i].add_Point(sADC[ChartsModSetup[i].number].get_Value());
@@ -111,6 +137,9 @@ void  HeatPump::updateChart()
 		else if(ChartsConstSetup[i].object == STATS_OBJ_COP_Full) Charts[j].add_Point(fullCOP);
 #endif
 	}
+	if(chartRows < CHART_POINT) ++chartRows;
+	else ++chartRevision;
+	if(suspended) xTaskResumeAll();
 }
 
 CondensingChartSource HeatPump::get_condensingChartSource()
@@ -124,57 +153,68 @@ CondensingChartSource HeatPump::get_condensingChartSource()
 		Chart_Temp_TCONOUTG, Chart_Temp_TEVAOUTG);
 }
 
-// получить данные графика  в виде строки, данные ДОБАВЛЯЮТСЯ к str
-void HeatPump::get_Chart(int index, char *str)
+// Единая нумерация рядов и вычисление точки для JSON и CSV.
+constexpr uint8_t CHARTS_STORED = CHARTS_MOD_COUNT + CHARTS_CONST_COUNT;
+constexpr uint8_t CHARTS_ALL = CHARTS_STORED + CHARTS_ONFLY_COUNT;
+
+uint8_t HeatPump::chartObject(uint8_t index)
 {
-	if(--index < 0 || index > int(sizeof(Charts) / sizeof(Charts[0]) + sizeof(ChartsOnFlySetup) / sizeof(ChartsOnFlySetup[0]))) return;
-	uint8_t obj, idx = index;
-	if(idx < int(sizeof(ChartsModSetup) / sizeof(ChartsModSetup[0]))) {
-		obj = ChartsModSetup[idx].object;
-	} else {
-		idx -= sizeof(ChartsModSetup) / sizeof(ChartsModSetup[0]);
-		if(idx < int(sizeof(ChartsConstSetup) / sizeof(ChartsConstSetup[0]))) {
-			obj = ChartsConstSetup[idx].object;
-		} else obj = ChartsOnFlySetup[idx - sizeof(ChartsConstSetup) / sizeof(ChartsConstSetup[0])].object;
-	}
-	_itoa(obj, str);
-	strcat(str, ";");
-	switch (obj) {
+	if(index < CHARTS_MOD_COUNT) return ChartsModSetup[index].object;
+	if(index < CHARTS_STORED) return ChartsConstSetup[index - CHARTS_MOD_COUNT].object;
+	return ChartsOnFlySetup[index - CHARTS_STORED].object;
+}
+
+uint8_t HeatPump::chartDecimals(uint8_t object)
+{
 #ifndef EEV_PREFER_PERCENT
-	case STATS_OBJ_EEV:
-		Charts[index].get_PointsStr(str);
-		break;
+	if(object == STATS_OBJ_EEV) return 0;
 #endif
-#ifdef TCONOUT
-	case STATS_OBJ_Overcool:
-		if(Chart_PressTemp_PCON && Chart_Temp_TCONOUT) Charts[Chart_PressTemp_PCON].get_PointsStrSubDiv100(str, &Charts[Chart_Temp_TCONOUT]);
-		break;
-#endif
-	case STATS_OBJ_TCOMP_TCON:
-		if(Chart_Temp_TCOMP) {
-			const CondensingChartSource source = get_condensingChartSource();
-			if(source.index) Charts[Chart_Temp_TCOMP].get_PointsStrSubDiv100(str, &Charts[source.index], -source.offset);
-		}
-		break;
-	case STATS_OBJ_Delta_GEO:
-		if(Chart_Temp_TEVAING && Chart_Temp_TEVAOUTG) Charts[Chart_Temp_TEVAING].get_PointsStrSubDiv100(str, &Charts[Chart_Temp_TEVAOUTG]);
-		break;
-	case STATS_OBJ_Delta_OUT:
-		if(Chart_Temp_TCONOUTG && Chart_Temp_TCONING) Charts[Chart_Temp_TCONOUTG].get_PointsStrSubDiv100(str, &Charts[Chart_Temp_TCONING]);
-		break;
+	return object == STATS_OBJ_Power_GEO || object == STATS_OBJ_Power_OUT ? 3 : 2;
+}
+
+bool HeatPump::readChartPoint(uint8_t index, uint16_t point, const CondensingChartSource &source, int32_t &value)
+{
+	if(index >= CHARTS_ALL) return false;
+	const uint16_t rows = chartRows;
+	int16_t va, vb, vf;
+	if(index < CHARTS_STORED) {
+		if(!Charts[index].readAligned(rows, point, va)) return false;
+		value = va;
+		return true;
+	}
+
+	uint8_t a, b, flow = CHART_NOT_FOUND;
+	int16_t offset = 0;
+	uint16_t capacity = 0;
+	const uint8_t object = chartObject(index);
+	switch(object) {
+	case STATS_OBJ_Overcool: a = Chart_PressTemp_PCON; b = Chart_Temp_TCONOUT; break;
+	case STATS_OBJ_TCOMP_TCON: a = Chart_Temp_TCOMP; b = source.index; offset = source.offset; break;
+	case STATS_OBJ_Delta_GEO: a = Chart_Temp_TEVAING; b = Chart_Temp_TEVAOUTG; break;
+	case STATS_OBJ_Delta_OUT: a = Chart_Temp_TCONOUTG; b = Chart_Temp_TCONING; break;
 #ifdef FLOWEVA
 	case STATS_OBJ_Power_GEO:
-		if(Chart_Flow_FLOWEVA && Chart_Temp_TEVAOUTG && Chart_Temp_TEVAING) Charts[Chart_Flow_FLOWEVA].get_PointsStrPower(str, &Charts[Chart_Temp_TEVAOUTG], &Charts[Chart_Temp_TEVAING], sFrequency[FLOWEVA].get_Capacity());
+		// Знак соответствует графику JSON и расчёту мощности при нагреве.
+		a = Chart_Temp_TEVAING; b = Chart_Temp_TEVAOUTG;
+		flow = Chart_Flow_FLOWEVA; capacity = sFrequency[FLOWEVA].get_Capacity();
 		break;
 #endif
 #ifdef FLOWCON
 	case STATS_OBJ_Power_OUT:
-		if(Chart_Flow_FLOWCON && Chart_Temp_TCONING && Chart_Temp_TCONOUTG) Charts[Chart_Flow_FLOWCON].get_PointsStrPower(str, &Charts[Chart_Temp_TCONING], &Charts[Chart_Temp_TCONOUTG], sFrequency[FLOWCON].get_Capacity());
+		a = Chart_Temp_TCONOUTG; b = Chart_Temp_TCONING;
+		flow = Chart_Flow_FLOWCON; capacity = sFrequency[FLOWCON].get_Capacity();
 		break;
 #endif
-	default:
-		Charts[index].get_PointsStrDiv100(str);
+	default: return false;
 	}
+	if(a == CHART_NOT_FOUND || b == CHART_NOT_FOUND ||
+	   !Charts[a].readAligned(rows, point, va) || !Charts[b].readAligned(rows, point, vb)) return false;
+	value = int32_t(va) - vb - offset;
+	if(chartDecimals(object) == 3) {
+		return flow != CHART_NOT_FOUND && Charts[flow].readAligned(rows, point, vf) &&
+		       chart_power_milli(value, vf, capacity, value);
+	}
+	return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -207,32 +247,33 @@ void Charts_get_param(uint8_t index, char param, char *ret)
 void Charts_set_param(uint8_t index, char param, char *value)
 {
 	uint8_t i = 0;
+	auto setup = ChartsModSetup[index];
 	if(param == 'O') { // .object
 		for(; STATS_OBJ_names[i]; i++) if(strcmp(value, STATS_OBJ_names[i]) == 0) break;
-		if(STATS_OBJ_names[i] && ChartsModSetup[index].object != i) {
-			ChartsModSetup[index].number = 0;
-			ChartsModSetup[index].object = i;
+		if(STATS_OBJ_names[i] && setup.object != i) {
+			setup.number = 0;
+			setup.object = i;
 		}
 	} else if(param == 'X') { // .number
-		if(ChartsModSetup[index].object == STATS_OBJ_Temp) {
+		if(setup.object == STATS_OBJ_Temp) {
 			for(i = 0; i < TNUMBER; i++) if(strcmp(value, HP.sTemp[i].get_name()) == 0) break;
-			if(i < TNUMBER) ChartsModSetup[index].number = i;
-		} else if(ChartsModSetup[index].object == STATS_OBJ_Press || ChartsModSetup[index].object == STATS_OBJ_PressTemp) {
+			if(i < TNUMBER) setup.number = i;
+		} else if(setup.object == STATS_OBJ_Press || setup.object == STATS_OBJ_PressTemp) {
 			for(i = 0; i < ANUMBER; i++) if(strcmp(value, HP.sADC[i].get_name()) == 0) break;
-			if(i < ANUMBER) ChartsModSetup[index].number = i;
-		} else if(ChartsModSetup[index].object == STATS_OBJ_Flow) {
+			if(i < ANUMBER) setup.number = i;
+		} else if(setup.object == STATS_OBJ_Flow) {
 			for(i = 0; i < FNUMBER; i++) if(strcmp(value, HP.sFrequency[i].get_name()) == 0) break;
-			if(i < FNUMBER) ChartsModSetup[index].number = i;
+			if(i < FNUMBER) setup.number = i;
 		}
 	}
+	HP.setChartSource(index, setup);
 }
 
 // ---------------------------------------------------------------------------
 // Веб-API: список рядов, состав изменяемых рядов, ответ /api/chart.
 // Номер ряда id считается с 0 по тому же списку, что и chart.list: сначала ChartsModSetup (их состав правится),
-// затем ChartsConstSetup и ChartsOnFlySetup. Прежний get_Chart(N) считал с 1 (нулевой пункт «---» был заглушкой).
+// затем ChartsConstSetup и ChartsOnFlySetup.
 // ---------------------------------------------------------------------------
-#define CHARTS_ALL (CHARTS_MOD_COUNT + CHARTS_CONST_COUNT + CHARTS_ONFLY_COUNT)
 
 // Название ряда для списка: у рядов датчиков - описание датчика
 static void api_chart_title(ApiOut *o, uint8_t i)
@@ -254,10 +295,14 @@ void api_chart_list(ApiOut *o)
 	api_putc(o, ']');
 }
 
-// Номер для get_Chart (с 1) по id: число с 0 или имя (EEV, OH, OH2, TT - как раньше, а также любое имя STATS_OBJ_*). -1 - нет такого.
+// Индекс ряда по id: число с 0 или имя (EEV, OH, OH2, TT - как раньше, а также любое имя STATS_OBJ_*). -1 - нет такого.
 static int chart_index(const char *x)
 {
-	if(*x >= '0' && *x <= '9') { int n = atoi(x); return n < CHARTS_ALL ? n + 1 : -1; }
+	if(*x >= '0' && *x <= '9') {
+		char *end;
+		const unsigned long n = strtoul(x, &end, 10);
+		return !*end && n < CHARTS_ALL ? n : -1;
+	}
 	uint8_t obj = 255, i;
 	if(!strcmp(x, "EEV")) obj = STATS_OBJ_EEV;
 	else if(!strcmp(x, "OH")) obj = STATS_OBJ_Overheat;
@@ -265,13 +310,12 @@ static int chart_index(const char *x)
 	else if(!strcmp(x, "TT")) obj = STATS_OBJ_TCOMP_TCON;
 	else for(i = 0; STATS_OBJ_names[i]; i++) if(!strcmp(x, STATS_OBJ_names[i])) { obj = i; break; }
 	if(obj == 255) return -1;
-	for(i = 0; i < CHARTS_CONST_COUNT; i++) if(ChartsConstSetup[i].object == obj) return CHARTS_MOD_COUNT + i + 1;
-	for(i = 0; i < CHARTS_ONFLY_COUNT; i++) if(ChartsOnFlySetup[i].object == obj) return CHARTS_MOD_COUNT + CHARTS_CONST_COUNT + i + 1;
+	for(i = 0; i < CHARTS_CONST_COUNT; i++) if(ChartsConstSetup[i].object == obj) return CHARTS_MOD_COUNT + i;
+	for(i = 0; i < CHARTS_ONFLY_COUNT; i++) if(ChartsOnFlySetup[i].object == obj) return CHARTS_STORED + i;
 	return -1;
 }
 
-// /api/chart?id=<N|имя>  ->  {"obj":3,"d":[12.1,12.2,...]}. Прежний get_Chart пишет строку «тип;точка;точка;...;» без учёта длины,
-// поэтому она формируется в свободной части буфера (запас на заголовок - 32 байта) и переписывается на месте: ';' -> ','.
+// /api/chart?id=<N|имя> формирует JSON напрямую в ограниченном выходном буфере.
 int api_chart(const char *q, ApiOut *o)
 {
 	const char *v = q;
@@ -284,25 +328,28 @@ int api_chart(const char *q, ApiOut *o)
 	id[n] = 0;
 	int idx = chart_index(id);
 	if(idx < 0) { api_put(o, "{\"e\":\"unknown\"}"); return o->over ? -2 : 0; }
-	if(o->cap - o->len < 3700) return -2;                   // до 400 точек по 7 знаков + запас
-	char *s = o->p + o->len + 32;
-	s[0] = 0;
-	HP.get_Chart(idx, s);
-	char *data = strchr(s, ';');
-	if(!data) { api_put(o, "{\"e\":\"fail\"}"); return o->over ? -2 : 0; }
-	*data++ = 0;                                            // s - тип объекта, data - точки
-	char head[28];
-	char *h = head; strcpy(h, "{\"obj\":"); _itoa(atoi(s), h); strcat(h, ",\"d\":[");
-	uint16_t hl = (uint16_t) strlen(h), dl = (uint16_t) strlen(data);
-	char *w = o->p + o->len;
-	memmove(w + hl, data, dl + 1);
-	memcpy(w, h, hl);
-	char *e = w + hl;
-	for(uint16_t i = 0; i < dl; i++) if(e[i] == ';') e[i] = ',';
-	if(dl && e[dl - 1] == ',') dl--;                         // последняя точка без хвостовой запятой
-	e[dl] = ']'; e[dl + 1] = '}'; e[dl + 2] = 0;
-	o->len += hl + dl + 2;
-	return 0;
+	const uint16_t mark = o->len;
+	const uint32_t revision = HP.get_chartRevision();
+	const uint16_t rows = HP.get_chartRows();
+	const auto source = HP.get_condensingChartSource();
+	const uint8_t object = HP.chartObject(idx), decimals = HP.chartDecimals(object);
+	api_put(o, "{\"obj\":"); api_put_int(o, object); api_put(o, ",\"d\":[");
+	bool comma = false;
+	for(uint16_t row = 0; row < rows && !o->over; ++row) {
+		int32_t value;
+		if(!HP.readChartPoint(idx, row, source, value)) continue;
+		char number[16];
+		dptoa(number, value, decimals);
+		if(comma) api_putc(o, ',');
+		api_put(o, number);
+		comma = true;
+	}
+	// Пока формировали ответ, ряд мог сменить источник или прокрутиться.
+	if(revision != HP.get_chartRevision()) {
+		o->len = mark; o->p[mark] = 0; o->over = 0;
+		api_put(o, "{\"e\":\"busy\"}");
+	} else api_put(o, "]}");
+	return o->over ? -2 : 0;
 }
 
 enum { CC_N = 1, CC_O, CC_X };

@@ -76,6 +76,7 @@ struct ApiOut {
 	uint16_t cap;
 	uint16_t len;
 	uint8_t  over;
+	bool applyNetwork;             // Диспетчер ставит сброс в очередь после ответа.
 	const ApiEventSnapshot *events; // Снимок событий на весь запрос чтения, если подготовлен диспетчером
 };
 void api_out_init(ApiOut *o, char *buf, uint16_t cap);

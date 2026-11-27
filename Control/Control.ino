@@ -903,20 +903,30 @@ x_I2C_init_std_message:
 
 	// ПРИОРИТЕТ 1 средний - обслуживание вебморды в несколько потоков и дисплея Nextion
 	// ВНИМАНИЕ первый поток должен иметь больший стек для обработки фоновых сетевых задач
+	// Регистрируем только задачи выбранного профиля. У остальных статические записи
+	// wdtTasks остаются с нулевым пределом. Тики планировщика при старте считаются от нуля.
 	// 1 - поток
 	if ( xTaskCreate(vWeb0,"Web0", STACK_vWeb0,NULL,1,&Tasks.xHandleUpdateWeb0)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY) HP.raise_Error(ErrorCatalog::Code::kRTOS, nameFREERTOS);
 	Diag.mRTOS=Diag.mRTOS+64+4*(STACK_vWeb0);
+	Watchdog_Init(&wdtTasks[WDT_Web0], 120000, 0);  // почта, DHCP, MQTT
+	wdtHandles[WDT_Web0] = &Tasks.xHandleUpdateWeb0;
 #if W5200_THREAD >= 2 // - потока
 	if ( xTaskCreate(vWeb1,"Web1", STACK_vWebX,NULL,1,&Tasks.xHandleUpdateWeb1)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY) HP.raise_Error(ErrorCatalog::Code::kRTOS, nameFREERTOS);
 	Diag.mRTOS=Diag.mRTOS+64+4*STACK_vWebX;
+	Watchdog_Init(&wdtTasks[WDT_Web1], 60000, 0);  // отдача файлов с SD
+	wdtHandles[WDT_Web1] = &Tasks.xHandleUpdateWeb1;
 #endif
 #if W5200_THREAD >= 3 // - потока
 	if ( xTaskCreate(vWeb2,"Web2", STACK_vWebX,NULL,1,&Tasks.xHandleUpdateWeb2)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY) HP.raise_Error(ErrorCatalog::Code::kRTOS, nameFREERTOS);
 	Diag.mRTOS=Diag.mRTOS+64+4*STACK_vWebX;
+	Watchdog_Init(&wdtTasks[WDT_Web2], 60000, 0);
+	wdtHandles[WDT_Web2] = &Tasks.xHandleUpdateWeb2;
 #endif
 #if W5200_THREAD >= 4 // - потока
 	if ( xTaskCreate(vWeb3,"Web3", STACK_vWebX,NULL,1,&Tasks.xHandleUpdateWeb3)==errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY) HP.raise_Error(ErrorCatalog::Code::kRTOS, nameFREERTOS);
 	Diag.mRTOS=Diag.mRTOS+64+4*STACK_vWebX;
+	Watchdog_Init(&wdtTasks[WDT_Web3], 60000, 0);
+	wdtHandles[WDT_Web3] = &Tasks.xHandleUpdateWeb3;
 #endif
 
 	xWebThreadSemaphore = xSemaphoreCreateMutex();   // мьютекс: сеть + шина SPI               // Создание мютекса
@@ -984,10 +994,6 @@ x_I2C_init_std_message:
 #else
 		Watchdog_Init(&wdtTasks[WDT_StepperEEV], 0,      now);  // без ЭРВ задач нет: не наблюдается
 #endif
-		Watchdog_Init(&wdtTasks[WDT_Web0],       120000, now);  // почта, DHCP, MQTT - законно долгие
-		Watchdog_Init(&wdtTasks[WDT_Web1],       60000,  now);  // отдача файлов с SD
-		Watchdog_Init(&wdtTasks[WDT_Web2],       60000,  now);
-		Watchdog_Init(&wdtTasks[WDT_Web3],       60000,  now);
 		wdtHandles[WDT_ReadSensor] = &Tasks.xHandleReadSensor;
 		wdtHandles[WDT_ServiceHP]  = &Tasks.xHandleSericeHP;
 		wdtHandles[WDT_UpdateHP]   = &Tasks.xHandleUpdate;
@@ -996,10 +1002,6 @@ x_I2C_init_std_message:
 #ifdef EEV_DEF
 		wdtHandles[WDT_StepperEEV] = &HP.dEEV.stepperEEV.xHandleStepperEEV;
 #endif
-		wdtHandles[WDT_Web0]       = &Tasks.xHandleUpdateWeb0;
-		wdtHandles[WDT_Web1]       = &Tasks.xHandleUpdateWeb1;
-		wdtHandles[WDT_Web2]       = &Tasks.xHandleUpdateWeb2;
-		wdtHandles[WDT_Web3]       = &Tasks.xHandleUpdateWeb3;
 		wdtReady = 1;
 	}
 	vTaskStartScheduler();              // СТАРТ !!
@@ -1088,6 +1090,8 @@ void vWeb0(void *)
 		active = true;                                                         // Можно работать в этом цикле (дополнительная нагрузка на поток)
 		vTaskDelay(TIME_WEB_SERVER / portTICK_PERIOD_MS); // задержка чтения уменьшаем загрузку процессора
 
+		if(serviceNetChipReset()) continue;                       // Сетевой сброс отложит прочий сервис на следующий цикл.
+
 		// СЕРВИС: Этот поток работает на любых настройках, по этому сюда ставим работу с сетью
 		HP.message.sendMessage();                                            // Отработать отсылку сообщений (внутри скрыта задержка после включения)
 		active = HP.message.dnsUpdate();                                     // Обновить адреса через dns если надо, dnsUpdate() возвращает true если обновления не было
@@ -1132,7 +1136,7 @@ void vWeb0(void *)
 				resW5200 = xTaskGetTickCount();
 				if(timeResetW5200 == 0) timeResetW5200 = resW5200;      // Первая итерация не должна быть сразу
 				if(resW5200 - timeResetW5200 > HP.time_resW5200() * 1000UL) {
-					HP.sendCommand(pNETWORK, NetworkResetCause::Timer); // Периодическая переинициализация чипа
+					requestNetChipReset(NetworkResetCause::Timer); // Периодическая переинициализация чипа
 					timeResetW5200 = resW5200;                         // Запомить время сброса
 					active = false;
 				}
@@ -1536,7 +1540,7 @@ void vReadSensor_delay1ms(int32_t ms)
 			HP.NO_Power_delay = NO_POWER_ON_DELAY_CNT;
 		} else if(HP.NO_Power) { // Включаемся
 			if(HP.NO_Power_delay) {
-				if(--HP.NO_Power_delay == 0) HP.sendCommand(pNETWORK, NetworkResetCause::Power);
+				if(--HP.NO_Power_delay == 0) requestNetChipReset(NetworkResetCause::Power);
 			} else {
 				// Питание восстановлено. Возобновление ТН фиксируется при обработке пуска.
 				journal.event(Journal::Stamp::DateTime, "POWER", "RESTORED", "Внешнее питание восстановлено");
@@ -1832,7 +1836,6 @@ void vServiceHP(void *)
 #endif
 	static uint8_t  task_updstat_countm = rtcSAM3X8.get_minutes();
 	static TickType_t timer_sec = xTaskGetTickCount(), timer_idle = 0, timer_total = 0;
-	static uint16_t restart_cnt;
 	static uint16_t pump_in_pause_timer = 0;
 	for(;;) {
 		Watchdog_Beat(WDT_ServiceHP);   // отметка живости для наблюдателя
@@ -1893,16 +1896,6 @@ void vServiceHP(void *)
 					if(task_updstat_countm == 59) HP.save_motoHour();		// сохранить раз в час
 				}
 				STORE_DEBUG_INFO(75);
-			}
-			if(HP.PauseStart) {
-				if(HP.PauseStart == 1) {
-					restart_cnt = HP.isCommand() == pRESTART ? HP.Option.delayStartRes : HP.Option.delayRepeadStart;  // Определение времени задержки
-					journal.jprintf((const char*) "Start over %d sec . . .\n", restart_cnt);
-					HP.PauseStart = 2;
-				} else if(restart_cnt-- == 0) {
-					HP.PauseStart = 0;
-					HP.sendCommand(pAUTOSTART);
-				}
 			}
 			if(HP.startPump) {  // Насосы в паузе ТН (0 - автомат стоит, 1 - запуск, 2 - насосы выключены, 3 - включены), решение - в ClimateControl
 				uint8_t sp = HP.startPump;

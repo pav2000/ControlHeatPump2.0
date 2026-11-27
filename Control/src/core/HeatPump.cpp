@@ -1042,6 +1042,12 @@ xGoWait:
 	} else {
 		if(get_State() != pWAIT_HP) return; // Если состяние НЕ РАВНО ожиданию то ничего не делаем, выходим восстанавливать нечего
 	}
+	// Авария запуска АЦП хранится в состоянии канала, независимо от сброса ошибок ТН.
+	if(const char *sensor = failedRequiredPressureFilter()) {
+		setState(pOFF_HP);
+		raise_Error(ErrorCatalog::Code::kMEMORY, sensor, {}, "Пуск заблокирован: фильтр АЦП недоступен");
+		return;
+	}
 	setState(pSTARTING_HP);                              // Производится старт -  устанавливаем соответсвующее состояние
 	journal.event(Journal::Stamp::DateTime, "HP", resume ? "RESUME" : "START",
 	              "%s", resume ? "Начато возобновление работы ТН" : "Начат пуск ТН");
@@ -1121,7 +1127,7 @@ xGoWait:
 #ifdef EEV_DEF
 		if(get_State() != pSTARTING_HP) return;            // Могли нажать кнопку стоп, выход из процесса запуска
 		else { int8_t r = dEEV.Start(); if(r != OK) { setState(pOFF_HP); raise_Error(ErrorCatalog::Code::kCONFIG, "EEV"); return; } }
-		if(!waitEEVService()) return; // поиск нуля должен закончиться до стартовой позиции
+		if(!waitEEVService(true)) return; // поиск нуля должен закончиться до стартовой позиции
 #endif
 
 #ifdef CLEAR_CHART_HP_ON
@@ -1141,12 +1147,11 @@ xGoWait:
 
 
 
-	// ---- 5. Если не старт ТН то проверка на минимальную паузу между включениями, при включении ТН паузе не будет ----
-	if(!start)  // Команда Resume
-		while(check_compressor_pause()) {
-			Watchdog_SleepHere(100 * 1000);
-			if(get_State() != pSTARTING_HP) return;
-		}    // Могли нажать кнопку стоп, выход из процесса запуска
+	// START и RESUME ждут только пока нужен компрессор. На каждом шаге
+	// можно принять STOP и закончить пуск без включения насосов.
+	if(mod && mod <= pBOILER) {
+		while(check_compressor_pause()) if(!waitWhileStarting(100)) return;
+	}
 
 	//  6. Конфигурируем 3 и 4-х клапаны и включаем насосы ПАУЗА после включения насосов
 	if(!configHP(Status.modWork)) return;
@@ -1179,6 +1184,7 @@ xGoWait:
 		return;
 	}
 	if(start_compressor_now) compressorON(); // Компрессор включить если нет ошибок и надо включаться
+	if(startCancelled()) return;
 
 	// ---- 10. Сохранение состояния ----
 	if(get_State() != pSTARTING_HP) return;                   // Могли нажать кнопку стоп, выход из процесса запуска
@@ -1208,6 +1214,9 @@ void HeatPump::StopWait(boolean stop)
   }
 
   journal.jprintf(" modWork: %X[%s]\n", get_modWork(), Ret_Text(Status.ret));
+  // Если UpdateHP уже передала ХОД драйверу, сначала дождаться завершения
+  // этой операции. Иначе запоздавший ответ драйвера может отменить STOP.
+  while(compressorStartInFlight) Watchdog_SleepHere(10);
   compressorOFF();		// Останов компрессора, насосов - PUMP_OFF(), ЭРВ
 
   if (stop) //Обновление ТН отключаем только при останове
@@ -1762,6 +1771,10 @@ void HeatPump::vUpdate()
 		raise_Error(ErrorCatalog::Code::kCONFIG_NO_WORK, __FUNCTION__);
 		return;
 	}
+	if(const char *sensor = failedRequiredPressureFilter()) {
+		raise_Error(ErrorCatalog::Code::kMEMORY, sensor, {}, "Фильтр АЦП необходим для текущей конфигурации");
+		return;
+	}
 #ifdef EEV_DEF
 	if((!sADC[PEVA].get_present()) && (dEEV.get_ruleEEV() == TEVAOUT_PEVA)) {  //  Отсутвует датчик давления, и выбран алгоритм ЭРВ который его использует", пользователь может изменить в процессе работы
 		raise_Error(ErrorCatalog::Code::kEEV_CONFIG, dEEV.get_name());
@@ -1983,8 +1996,9 @@ boolean HeatPump::Switch_R4WAY(boolean fCool)
 // проверка на паузу между включениями, возврат true - в паузе
 boolean HeatPump::check_compressor_pause()
 {
-	if(stopCompressor && Uptime_s() - stopCompressor < Option.pause) {
-		if(!compressor_in_pause) journal.jprintf_time("Waiting compressor, pause %d s...\n", (int)(Option.pause - (Uptime_s() - stopCompressor)));
+	const uint32_t sinceStop = Uptime_s() - stopCompressor;
+	if(stopCompressor && sinceStop < Option.pause) {
+		if(!compressor_in_pause) journal.jprintf_time("Waiting compressor, pause %d s...\n", (int)(Option.pause - sinceStop));
 		return compressor_in_pause = true;
 	}
 	return compressor_in_pause = false;
@@ -2056,9 +2070,28 @@ void HeatPump::checkPressureProtection(bool lowFresh, bool highFresh)
 	}
 }
 
-// Возвращает допуск пуска по актуальному PCON и защёлке высокого давления.
+// Отказ выделения буфера настроенного канала отличается от намеренного
+// отсутствия датчика в конфигурации. Обязательность зависит от защит и ЭРВ.
+const char *HeatPump::failedRequiredPressureFilter()
+{
+	bool needSuctionPressure = PRESS_PROT_LOW_ENABLED;
+#ifdef EEV_DEF
+	const auto rule = dEEV.get_ruleEEV();
+	needSuctionPressure |= dEEV.get_present() && (rule == TEVAOUT_PEVA
+#ifdef TCOMPIN
+	                       || rule == TCOMPIN_PEVA
+#endif
+	                      );
+#endif
+	if(needSuctionPressure && sADC[PEVA].adcFilterFailed()) return sADC[PEVA].get_name();
+	if(PRESS_PROT_HIGH_ENABLED && sADC[PCON].adcFilterFailed()) return sADC[PCON].get_name();
+	return nullptr;
+}
+
+// Возвращает допуск пуска по состоянию фильтров и актуальному PCON.
 bool HeatPump::pressureAllowsStart()
 {
+	if(failedRequiredPressureFilter()) return false;
 	// Защита без привязанного датчика не может ни подтвердить, ни опровергнуть давление:
 	// блокировать пуск бессмысленно (ТН остановится насовсем), рассинхрон диагностирует
 	// checkPressureProtection().
@@ -2073,18 +2106,58 @@ bool HeatPump::pressureAllowsStart()
 // Попытка включить компрессор  с учетом всех защит КОНФИГУРАЦИЯ уже установлена
 // Вход режим работы ТН
 // Возможно компрессор уже включен и происходит только смена режима
-const char *EEV_go={" EEV go "};  // экономим место
+bool HeatPump::startCancelled()
+{
+	const auto state = get_State();
+	return (state != pSTARTING_HP && state != pWORK_HP) || activeError.code || is_next_command_stop();
+}
+
+// Долгая выдержка пуска отмечает задачу в watchdog и проверяет отмену
+// каждые 100 мс. Выбег насосов после снятия ХОД использует свой таймер.
+bool HeatPump::waitWhileStarting(uint32_t ms)
+{
+	while(ms && !startCancelled()) {
+		const uint32_t chunk = ms > 100 ? 100 : ms;
+		Watchdog_SleepHere(chunk);
+		ms -= chunk;
+	}
+	return !startCancelled();
+}
+
+#ifdef EEV_DEF
+// Позиционируем после прокачки. Пределы цели совпадают с devEEV::set_EEV().
+bool HeatPump::prepareEEVForStart()
+{
+	if(startCancelled()) return false;
+	const bool light = dEEV.get_LightStart(), fixed = dEEV.get_StartFlagPos();
+	const bool move = light || fixed || lastEEV != -1;
+	int16_t goal = lastEEV;
+	if(light) goal = dEEV.get_preStartPos();
+	else if(fixed) goal = dEEV.get_StartPos();
+	if(move) {
+		if(goal < EEV_CLOSE_STEP) goal = EEV_CLOSE_STEP;
+		if(goal > dEEV.get_maxEEV()) goal = dEEV.get_maxEEV();
+		if(dEEV.set_EEV(goal) != OK) {
+			raise_Error(ErrorCatalog::Code::kCOMP_START_BLOCKED, "EEV", {}, "ЭРВ отклонила стартовую позицию");
+			return false;
+		}
+	}
+	if(lastEEV != -1 && dEEV.get_EevClose() && !waitWhileStarting(dEEV.get_delayOn() * 1000UL)) return false;
+	if(!waitEEVService(true)) return false;
+	if(move && dEEV.get_EEV() != goal) {
+		raise_Error(ErrorCatalog::Code::kCOMP_START_BLOCKED, "EEV", {}, "ЭРВ не достигла стартовой позиции");
+		return false;
+	}
+	dEEV.CorrectOverheatInit();
+	return true;
+}
+#endif
+
 void HeatPump::compressorON()
 {
-	if(get_State() == pOFF_HP || get_State() == pSTOPING_HP || activeError.code) return;  // ТН выключен или выключается выходим ничего не делаем!!!
-
-	if(is_compressor_on()) return;                                  // Компрессор уже работает
+	if(startCancelled() || is_compressor_on() || check_compressor_pause()) return;
 	if((get_modWork() & pBOILER) && boilerHeatBlocked()) return;
 	if(!pressureAllowsStart()) return;
-	if(is_next_command_stop()) {
-		journal.jprintf(" Next command stop in queue, skip start");
-		return;
-	}
 
 	const int8_t reset = ResetFC();
 	if(reset != OK) {
@@ -2121,19 +2194,12 @@ void HeatPump::compressorON()
 #ifdef FLOW_CONTROL
 		if(Option.delayOnPump < BASE_TIME_READ + TIME_READ_SENSOR/1000 + 1) d = BASE_TIME_READ + TIME_READ_SENSOR/1000 + 1;
 #endif
-		for(; d > 0; d--) { // задержка перед включением компрессора
-			// Отсчёт идёт посекундно, но суммарно это до 900 с (по умолчанию 60)
-			// в одной задаче без единой отметки - вместе с паузой выхода ЭРВ
-			// на стартовую позицию ниже это 90 с из предела 120 с уже на
-			// заводских настройках. Отмечаемся на каждой секунде.
-			Watchdog_SleepHere(1000);
-			if(activeError.code || is_next_command_stop()) return; // прерваться по ошибке, еще бы проверить команду на останов...
-		}
+		if(!waitWhileStarting(uint32_t(d) * 1000)) return;
 
 #ifdef FLOW_CONTROL      // если надо проверяем потоки (защита от отказа насосов) MIN_FLOW
 		for(uint8_t i = 0; i < FNUMBER; i++) {   // Проверка потока по каждому датчику
 			 if(sFrequency[i].get_checkFlow() && sFrequency[i].get_Value() < sFrequency[i].get_minValue()) {  // Поток меньше минимального
-				_delay(TIME_READ_SENSOR);
+				if(!waitWhileStarting(TIME_READ_SENSOR)) return;
 				if(sFrequency[i].get_Value() < sFrequency[i].get_minValue()) {  // Поток меньше минимального
 					journal.jprintf(" Flow %s: %.3d\n", sFrequency[i].get_name(), sFrequency[i].get_Value());
 					raise_Error(ErrorCatalog::Code::kFLOW_LOW, sFrequency[i].get_name());
@@ -2158,59 +2224,23 @@ void HeatPump::compressorON()
 #endif
 		const bool boilerStart = (get_modWork() & pBOILER) != 0;
 		if(activeError.code || !pressureAllowsStart() || (boilerStart && boilerHeatBlocked())) return;
-		// Позиционируем ЭРВ после прокачки и проверки протока. Время открытия
-		// перед пуском больше не включает паузу насосов delayOnPump.
 #ifdef EEV_DEF
-	if(lastEEV != -1) {         // Не первое включение компрессора после старта ТН
-		// 1. Обеспечение минимальной паузы компрессора
-		if(compressor_in_pause) return;
-		journal.jprintf_time("compressorON > modWork:%X[%s], now %s\n",get_modWork(),Ret_Text(Status.ret), is_compressor_on() ? "ON" : "OFF");
-	}//get_fEEVStartPosByTemp()
-	// 2. Разбираемся с ЭРВ
-	journal.jprintf(EEV_go);
-	if(dEEV.get_LightStart()) { // Выйти на пусковую позицию
-		dEEV.set_EEV(dEEV.get_preStartPos());
-#ifdef EEV_PREFER_PERCENT
-		journal.jprintf("preStartPos: %.2d\n", dEEV.calc_percent(dEEV.get_preStartPos()));
-#else
-		journal.jprintf("preStartPos: %d\n", dEEV.get_preStartPos());
+		if(!prepareEEVForStart()) return;
 #endif
-	} else if(dEEV.get_StartFlagPos()) { // Всегда начинать работу ЭРВ со стартовой позиции
-		dEEV.set_EEV(dEEV.get_StartPos());
-#ifdef EEV_PREFER_PERCENT
-		journal.jprintf("StartPos: %.2d\n", dEEV.calc_percent(dEEV.get_EEV()));
-#else
-		journal.jprintf("StartPos: %d\n", dEEV.get_EEV());
-#endif
-
-	} else if(lastEEV != -1) { // установка последнего значения ЭРВ
-		dEEV.set_EEV(lastEEV);
-#ifdef EEV_PREFER_PERCENT
-		journal.jprintf("lastEEV: %.2d\n", dEEV.calc_percent(lastEEV));
-#else
-		journal.jprintf("lastEEV: %d\n", lastEEV);
-#endif
-	}
-	if(lastEEV != -1 && dEEV.get_EevClose()) {        // Если закрывали то пауза для выравнивания давлений
-		// delayOn задаётся в секундах: так сказано и в объявлении поля, и у умолчания,
-		// и в сеттере (диапазон 0..255 с), и в описании параметра DON для веба;
-		// парный delayOff в compressorOFF умножается на 1000. Без множителя пауза
-		// выравнивания давлений при умолчании 5 длилась бы 5 мс, то есть её фактически
-		// не было бы.
-		//
-		// Отмечаемся: с множителем это уже длинная пауза (до 255 с) в пути пуска
-		// компрессора, а предел молчания UpdateHP и CommandHP - 120 с.
-		Watchdog_SleepHere(dEEV.get_delayOn() * 1000);  // Задержка на delayOn сек для выравнивания давлений
-	}
-	dEEV.CorrectOverheatInit();
-	for(uint8_t i = 1; i && dEEV.stepperEEV.isBusy(); i++) _delay(100); // wait EEV stop
-#endif
-	  	COMPRESSOR_ON;                                      // Включить компрессор
-		if(boilerStart && boilerHeatBlocked()) {
+		// Общий допуск для ручного пуска, автопуска, RESUME и рабочего цикла.
+		if(check_compressor_pause() || !pressureAllowsStart()) return;
+		const uint32_t irq = irqSave();
+		const bool mayStart = !startCancelled() && !(boilerStart && boilerHeatBlocked());
+		if(mayStart) compressorStartInFlight = true;
+		irqRestore(irq);
+		if(!mayStart) return;
+		COMPRESSOR_ON;
+		compressorStartInFlight = false;
+		if(activeError.code || (boilerStart && boilerHeatBlocked())) {
 			stopForError();
 			return;
 		}
-		if(activeError.code || dFC.get_err()) return; // Ошибка - выходим
+		if(dFC.get_err()) return;
 	} else { // if (get_errcode()==OK)
 		journal.jprintf(" EEV not set before start compressor!\n");
 		raise_Error(ErrorCatalog::Code::kCOMP_START_BLOCKED, "EEV", {},
@@ -2218,28 +2248,15 @@ void HeatPump::compressorON()
 		return;
 	}
 
-	// 4. Если нужно облегченный пуск  в зависимости от флага fEEV_light_start
+	// STOP после ХОД прерывает выдержку, чтобы начать штатный останов.
+	if(startCancelled()) return;
 #ifdef EEV_DEF
-	if(dEEV.get_LightStart())                  //  ЭРВ ОБЛЕГЧЕННЫЙ ПУСК
-	{
-		journal.jprintf(" Pause %d second before go starting position EEV . . .\n", dEEV.get_DelayStartPos());
-		Watchdog_SleepHere(dEEV.get_DelayStartPos() * 1000);  // Задержка после включения компрессора до ухода на рабочую позицию
-		journal.jprintf(EEV_go);
-		if((dEEV.get_StartFlagPos()) || ((lastEEV == -1))) {
-			dEEV.set_EEV(dEEV.get_StartPos());
-#ifdef EEV_PREFER_PERCENT
-			journal.jprintf("StartPos: %.2d\n", dEEV.calc_percent(dEEV.get_EEV()));
-#else
-			journal.jprintf("StartPos: %d\n", dEEV.get_EEV());
-#endif
-		}    // если первая итерация или установлен соответсвующий флаг то на стартовую позицию
-		else { // установка последнего значения ЭРВ в противном случае
-			dEEV.set_EEV(lastEEV);
-#ifdef EEV_PREFER_PERCENT
-			journal.jprintf("lastEEV: %.2d\n", dEEV.calc_percent(lastEEV));
-#else
-			journal.jprintf("lastEEV: %d\n", lastEEV);
-#endif
+	if(dEEV.get_LightStart()) {
+		if(!waitWhileStarting(dEEV.get_DelayStartPos() * 1000UL)) return;
+		const int16_t goal = dEEV.get_StartFlagPos() || lastEEV == -1 ? dEEV.get_StartPos() : lastEEV;
+		if(dEEV.set_EEV(goal) != OK) {
+			raise_Error(ErrorCatalog::Code::kCOMP_START_BLOCKED, "EEV", {}, "ЭРВ отклонила рабочую позицию");
+			return;
 		}
 	}
 #endif

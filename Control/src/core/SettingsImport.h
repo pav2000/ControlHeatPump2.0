@@ -1,0 +1,29 @@
+/*
+ * Copyright (c) 2016-2026 by Pavel Panfilov <firstlast2007@gmail.com>  telegram @pav20000
+ * &                       by Vadim Kulakov vad7@yahoo.com, vad711
+ * "Народный контроллер 2.0" для тепловых насосов.
+ * Данное программное обеспечение предназначено для управления
+ * различными типами тепловых насосов для отопления и ГВС.
+ *
+ * This file is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public
+ * License as published by the Free Software Foundation; either
+ * version 3.0 of the License, or (at your option) any later version.
+ *
+ * This file is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
+ * GNU General Public License for more details.
+ */
+
+#ifndef Control_SettingsImport_h
+#define Control_SettingsImport_h
+
+#include <stdint.h>
+
+enum class SettingsImportResult : uint8_t { Ok, Invalid, Busy };
+
+// Проверяет и применяет настройки из уже принятого файла в рабочем буфере.
+SettingsImportResult restoreSettingsFile(uint8_t *data, int32_t length, bool trace);
+
+#endif

@@ -77,6 +77,9 @@ char     *IPAddress2String(IPAddress &ip);
 void     ShowSockRegisters(uint8_t s);
 void     checkSockStatus();               // сторож зависших сокетов, зовётся из Control.ino
 // ---- Сторож сетевого чипа (решения NetChip_* находятся в ControlPolicy) ----
+enum class NetworkResetCause : uint8_t { Settings, Timer, Power, Ping };
+void requestNetChipReset(NetworkResetCause cause); // Публикует запрос для Web0.
+bool serviceNetChipReset();                      // Выполняет готовый запрос из Web0.
 boolean  netChipReinit(boolean verbose, const char *reason);
 boolean  netChipReinitLocked(boolean verbose, const char *reason); // Замок сети принадлежит вызывающему
 void     netChipBaseline();               // снимок регистров после успешной инициализации; замок сети держит вызывающий

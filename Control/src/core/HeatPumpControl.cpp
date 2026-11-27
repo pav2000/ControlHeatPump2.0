@@ -27,7 +27,6 @@
  * единице трансляции. Проверено сверкой размеров методов.
  */
 #include "HeatPump.h"     // HeatPump, HP, Status, dRelay, dFC, dEEV, sTemp, sADC, sInput, rtcSAM3X8, NO_Power
-#include "../net/Network.h"      // netChipReinit
 #include "Rtos.h"         // Tasks, _delay, SemaphoreTake/Give
 #include "../log/Statistics.h"   // Stats
 #include "../net/WebShared.h"    // Socket[], fABORT_SOCK
@@ -39,13 +38,12 @@ const boolean _wait =  false;  // Команда перевода в режим 
 const boolean _start = true;   // Команда запуска ТН
 const boolean _resume = false; // Команда возобновления работы ТН
 
-// Младшие биты используются очередью, выше хранится причина pNETWORK.
-static constexpr unsigned networkCauseShift = 2;
-
 // Флаги команды для очереди: останов не теряется при переполнении, а длинный пуск смотрит, нет ли его в очереди
 static uint8_t commandFlags(TYPE_COMMAND c)
 {
-	if(c == pSTOP || c == pREPEAT) return CQ_STOP | CQ_CRITICAL;
+	if(c == pSTOP) return CQ_STOP | CQ_CRITICAL | CQ_MANUAL_STOP;
+	if(c == pREPEAT) return CQ_STOP | CQ_CRITICAL | CQ_START;
+	if(c == pSTART || c == pAUTOSTART || c == pRESUME || c == pRESTART) return CQ_START;
 	if(c == pRESET) return CQ_CRITICAL;
 	return 0;
 }
@@ -69,7 +67,7 @@ void HeatPump::endEEVService()
 
 // Принятый пуск не пересекается с сервисной постановкой и движением.
 // STOP/REPEAT/RESET не ждут окончания движения.
-bool HeatPump::waitEEVService()
+bool HeatPump::waitEEVService(bool starting)
 {
 	const TickType_t started = xTaskGetTickCount();
 	// Минимальная допустимая скорость 5 шаг/с. Запас учитывает полный ход с перебегом.
@@ -80,10 +78,11 @@ bool HeatPump::waitEEVService()
 		bool active = eevServiceIssuing || dEEV.stepperEEV.isBusy();
 		bool interrupt = CommandQueue_Has(&cmdq, CQ_STOP | CQ_CRITICAL);
 		taskEXIT_CRITICAL();
-		if(interrupt) return false;
+		if(interrupt || (starting && startCancelled())) return false;
 		if(!active) return true;
 		if((TickType_t)(xTaskGetTickCount() - started) > timeoutTicks) {
-			raise_Error(ErrorCatalog::Code::kCONFIG, "EEV motion timeout");
+			raise_Error(starting ? ErrorCatalog::Code::kCOMP_START_BLOCKED : ErrorCatalog::Code::kCONFIG,
+			            "EEV", {}, "Истекло время ожидания движения ЭРВ");
 			return false;
 		}
 		Watchdog_SleepHere(100);
@@ -94,15 +93,16 @@ bool HeatPump::waitEEVService()
 // Поставить команду в очередь и разбудить CommandHP. Выбор "выполняется / в очереди" и постановка идут
 // под одним запретом прерываний: иначе две команды, пришедшие вместе, затирали друг друга. Пробуждение -
 // уведомление задачи: оно не теряется, даже если CommandHP ещё не дошла до ожидания.
-void HeatPump::sendCommand(TYPE_COMMAND c, NetworkResetCause cause)
+void HeatPump::sendCommand(TYPE_COMMAND c)
 {
 	uint32_t pm = irqSave();
 	TYPE_COMMAND running = command;
 	bool idle = (running == pEMPTY && cmdq.count == 0);
 	CqResult r = CQ_DUPLICATE;
-	const bool stopping = idle && c == pSTART && get_State() == pSTOPING_HP;
+	const uint8_t flags = commandFlags(c);
+	const bool stopping = (flags & CQ_START) && (running == pSTOP || (c != pREPEAT && get_State() == pSTOPING_HP));
 	if(!stopping)
-		r = CommandQueue_Push(&cmdq, running, c, commandFlags(c) | (static_cast<uint8_t>(cause) << networkCauseShift));
+		r = CommandQueue_Push(&cmdq, running, c, flags);
 	irqRestore(pm);
 	if(stopping) journal.event(Journal::Stamp::Time, "CMD", "REJECTED", "Пуск отклонён, ТН останавливается");
 	if(r == CQ_DUPLICATE) return;
@@ -118,7 +118,7 @@ void HeatPump::sendCommand(TYPE_COMMAND c, NetworkResetCause cause)
 boolean HeatPump::is_next_command_stop()
 {
 	uint32_t pm = irqSave();
-	boolean r = CommandQueue_Has(&cmdq, CQ_STOP);
+	boolean r = command == pSTOP || command == pRESET || CommandQueue_Has(&cmdq, CQ_STOP);
 	irqRestore(pm);
 	return r;
 }
@@ -128,12 +128,27 @@ boolean HeatPump::is_next_command_stop()
 boolean HeatPump::takeCommand()
 {
 	uint32_t pm = irqSave();
-	uint8_t c = pEMPTY, flags = 0;
-	command = CommandQueue_Pop(&cmdq, &c, &flags) ? (TYPE_COMMAND) c : pEMPTY;
-	networkResetCause = static_cast<NetworkResetCause>(flags >> networkCauseShift);
+	uint8_t c = pEMPTY;
+	if(CommandQueue_Pop(&cmdq, &c)) command = static_cast<TYPE_COMMAND>(c);
+	// Явные команды, включая STOP, идут первыми. Автопуск не живёт в очереди
+	// отдельным запросом и не может остаться в ней после отмены таймера.
+	else command = deferredStart.TakeDue(xTaskGetTickCount()) ? pAUTOSTART : pEMPTY;
 	irqRestore(pm);
 	return command != pEMPTY;
 }
+// WAIT/RESUME могут упереться в рабочую итерацию UpdateHP. Проверяем
+// очередь между попытками, чтобы не отложить ручной STOP на целую минуту.
+bool HeatPump::takeUpdateLock()
+{
+	const TickType_t started = xTaskGetTickCount();
+	while(!is_next_command_stop()) {
+		if(SemaphoreTake(Tasks.xCommandSemaphore, 100 / portTICK_PERIOD_MS) == pdPASS) return true; // SEM-OK: замок передан WAIT/RESUME.
+		Watchdog_AliveHere();
+		if(xTaskGetTickCount() - started >= 60000 / portTICK_PERIOD_MS) break;
+	}
+	return false; // SEM-OK: каждый успешный захват уже вернул true вызывающему.
+}
+
 // Выполнить команду по управлению ТН true-команда выполнена
 int8_t HeatPump::runCommand()
 {
@@ -147,6 +162,7 @@ int8_t HeatPump::runCommand()
 #ifdef EEV_DEF
 			if(!waitEEVService()) break;
 #endif
+			deferredStart.Cancel();
 			num_repeat=0;           // обнулить счетчик повторных пусков
 			StartResume(_start);    // включить ТН
 			break;
@@ -157,11 +173,11 @@ int8_t HeatPump::runCommand()
 			StartResume(_start);    // включить ТН
 			break;
 		case pSTOP:                           // 3 Стоп теплового насоса
-		    PauseStart = 0;
+		    deferredStart.Cancel();
 			StopWait(_stop);        // Выключить ТН
 			break;
 		case pRESET:                          // 4 Сброс контроллера
-		    PauseStart = 0;
+		    deferredStart.Cancel();
 			StopWait(_stop);        // Выключить ТН
 			log_Event("SYS", "RESET", "Штатная перезагрузка по команде");
 			save_motoHour();
@@ -177,21 +193,14 @@ int8_t HeatPump::runCommand()
 			}
 			StopWait(_stop);                            // Попытка запустит ТН (по числу пусков)
 			num_repeat++;                               // увеличить счетчик повторов пуска ТН
-			PauseStart = 1;   							// Запустить выполнение отложенного старта
-			journal.event(Journal::Stamp::Time, "CMD", "REPEAT", "Запланирован повторный пуск, осталось попыток: %d",
-			              get_nStart() - num_repeat);
+			deferredStart.Arm(xTaskGetTickCount(), Option.delayRepeadStart * configTICK_RATE_HZ);
+			journal.event(Journal::Stamp::Time, "CMD", "REPEAT", "Повторный пуск через %u с, осталось попыток: %d",
+			              (unsigned)Option.delayRepeadStart, get_nStart() - num_repeat);
 			break;
 		case pRESTART:
-			PauseStart = 1;									// Запустить выполнение отложенного старта
-			journal.event(Journal::Stamp::Time, "CMD", "RESTART", "Запланирован перезапуск ТН");
+			deferredStart.Arm(xTaskGetTickCount(), Option.delayStartRes * configTICK_RATE_HZ);
+			journal.event(Journal::Stamp::Time, "CMD", "RESTART", "Перезапуск ТН через %u с", (unsigned)Option.delayStartRes);
 			break;
-		case pNETWORK: {
-			// Даём веб-серверу закончить ответ перед сбросом соединений.
-			_delay(1000);
-			static const char *const reasons[] = {"применение настроек сети", "таймер", "возврат питания", "нет ответа на пинг"};
-			netChipReinit(true, reasons[static_cast<uint8_t>(networkResetCause)]);
-			break;
-		}
 		case pPROG_FC:                                             // Программировать инвертор первоначальными данными (настройка инвертора)
 		    #ifndef FC_VACON  // Omron , если в Vacon будет определен метод progFC этот дефайн убрать
             dFC.progFC();
@@ -203,31 +212,31 @@ int8_t HeatPump::runCommand()
 			break;
 		case pWAIT:   // Перевод в состяние ожидания  - особенность возможна блокировка задач - используем семафор
 xWait:
-			if(SemaphoreTake(Tasks.xCommandSemaphore,(60*1000/portTICK_PERIOD_MS))==pdPASS)    // Семафор  захвачен ОЖИДАНИНЕ ДА 60 сек
+			if(takeUpdateLock())
 			{
 				Tasks.Task_vUpdate_run = false;					      // Остановить задачу обновления ТН vUpdate (Tasks.xHandleUpdate)
 				StopWait(_wait);                                  // Ожидание
-				SemaphoreGive(Tasks.xCommandSemaphore);                 // Семафор отдать
+				SemaphoreGive(Tasks.xCommandSemaphore);                 // SEM-OK: взят через takeUpdateLock.
 				Wake_UpdateHP();
 			}
-			else  journal.jprintf((char*)cErrorMutex,__FUNCTION__,MutexCommandBusy);
+			else if(!is_next_command_stop()) journal.jprintf((char*)cErrorMutex,__FUNCTION__,MutexCommandBusy);
 			break;
 		case pRESUME:   // Восстановление работы после ожидания -особенность возможна блокировка задач - используем семафор
-			if(SemaphoreTake(Tasks.xCommandSemaphore,(60*1000/portTICK_PERIOD_MS))==pdPASS)    // Семафор  захвачен ОЖИДАНИНЕ ДА 60 сек
+			if(takeUpdateLock())
 			{
 				Tasks.Task_vUpdate_run = false;					      // Остановить задачу обновления ТН vUpdate (Tasks.xHandleUpdate)
 				StartResume(_resume);                             // восстановление ТН
-				SemaphoreGive(Tasks.xCommandSemaphore);                 // Семафор отдать
+				SemaphoreGive(Tasks.xCommandSemaphore);                 // SEM-OK: взят через takeUpdateLock.
 				Wake_UpdateHP();
 			}
-			else  journal.jprintf((char*)cErrorMutex,__FUNCTION__,MutexCommandBusy);
+			else if(!is_next_command_stop()) journal.jprintf((char*)cErrorMutex,__FUNCTION__,MutexCommandBusy);
 			break;
 
 		default:                                                         // Не известная команда
 			journal.event(Journal::Stamp::Time, "CMD", "REJECTED", "Неизвестная команда %d", (int)command);
 			break;
 		}
-		if(command != pSAVE && command != pNETWORK) command_completed = Uptime_s();
+		if(command != pSAVE) command_completed = Uptime_s();
 		if(!takeCommand()) break;   // очередь пуста, command сброшен в pEMPTY
 		_delay(1);
 	}
@@ -248,7 +257,7 @@ char *HeatPump::StateToStr()
 {
 	switch ((int)get_State())  //TYPE_STATE_HP
 	{
-	case pOFF_HP:     return (char*)(PauseStart == 0 ? "Выключен" : "Перезапуск...");  break;   // 0 ТН выключен или Перезапуск
+	case pOFF_HP:     return (char*)(!deferredStart.pending ? "Выключен" : "Перезапуск...");  break;   // 0 ТН выключен или Перезапуск
 	case pSTARTING_HP:return (char*)"Пуск...";   break;         // 1 Стартует
 	case pSTOPING_HP: return (char*)"Останов...";break;         // 2 Останавливается
 	case pWORK_HP:                                              // 3 Работает
@@ -276,7 +285,7 @@ char *HeatPump::StateToStrEN()
 {
 	switch ((int)get_State())  //TYPE_STATE_HP
 	{
-	case pOFF_HP:     return (char*)(PauseStart == 0 ? "Off" : "Restart...");  break;   // 0 ТН выключен или Перезапуск
+	case pOFF_HP:     return (char*)(!deferredStart.pending ? "Off" : "Restart...");  break;   // 0 ТН выключен или Перезапуск
 	case pSTARTING_HP:return (char*)"Start...";   break;         // 1 Стартует
 	case pSTOPING_HP: return (char*)"Stop...";    break;         // 2 Останавливается
 	case pWORK_HP:                                               // 3 Работает

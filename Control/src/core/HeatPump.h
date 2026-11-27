@@ -268,7 +268,7 @@ class HeatPump
 #else
     inline  boolean is_heating() { return true; } 	// true = Режим нагрева отопления или бойлера, false = охлаждение
 #endif
-    boolean IsWorkingNow() { return !(get_State() == pOFF_HP && PauseStart == 0); }				// Включен ТН или нет
+    boolean IsWorkingNow() { return !(get_State() == pOFF_HP && !deferredStart.pending); }				// Включен ТН или нет
     boolean CheckAvailableWork();							// проверить есть ли работа для ТН
     sensorTemp *CheckSensors();                             // нужные алгоритму датчики температуры: NULL - все годны, иначе первый негодный
   
@@ -315,9 +315,9 @@ class HeatPump
 #ifdef EEV_DEF
     bool beginEEVService(bool retarget = false);
     void endEEVService();
-    bool waitEEVService();
+    bool waitEEVService(bool starting = false);
 #endif
-    void     sendCommand(TYPE_COMMAND c, NetworkResetCause cause = NetworkResetCause::Settings);   // Послать команду на управление ТН
+    void     sendCommand(TYPE_COMMAND c);   // Послать команду на управление ТН
     inline TYPE_COMMAND isCommand()  {return command;}  // Получить текущую команду выполняемую ТН
     int8_t   runCommand();               // Выполнить команду по управлению ТН
     char *get_command_name(TYPE_COMMAND c) { return (char*)hp_commands_names[c < pEND14 ? c : pEND14]; }
@@ -534,7 +534,7 @@ class HeatPump
     uint8_t num_repeat;                                   // + текущее число повторов пуска ТН
     
     
-    uint8_t PauseStart;                                    // 1 - ТН в отложенном запуске, 0 - нет, начать отсчет времени с начала при отложенном старте
+    DeferredStart deferredStart;                         // Срок пуска после сброса или аварии.
        
     uint8_t startPump;                                     // Признак запуска задачи насос 0 - останов задачи, 1 - запуск, 2 - в работе (выкл), 3 - в работе (вкл)
     type_SecurityHP Security;                              // хеш паролей
@@ -549,7 +549,15 @@ class HeatPump
     void updateChart();                                    // обновить графики в памяти
     void clearChart();                                     // Очистить графики в памяти
     void get_listChart(char* ret, const char *delimiter);	       // получить список доступных графиков
-    void get_Chart(int index, char *str);                  // получить данные графика
+    uint16_t get_chartRows() const { return chartRows; }
+    uint32_t get_chartRevision() const { return chartRevision; }
+    uint8_t chartObject(uint8_t index);
+    static uint8_t chartDecimals(uint8_t object);
+    bool readChartPoint(uint8_t index, uint16_t point, const CondensingChartSource &source, int32_t &value);
+    void setChartSource(uint8_t index, const Charts_Mod_setup &setup);
+    void refreshChartSources();
+    volatile uint32_t chartRevision = 0;  // Меняется при сдвиге шкалы или настройке источников.
+    volatile uint16_t chartRows = 0;      // Количество точек на общей шкале.
     CondensingChartSource get_condensingChartSource();    // тот же выбор датчика, что в get_temp_condensing()
     statChart Charts[sizeof(ChartsModSetup) / sizeof(ChartsModSetup[0]) + sizeof(ChartsConstSetup) / sizeof(ChartsConstSetup[0])];
     uint8_t Chart_PressTemp_PCON;
@@ -619,10 +627,18 @@ class HeatPump
     MODE_COMP UpdateCool();               // Итерация охлаждение вход true - делаем, false - ТОЛЬКО проверяем выход что сделано или надо сделать
     MODE_COMP UpdateBoiler();             // Итерация управления бойлером возвращает что делать компрессору
     void compressorON();                  // попытка включить компрессор  с учетом всех защит
+    bool startCancelled();                // ручной останов или смена состояния в ходе пуска
+    bool waitWhileStarting(uint32_t ms);
+    bool takeUpdateLock();                // ожидание замка UpdateHP с выходом по STOP
+#ifdef EEV_DEF
+    bool prepareEEVForStart();
+#endif
+    volatile bool compressorStartInFlight = false; // драйвер уже принял вызов ХОД
     // Возвращает режим контура для PEVA и PCON или pOFF вне отопления и ГВС.
     MODE_HP pressureWorkMode();
     // Возвращает допуск пуска по свежему PCON и состоянию верхней защиты.
     bool pressureAllowsStart();
+    const char *failedRequiredPressureFilter(); // Имя датчика с отказом памяти, если он нужен управлению.
     PressureProtection pressureProtection; // Состояние защит давления и допуска повторного пуска.
     volatile bool boilerTempBlocked = false; // Блокировка ГВС, читается из задач управления и веба.
     int16_t boilerTripLimit = 0;             // Предел TBOILER при срабатывании, в сотых °C.
@@ -642,7 +658,6 @@ class HeatPump
 #ifdef EEV_DEF
     volatile bool eevServiceIssuing;
 #endif
-    NetworkResetCause networkResetCause;   // Причина выполняемой pNETWORK, извлечённая из очереди
     CommandQueue cmdq;                    // Очередь команд, см. CommandQueue.h; все обращения под запретом прерываний
     type_status Status;                   // Описание состояния ТН
 

@@ -64,7 +64,9 @@ class sensorADC : public Sensor
     int16_t get_Value();                                 // Получить значение давления датчика - это то что используется
     uint16_t get_transADC(){return cfg.transADC;}        // Получить значение коэффициента преобразования
     int8_t set_transADC(float p);                        // Установить значение коэффициента преобразования
-    inline boolean get_present(){return GETBIT(flags,fPresent);} // Наличие датчика в текущей конфигурации
+    inline boolean get_present(){return Device::get_present() && adc_filter != nullptr;}
+    // Признак отказа переживает сброс активной аварии при ручном START.
+    bool adcFilterFailed(){return Device::get_present() && adc_filter == nullptr;}
     inline boolean get_fmodbus(){return GETBIT(flags,fsensModbus);} // Подключен по Modbus
     inline uint8_t  get_pinA(){return pin;}              // Получить канал АЦП (нумерация SAM3X) куда прицеплен датчик
     int16_t get_testValue(){return cfg.testValue;}       // Получить значение датчика в режиме теста
@@ -79,7 +81,7 @@ class sensorADC : public Sensor
     //type_rawADC adc;                                  // структура для хранения сырых данных с АЦП
     // Поля adc_* пишет обработчик прерывания АЦП, читает sensorADC::Read: volatile, а читать парой - только под запретом прерываний
     volatile uint32_t adc_sum;                 			// сумма
-    uint16_t *adc_filter;              					// массив накопленных значений
+    uint16_t *adc_filter = nullptr;                       // Массив накопленных значений.
     uint16_t adc_filter_max;
     volatile uint16_t adc_last;       	                // текущий индекс
     volatile boolean  adc_flagFull;     			    // буфер полный

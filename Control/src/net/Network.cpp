@@ -436,10 +436,49 @@ void netChipPingFailed()
 #else   // не W5500: регистров для сверки нет, остаются прежние проверки
 void netChipBaseline() {}
 bool netChipSelfTest() { return false; }
-void netChipPingFailed() { HP.sendCommand(pNETWORK, NetworkResetCause::Ping); }
+void netChipPingFailed() { requestNetChipReset(NetworkResetCause::Ping); }
 #endif
 
-// Переинициализация из очереди команд и сетевого самотеста берёт замок сама.
+// Web0 объединяет ожидающие запросы. Для применения настроек отсчёт
+// начинается после отправки ответа. Остальные причины не сокращают эту паузу.
+static uint8_t netResetPending;
+static uint32_t netSettingsRequestedAt;
+
+void requestNetChipReset(NetworkResetCause cause)
+{
+	const uint32_t irq = irqSave();
+	netResetPending |= 1u << static_cast<uint8_t>(cause);
+	if(cause == NetworkResetCause::Settings) netSettingsRequestedAt = xTaskGetTickCount();
+	irqRestore(irq);
+}
+
+bool serviceNetChipReset()
+{
+	const uint8_t settings = 1u << static_cast<uint8_t>(NetworkResetCause::Settings);
+	uint32_t irq = irqSave();
+	const bool ready = netResetPending && (!(netResetPending & settings) ||
+	                   xTaskGetTickCount() - netSettingsRequestedAt >= configTICK_RATE_HZ);
+	irqRestore(irq);
+	if(!ready || SemaphoreTake(xWebThreadSemaphore, 0) == pdFALSE) return false;
+
+	irq = irqSave();
+	uint8_t causes = netResetPending;
+	// Новое применение настроек могло прийти, пока Web0 брал мьютекс.
+	if((causes & settings) && xTaskGetTickCount() - netSettingsRequestedAt < configTICK_RATE_HZ) causes = 0;
+	if(causes) netResetPending = 0;
+	irqRestore(irq);
+
+	if(causes) {
+		const char *reason = causes & settings ? "применение настроек сети" :
+		                     causes & (1u << static_cast<uint8_t>(NetworkResetCause::Power)) ? "возврат питания" :
+		                     causes & (1u << static_cast<uint8_t>(NetworkResetCause::Ping)) ? "нет ответа на пинг" : "таймер";
+		netChipReinitLocked(true, reason); // SEM-BORROW: Web0 держит xWebThreadSemaphore.
+	}
+	SemaphoreGive(xWebThreadSemaphore);
+	return causes != 0;
+}
+
+// Переинициализация из сетевого самотеста берёт замок сама.
 boolean netChipReinit(boolean verbose, const char *reason)
 {
 	if(SemaphoreTake(xWebThreadSemaphore, (W5200_TIME_WAIT / portTICK_PERIOD_MS)) == pdFALSE) {

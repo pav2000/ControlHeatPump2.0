@@ -873,7 +873,10 @@ bool get_binSettings(uint8_t thread)
 
 // Получить файл со графиками возвращает число отправленных байт
 void get_csvChart(uint8_t thread)
-{ 
+{
+	const uint32_t revision = HP.get_chartRevision();
+	const uint16_t points = HP.get_chartRows();
+	const auto source = HP.get_condensingChartSource();
 	// заголовок
 	strcpy(Socket[thread].outBuf, WEB_HEADER_OK_CT);
 	strcat(Socket[thread].outBuf, WEB_HEADER_TEXT_ATTACH);
@@ -883,52 +886,26 @@ void get_csvChart(uint8_t thread)
 	strcpy(Socket[thread].outBuf,"Point;");
 	HP.get_listChart(Socket[thread].outBuf, ";");
 	Socket[thread].outBuf[strlen(Socket[thread].outBuf) - 1] = '\0';
+	if(revision != HP.get_chartRevision()) return;
 	STR_END;
 	if(sendPacketRTOS(thread, (byte*) Socket[thread].outBuf, strlen(Socket[thread].outBuf)) == 0) return; // передать пакет, при ошибке выйти
 
-	for(uint16_t point = 0; point < HP.Charts[0].get_num(); point++) { // По всем точкам
+	for(uint16_t point = 0; point < points; ++point) {
+		if(revision != HP.get_chartRevision()) return;
 		itoa(point + 1, Socket[thread].outBuf, 10);
-		for(uint8_t i = 0; i < sizeof(HP.Charts) / sizeof(HP.Charts[0]); i++) {
+		constexpr uint8_t stored = CHARTS_MOD_COUNT + CHARTS_CONST_COUNT;
+		for(uint8_t i = 0; i < stored + CHARTS_ONFLY_COUNT; ++i) {
 			strcat(Socket[thread].outBuf, ";");
-			_dtoa(Socket[thread].outBuf, HP.Charts[i].get_Point(point), 2);
-		}
-		for(uint8_t index = 0; index < sizeof(ChartsOnFlySetup) / sizeof(ChartsOnFlySetup[0]); index++) {
-			strcat(Socket[thread].outBuf, ";");
-			int32_t value = -32767;
-			switch (ChartsOnFlySetup[index].object) {
-#ifdef TCONOUT
-				case STATS_OBJ_Overcool:
-					value = HP.Charts[HP.Chart_PressTemp_PCON].get_Point(point) - HP.Charts[HP.Chart_Temp_TCONOUT].get_Point(point);
-					break;
-#endif
-				case STATS_OBJ_TCOMP_TCON:
-					if(HP.Chart_Temp_TCOMP) {
-						const CondensingChartSource source = HP.get_condensingChartSource();
-						if(source.index) value = HP.Charts[HP.Chart_Temp_TCOMP].get_Point(point) -
-							HP.Charts[source.index].get_Point(point) - source.offset;
-					}
-					break;
-				case STATS_OBJ_Delta_GEO:
-					value = HP.Charts[HP.Chart_Temp_TEVAING].get_Point(point) - HP.Charts[HP.Chart_Temp_TEVAOUTG].get_Point(point);
-					break;
-				case STATS_OBJ_Delta_OUT:
-					value = HP.Charts[HP.Chart_Temp_TCONOUTG].get_Point(point) - HP.Charts[HP.Chart_Temp_TCONING].get_Point(point);
-					break;
-#ifdef FLOWEVA
-				case STATS_OBJ_Power_GEO:
-					value = (HP.Charts[HP.Chart_Temp_TEVAOUTG].get_Point(point) - HP.Charts[HP.Chart_Temp_TEVAING].get_Point(point)) * HP.Charts[HP.Chart_Flow_FLOWEVA].get_Point(point) / 10 * HP.sFrequency[FLOWEVA].get_Capacity() / 3600;
-					break;
-#endif
-#ifdef FLOWCON
-				case STATS_OBJ_Power_OUT:
-					value = (HP.Charts[HP.Chart_Temp_TCONOUTG].get_Point(point) - HP.Charts[HP.Chart_Temp_TCONING].get_Point(point)) * HP.Charts[HP.Chart_Flow_FLOWCON].get_Point(point) / 10 * HP.sFrequency[FLOWCON].get_Capacity() / 3600;
-					break;
-#endif
+			int32_t value;
+			if(HP.readChartPoint(i, point, source, value)) {
+				const uint8_t decimals = i < stored ? 2 : HP.chartDecimals(HP.chartObject(i));
+				dptoa(Socket[thread].outBuf + strlen(Socket[thread].outBuf), value, decimals);
 			}
-			_dtoa(Socket[thread].outBuf, value, 2);
 		}
+		// Не отправляем строку, если шкала или источники изменились при расчёте.
+		if(revision != HP.get_chartRevision()) return;
 		STR_END;
-		if(sendPacketRTOS(thread, (byte*) Socket[thread].outBuf, strlen(Socket[thread].outBuf)) == 0) return; // передать пакет, при ошибке выйти
+		if(sendPacketRTOS(thread, (byte*) Socket[thread].outBuf, strlen(Socket[thread].outBuf)) == 0) return;
 	}
 }
 

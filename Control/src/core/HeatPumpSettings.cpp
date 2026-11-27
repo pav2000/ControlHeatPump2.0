@@ -375,14 +375,19 @@ int32_t HeatPump::load_new(uint8_t *buffer, uint16_t capacity, uint8_t from_RAM)
 		return load_fail(status, from_RAM, cause);
 	}
 	size -= sizeof(uint16_t);
-#ifdef LOAD_VERIFICATION
-	uint16_t crc = calc_crc16(buffer, size, 0xFFFF);
-	const uint16_t stored = rec_hdr_tag(buffer + size);
-	if(crc != stored) {
-		if(trace) journal.jprintf_time("CFG: CRC настроек рассчитана %04x, ожидалась %04x\n", (unsigned)crc, (unsigned)stored);
-		return load_fail(ErrorCatalog::Code::kSETTINGS_DATA, from_RAM, static_cast<uint16_t>(SettingsDataCause::Crc));
-	}
+	// Импорт формата 150+ проверяет CRC даже в сборке с отключённой
+	// проверкой при загрузке настроек из EEPROM.
+#ifndef LOAD_VERIFICATION
+	if(from_RAM)
 #endif
+	{
+		const uint16_t crc = calc_crc16(buffer, size, 0xFFFF);
+		const uint16_t stored = rec_hdr_tag(buffer + size);
+		if(crc != stored) {
+			if(trace) journal.jprintf_time("CFG: CRC настроек рассчитана %04x, ожидалась %04x\n", (unsigned)crc, (unsigned)stored);
+			return load_fail(ErrorCatalog::Code::kSETTINGS_DATA, from_RAM, static_cast<uint16_t>(SettingsDataCause::Crc));
+		}
+	}
 	uint8_t ver = buffer[NEW_OFS_VER - 2];
 	SettingsHead head = settings_head_check(size + 2, ver, VER_SAVE, NEW_HDR_SIZE);
 	if(head == SETHEAD_EMPTY) {                  // версия 0 или 0xFF - блок не наш
@@ -633,7 +638,7 @@ void HeatPump::resetSettingHP()
 	onSalmonella = false;                           // Если true то идет Обеззараживание
 	command = pEMPTY;                               // Команд на выполнение нет
 	CommandQueue_Init(&cmdq);
-	PauseStart = 0;                                 // начать отсчет задержки пред стартом с начала
+	deferredStart.Cancel();                         // Сброс настроек отменяет отложенный пуск.
 	Diag.startRAM = 0;                                   // Свободная память при старте FREE Rtos - пытаемся определить свободную память при работе
 	lastEEV = -1;                                   // значение шагов ЭРВ перед выключением  -1 - первое включение
 	num_repeat = 0;                                 // текущее число попыток 0 - т.е еще не было работы

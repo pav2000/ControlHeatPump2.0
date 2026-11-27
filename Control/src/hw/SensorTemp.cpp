@@ -160,18 +160,18 @@ int8_t sensorTemp::Read(bool *freshLocal)
 #endif
 	}
 
-	// Усреднение значений
-  #if T_NUMSAMLES == 1         // При 1 - без усреднения
-	Temp = lastTemp + cfg.errTemp;
-  #else                        // буфер может быть не полным
-	sum = sum-t[last];           // Убрать самое старое значение из суммы
-	t[last] = lastTemp;          // Запомить новое значение
-	sum = sum + lastTemp;          // Добавить новое значение
-
-	if (last<(T_NUMSAMLES-1)) last++; else { last=0; SETBIT1(flags,fFull);}  // Установить признак буфер полный при T_NUMSAMLES=1 буфер всегда полный (придупреждение компилятора)
-	if(GETBIT(flags,fFull))   Temp=sum/T_NUMSAMLES+errTemp;   // буфер полный
-	else                      Temp=sum/last+errTemp;
-  #endif
+	// Усреднение значений. Поправку датчика применяем к готовому отсчёту.
+	int16_t measured = lastTemp;
+#if T_NUMSAMLES > 1
+	sum += lastTemp - t[last];
+	t[last] = lastTemp;
+	if(last == T_NUMSAMLES - 1) {
+		last = 0;
+		SETBIT1(flags, fFull);
+	} else ++last;
+	measured = sum / (GETBIT(flags, fFull) ? T_NUMSAMLES : last);
+#endif
+	Temp = measured + cfg.errTemp;
 
 	// Проверка на ошибки именно здесь обрабатывются ошибки и передаются на верх
 	if(Temp<minTemp) { err = ErrorNumber(ErrorCatalog::Code::kTEMP_MIN); HP.raise_Error(ErrorCatalog::Code::kTEMP_MIN, name); return err; }

@@ -20,6 +20,7 @@
 
 #include "WebShared.h"    // Socket[], генерируемые файлы
 #include "WebUpload.h"    // состояние заливки морды
+#include "../core/SettingsImport.h"
 #include "../core/HeatPump.h"     // HP - состояние и настройки
 #include "Network.h"      // транспорт, server1
 #include "../core/Rtos.h"         // _delay, SemaphoreTake/Give
@@ -812,116 +813,11 @@ static bool uploadFileSD(uint8_t thread, const char *nameFile, const uint8_t *pt
 	return ok;
 }
 
-// Проверяет секцию профилей между ptr и file_end. version задаёт раскладку старых слотов.
-// Возвращает длину секции с END и CRC либо -1 при отказе.
-static int32_t fileProfilesLen(const uint8_t *ptr, const uint8_t *file_end, uint8_t version, bool trace)
-{
-	int32_t len;
-	const int32_t available = file_end - ptr;
-	if(available < REC_HDR_SIZE) return -1;
-	const uint16_t tag = rec_hdr_tag(ptr);
-	if(tag == NTAG_Profile || tag == NTAG_END) {
-		ProfileScan ps;
-		profile_scan(ptr, file_end, NTAG_Profile, NTAG_END, 1 + sizeof(ProfileSlot), I2C_PROFIL_NUM, &ps);
-		len = ps.bytes + sizeof(uint16_t);               // плюс END (уже в bytes) и контрольная сумма
-		if(ps.bad_len || ps.bad_slot || ps.bad_tag || ps.truncated || !ps.end_seen || len > available) {
-			if(trace) journal.jprintf_time("CFG: профили файла, неверная длина %d, слот %d, тег %d, обрыв %d, END %d\n",
-			                              ps.bad_len, ps.bad_slot, ps.bad_tag, ps.truncated, ps.end_seen);
-			return -1;
-		}
-		// Контрольная сумма области: по всем байтам записей и заголовку END, как при записи в save_region
-		uint16_t crc_stored;
-		memcpy(&crc_stored, ptr + ps.bytes, sizeof(crc_stored));
-		uint16_t crc_file = calc_crc16((unsigned char*) ptr, ps.bytes, 0xFFFF);
-		if(crc_file != crc_stored) {
-			if(trace) journal.jprintf_time("CFG: CRC профилей рассчитана %04x, ожидалась %04x\n", crc_file, crc_stored);
-			return -1;
-		}
-	} else {
-		LegacyProfileSizes sz;
-		const int32_t stride = legacy_profile_sizes(version, &sz, sizeof(uint8_t) + sizeof(uint16_t))
-		                       ? sz.total : HP.Prof.get_sizeProfile();
-		len = stride * I2C_PROFIL_NUM_LEGACY;
-		if(len > available) return -1;
-	}
-	if(len > I2C_SCHEDULER_EEPROM - I2C_PROFILE_EEPROM) return -1;
-	return len;
-}
-
 // Файл отклонён до применения, проверенной CRC основного блока ещё нет.
 static TYPE_RET_POST rejectSettingsFile(const char *reason, TYPE_RET_POST response = pSETTINGS_ERR)
 {
 	journal.event(Journal::Stamp::Time, "CFG", "RESTORE", "Файл отклонён: %s, CRC16=н/д", reason);
 	return response;
-}
-
-// Проверяет формат и границы всех секций перед применением. Основные настройки и расписание
-// загружает в ОЗУ, профили записывает в EEPROM. trace передан до загрузки новой маски.
-static TYPE_RET_POST restoreSettingsFile(uint8_t *ptr, int32_t buf_len, bool trace)
-{
-	// Ищем HEADER_BIN в собранных бинарных данных без завершающего нуля.
-	const int32_t ml = sizeof(HEADER_BIN) - 1;
-	int32_t k = -1;
-	for(int32_t n = 0; n + ml <= buf_len; n++)
-		if(memcmp(ptr + n, HEADER_BIN, ml) == 0) { k = n + ml; break; }
-	if(k < 0) return rejectSettingsFile("нет заголовка настроек");
-	buf_len -= k;                                                        // дальше идут бинарные данные, без текстового заголовка
-	memmove(ptr, ptr + k, buf_len);
-	// Версия должна находиться в теле настроек перед CRC, а весь блок — в принятом файле.
-	const uint32_t block = settings_file_block_size(ptr, buf_len);
-	if(block < NEW_OFS_VER + 1 + sizeof(uint16_t)) return rejectSettingsFile("неверная длина блока настроек");
-	const bool newFormat = ptr[NEW_OFS_VER] >= SETTINGS_VER_NEW;
-	const uint8_t *file_end = ptr + buf_len;
-	const int32_t profilesLen = fileProfilesLen(ptr + block, file_end, ptr[NEW_OFS_VER], trace);
-	if(profilesLen < 0) return rejectSettingsFile("неверная секция профилей");
-	uint8_t *schedule = ptr + block + profilesLen;
-	uint16_t hint = 0;
-	if(file_end - schedule >= REC_HDR_SIZE && rec_hdr_tag(schedule) == NTAG_Scheduler) {
-		hint = rec_hdr_len(schedule);
-		if(!hint) return rejectSettingsFile("пустая секция расписания");
-		schedule += REC_HDR_SIZE;
-	}
-	if(!HP.Schdlr.file_data_len(schedule, file_end - schedule, hint))
-		return rejectSettingsFile("неверная длина или CRC секции расписания");
-	SettingsLock lock(HP.saving);
-	if(!lock) return rejectSettingsFile("идёт другая операция с настройками", pSETTINGS_BUSY);
-#ifdef EEV_DEF
-	// Загрузка вызывает InitStepper; проверка раннего снимка IsWorkingNow недостаточна.
-	if(!HP.beginEEVService()) return rejectSettingsFile("ТН или ЭРВ заняты", pSETTINGS_BUSY);
-	struct SettingsEEVGuard { ~SettingsEEVGuard() { HP.endEEVService(); } } eevGuard;
-#endif
-	const int32_t len = newFormat ? HP.load_new(ptr, block, 1) : HP.load(ptr, block, 1);
-	if(len <= 0) return pSETTINGS_ERR;
-	const unsigned crc = rec_hdr_tag(ptr + block - sizeof(uint16_t));
-	ptr += block;
-	if(writeEEPROM_I2C(I2C_PROFILE_EEPROM, ptr, profilesLen)) {
-		HP.Prof.invalidate_cache(ErrorNumber(ErrorCatalog::Code::kPROFILE_WRITE));
-		HP.Prof.update_list(HP.Prof.get_idProfile());
-		HP.set_Warning(ErrorCatalog::Code::kPROFILE_WRITE, "profiles", 0,
-		               "Сбой записи профилей. Настройки в ОЗУ, расписание прежнее");
-		return pSETTINGS_ERR;
-	}
-	int32_t profiles = HP.Prof.cache_load_all(trace);
-	if(profiles == OK) profiles = HP.Prof.load(HP.Option.numProf);
-	HP.Prof.update_list(HP.Prof.get_idProfile());
-	if(profiles < 0) {
-		HP.log_Event(static_cast<ErrorCatalog::Code>(profiles), "profiles", {},
-		             "Профиль не загружен. Профили в EEPROM, настройки в ОЗУ");
-		return pSETTINGS_ERR;
-	}
-	if(HP.Schdlr.loadFromBuf(schedule, file_end - schedule, hint, trace) != OK) {
-		HP.log_Event(ErrorCatalog::Code::kSETTINGS_DATA, "SCHED", {},
-		             "Сбой расписания. Настройки в ОЗУ, профили в EEPROM");
-		return pSETTINGS_ERR;
-	}
-#ifdef LOAD_VERIFICATION
-	const char *verification = "";
-#else
-	const char *verification = " (проверка CRC отключена)";
-#endif
-	journal.event(Journal::Stamp::Time, "CFG", "RESTORE",
-	              "Настройки и расписание в ОЗУ, профили в EEPROM%s, CRC16=%04X", verification, crc);
-	return pSETTINGS_OK;
 }
 
 // Разбирает size байтов POST из inPtr потока thread. При импорте настроек использует outBuf.
@@ -984,7 +880,12 @@ xLenErr:
 		uint8_t *out = (uint8_t*)Socket[thread].outBuf;
 		if(!uploadReceive(thread, ptr, buf_len, lenFile, uploadWriteBuffer, &out, false))
 			return rejectSettingsFile("файл получен не полностью");
-		return restoreSettingsFile((uint8_t*)Socket[thread].outBuf, lenFile, trace);
+		switch(restoreSettingsFile((uint8_t*)Socket[thread].outBuf, lenFile, trace)) {
+			case SettingsImportResult::Ok: return pSETTINGS_OK;
+			case SettingsImportResult::Busy: return pSETTINGS_BUSY;
+			case SettingsImportResult::Invalid: return pSETTINGS_ERR;
+		}
+		return pSETTINGS_ERR;
 	} //if (strcmp(nameFile,"*SETTINGS*")==0)
 
 	// загрузка вебморды

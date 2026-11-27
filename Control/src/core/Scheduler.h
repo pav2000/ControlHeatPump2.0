@@ -72,7 +72,7 @@ public:
 	const char* get_name(void) { return  "Scheduler"; } // Получить имя
 	int8_t   save(void);  			               		// Записать настройки в eeprom i2c
 	int16_t  load(uint8_t *data = NULL, uint8_t version = 0);  		     	// Считать настройки из eeprom i2c, возвращает длину или ошибку
-	static uint16_t file_data_len(const uint8_t *buf, uint16_t avail, uint16_t hint);
+	static uint16_t file_data_len(const uint8_t *buf, uint16_t avail, uint16_t hint, bool verify = false);
 	int8_t   loadFromBuf(byte *buf, uint16_t avail, uint16_t hint, bool trace);	// Считать из буфера (секция файла): avail - сколько байт доступно, hint - длина данных из заголовка записи или 0; возврат код ошибки
 	uint16_t get_crc16(uint8_t *data);             		// Рассчитать контрольную сумму для данных на входе входная сумма на выходе новая
 	uint16_t get_data_size(void) { return sizeof(sch_data); }

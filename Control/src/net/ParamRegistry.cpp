@@ -36,7 +36,7 @@ const char *const ApiErrName[AE_COUNT] = {
 // ---------------------------------------------------------------------------
 void api_out_init(ApiOut *o, char *buf, uint16_t cap)
 {
-	o->p = buf; o->cap = cap; o->len = 0; o->over = 0; o->events = nullptr;
+	o->p = buf; o->cap = cap; o->len = 0; o->over = 0; o->applyNetwork = false; o->events = nullptr;
 	if(cap) buf[0] = 0;
 }
 

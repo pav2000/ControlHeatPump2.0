@@ -1177,7 +1177,7 @@ static int apiAct_reset_settings(ApiOut *o, const char *)
 }
 static int apiAct_net_apply(ApiOut *o, const char *)
 {
-	HP.sendCommand(pNETWORK);         // применить сетевые настройки: сброс чипа Wiznet, связь пропадёт на несколько секунд
+	o->applyNetwork = true;          // Диспетчер поставит запрос после попытки отправить ответ.
 	api_put(o, "\"ok\"");
 	return AE_OK;
 }
@@ -1700,5 +1700,7 @@ uint8_t api_dispatch(uint8_t thread)
 	uint16_t n = o.len;
 	for(int8_t i = 5; i >= 0 && n; i--) { num[i] = (char)('0' + n % 10); n /= 10; }
 	if(!o.len) num[5] = '0';
-	return sendBufferRTOS(thread, (byte*) ob, (uint16_t)(body - ob) + o.len) != 0;
+	const bool sent = sendBufferRTOS(thread, (byte*) ob, (uint16_t)(body - ob) + o.len) != 0;
+	if(o.applyNetwork) requestNetChipReset(NetworkResetCause::Settings);
+	return sent;
 }
